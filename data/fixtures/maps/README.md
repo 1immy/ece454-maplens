@@ -45,8 +45,11 @@ eh-3-north-stair.graph.json   # hand-traced FloorGraph, pixel coords on that pho
 
 ## Tracing a map by hand
 
-1. Use the straight-on shot. Note its pixel size; coordinates are relative to it.
-2. Place a node at every junction, corner, dead end, room door, stair, elevator, exit and AED, plus `START` at "You Are Here". Put each node on the corridor centerline, opposite the door it represents.
-3. Connect nodes that are joined by corridor. One edge per corridor segment, no shortcuts through rooms.
-4. Add a landmark for every readable room number, attached to its door node.
-5. Run `./gradlew :core:model:test` to check it.
+Use `tools/maplabel.py` (see `tools/README.md`): label corners, `warp` the straight-on photo, then `trace` it. The rectified image and its `.graph.json` live here side by side.
+
+What to place:
+
+1. `START` at "You Are Here" (the star on evacuation posters, the pink dot on directory maps), on the corridor centerline.
+2. A node at every junction, corner, dead end, stair, elevator, exit and AED.
+3. A `DOOR` node for every numbered room you can read, on the centerline opposite the door, with its room number as the label.
+4. Edges only along corridors, never through rooms.
