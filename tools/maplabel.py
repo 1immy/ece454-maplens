@@ -247,31 +247,45 @@ def _view_span(ax) -> float:
 
 # --------------------------------------------------------------------------- corners
 
-CORNERS_HELP = """corners: click the 4 corners of the printed poster (any order).
-  u        undo last point
-  enter/n  save this image and go to the next
-  s        skip this image
-  q        save and quit
+CORNERS_HELP = """corners: click the 4 outer corners of the blue map frame (any order).
+  u            undo last point
+  enter/n/s    save this image and go to the next
+  k            skip this image (nothing saved)
+  q            save this image (if 4 corners) and quit
+Every save re-reads the file and only adds or replaces this image, so other
+windows or runs can never wipe existing labels.
 Use the toolbar magnifier to zoom; click it again to turn it off before clicking corners."""
+
+
+def _empty_corners_file() -> dict:
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "note": "Outer corners of the blue map frame in upright (EXIF-rotated) pixel coords, order TL, TR, BR, BL.",
+        "images": {},
+    }
+
+
+def save_corner_label(out: Path, name: str, entry: dict) -> int:
+    """Merge one image's label into the file on disk; returns how many images it now holds."""
+    data = json.loads(out.read_text()) if out.exists() else _empty_corners_file()
+    data["images"][name] = entry
+    data["images"] = dict(sorted(data["images"].items()))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(out)  # atomic: a crash mid-write can't leave a half-written file
+    return len(data["images"])
 
 
 def cmd_corners(args):
     out = Path(args.output)
-    data = json.loads(out.read_text()) if out.exists() else {
-        "schemaVersion": SCHEMA_VERSION,
-        "note": "Poster corners in upright (EXIF-rotated) pixel coords, order TL, TR, BR, BL.",
-        "images": {},
-    }
-    todo = [p for p in args.images if args.redo or Path(p).name not in data["images"]]
+    existing = json.loads(out.read_text())["images"] if out.exists() else {}
+    todo = [p for p in args.images if args.redo or Path(p).name not in existing]
     if not todo:
         print("All images already labeled (use --redo to relabel).")
         return
     plt = _setup_matplotlib()
     print(CORNERS_HELP)
-
-    def save():
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(data, indent=2) + "\n")
 
     for index, path in enumerate(todo, 1):
         image = load_image(path)
@@ -293,7 +307,8 @@ def cmd_corners(args):
                     quad = order_corners(points)
                     qx, qy = zip(*(quad + [quad[0]]))
                     markers.extend(ax.plot(qx, qy, "-", color="#ff00ff", lw=1.5))
-            ax.set_title(f"[{index}/{len(todo)}] {Path(path).name}: {len(points)}/4 corners")
+            ax.set_title(f"[{index}/{len(todo)}] {Path(path).name}: {len(points)}/4 corners"
+                         "   (enter/s save, k skip, q quit)")
             fig.canvas.draw_idle()
 
         def on_click(event):
@@ -307,14 +322,17 @@ def cmd_corners(args):
             if event.key == "u" and points:
                 points.pop()
                 redraw()
-            elif event.key in ("enter", "n"):
+            elif event.key in ("enter", "n", "s"):
                 if len(points) == 4:
                     state["action"] = "next"
                     plt.close(fig)
                 else:
-                    print("  need 4 corners first")
-            elif event.key in ("s", "q"):
-                state["action"] = "skip" if event.key == "s" else "quit"
+                    print("  need 4 corners first (k skips this image)")
+            elif event.key == "k":
+                state["action"] = "skip"
+                plt.close(fig)
+            elif event.key == "q":
+                state["action"] = "quit"
                 plt.close(fig)
 
         fig.canvas.mpl_connect("button_press_event", on_click)
@@ -322,17 +340,19 @@ def cmd_corners(args):
         redraw()
         plt.show()
 
-        if state["action"] in ("next", None) and len(points) == 4:
-            data["images"][Path(path).name] = {
+        name = Path(path).name
+        if state["action"] != "skip" and len(points) == 4:
+            total = save_corner_label(out, name, {
                 "corners": [[round(x, 1), round(y, 1)] for x, y in order_corners(points)],
                 "size": list(image.size),
-            }
-            save()
-            print(f"  saved {Path(path).name}")
+            })
+            print(f"  saved {name} ({total} labeled)")
+        elif state["action"] == "skip":
+            print(f"  skipped {name}")
         if state["action"] == "quit":
             break
-    save()
-    print(f"{len(data['images'])} images labeled -> {out}")
+    total = len(json.loads(out.read_text())["images"]) if out.exists() else 0
+    print(f"{total} images labeled -> {out}")
 
 
 def cmd_warp(args):

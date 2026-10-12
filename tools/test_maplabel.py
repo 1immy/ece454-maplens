@@ -40,6 +40,20 @@ class GeometryTest(unittest.TestCase):
         self.assertAlmostEqual(h / w, 0.72, delta=0.08)
 
 
+class CornerFileTest(unittest.TestCase):
+    def test_save_merges_with_what_is_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "corners.json"
+            entry = {"corners": [[0, 0], [1, 0], [1, 1], [0, 1]], "size": [2, 2]}
+            self.assertEqual(maplabel.save_corner_label(out, "b.jpg", entry), 1)
+            # Another session writes a.jpg; a stale session then saves c.jpg.
+            self.assertEqual(maplabel.save_corner_label(out, "a.jpg", entry), 2)
+            self.assertEqual(maplabel.save_corner_label(out, "c.jpg", entry), 3)
+            data = json.loads(out.read_text())
+            self.assertEqual(list(data["images"]), ["a.jpg", "b.jpg", "c.jpg"])
+            self.assertFalse(out.with_suffix(".json.tmp").exists())
+
+
 class GraphTest(unittest.TestCase):
     def chain(self):
         g = maplabel.Graph()
