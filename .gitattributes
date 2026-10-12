@@ -1,2 +1,18 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Scripts keep their line endings
+*.sh      text eol=lf
+gradlew   text eol=lf
+*.bat     text eol=crlf
+
+# Binary build files
+*.jar     binary
+
+# Test data (map photos, sensor traces) goes through Git LFS.
+# Run `git lfs install` once per machine before committing anything under data/.
+data/fixtures/**/*.jpg  filter=lfs diff=lfs merge=lfs -text
+data/fixtures/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+data/fixtures/**/*.png  filter=lfs diff=lfs merge=lfs -text
+data/fixtures/**/*.heic filter=lfs diff=lfs merge=lfs -text
+data/fixtures/**/*.csv  filter=lfs diff=lfs merge=lfs -text
