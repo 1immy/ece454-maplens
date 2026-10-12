@@ -9,8 +9,8 @@ Commands
            in the format read by FloorGraphJson (core/model).
 
 Examples
-  python tools/maplabel.py corners data/raw/ehall/*.jpg -o data/fixtures/rectify/ehall-corners.json
-  python tools/maplabel.py warp data/raw/ehall/eh-3-elevators-evac-03-front.jpg \\
+  python tools/maplabel.py corners data/fixtures/photos/ehall/*.jpg -o data/fixtures/rectify/ehall-corners.json
+  python tools/maplabel.py warp data/fixtures/photos/ehall/eh-3-elevators-evac-03-front.jpg \\
       --corners data/fixtures/rectify/ehall-corners.json -o data/fixtures/maps/eh-3-elevators-evac.jpg
   python tools/maplabel.py trace data/fixtures/maps/eh-3-elevators-evac.jpg \\
       -o data/fixtures/maps/eh-3-elevators-evac.graph.json

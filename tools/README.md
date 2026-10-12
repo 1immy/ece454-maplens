@@ -18,11 +18,11 @@ Three steps, each with a small GUI (matplotlib window). Press **h** inside a win
 
 ```bash
 # 1. Poster corners for every photo (rectification answer key, committed)
-python tools/maplabel.py corners data/raw/ehall/*.jpg \
+python tools/maplabel.py corners data/fixtures/photos/ehall/*.jpg \
     -o data/fixtures/rectify/ehall-corners.json
 
 # 2. Straighten the front shot you will trace
-python tools/maplabel.py warp data/raw/ehall/eh-3-elevators-evac-03-front.jpg \
+python tools/maplabel.py warp data/fixtures/photos/ehall/eh-3-elevators-evac-03-front.jpg \
     --corners data/fixtures/rectify/ehall-corners.json \
     -o data/fixtures/maps/eh-3-elevators-evac.jpg
 

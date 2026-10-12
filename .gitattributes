@@ -16,3 +16,6 @@ data/fixtures/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
 data/fixtures/**/*.png  filter=lfs diff=lfs merge=lfs -text
 data/fixtures/**/*.heic filter=lfs diff=lfs merge=lfs -text
 data/fixtures/**/*.csv  filter=lfs diff=lfs merge=lfs -text
+
+# Manifests are small text files; keep them diffable in plain git
+data/fixtures/**/manifest.csv -filter -diff -merge text
