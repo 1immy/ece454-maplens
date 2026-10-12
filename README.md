@@ -23,7 +23,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the data flow and who own
 
 ## Getting started
 
-Requirements: Android Studio (Ladybug or newer), JDK 17+, [Git LFS](https://git-lfs.com).
+Requirements: Android Studio (Ladybug or newer), JDK 17–23 (Android Studio bundles 21), [Git LFS](https://git-lfs.com).
 
 ```bash
 git lfs install            # once per machine
@@ -32,6 +32,14 @@ cd ece454-maplens
 ./gradlew test             # unit tests, no phone needed
 ./gradlew assembleDebug    # build the APK
 ```
+
+**JDK note:** Gradle 8.10 runs on JDK 17–23. If your default `java` is newer (e.g. 25), point the terminal at Android Studio's bundled JDK, e.g. in `~/.zshrc`:
+
+```bash
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+```
+
+In Android Studio, choose JVM 21 when it asks for the Gradle JVM.
 
 Open the folder in Android Studio and run the `app` configuration on a phone. The emulator has no real step detector or gyro, so use a physical device for anything in `tracking`.
 
