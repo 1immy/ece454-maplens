@@ -1,0 +1,17 @@
+file,floor,location,map_type,shot,original,captured,phone,size,notes
+eh-3-elevators-evac-01-left30.jpg,3,elevators,evac,left30,20261012_195119702_iOS.jpg,2026:10:12 14:51:19,iPhone 13 Pro Max,3024x4032,"Tilted, shot from the left"
+eh-3-elevators-evac-02-blur.jpg,3,elevators,evac,blur,20261012_195120687_iOS.jpg,2026:10:12 14:51:20,iPhone 13 Pro Max,3024x4032,Motion blur; keep as a negative test
+eh-3-elevators-evac-03-front.jpg,3,elevators,evac,front,20261012_195123010_iOS.jpg,2026:10:12 14:51:23,iPhone 13 Pro Max,3024x4032,"Straight on, map small in frame"
+eh-3-elevators-evac-04-down.jpg,3,elevators,evac,down,20261012_195125524_iOS.jpg,2026:10:12 14:51:25,iPhone 13 Pro Max,3024x4032,"Shot from above, strong keystone"
+eh-3-elevators-evac-05-glare.jpg,3,elevators,evac,glare,20261012_195129878_iOS.jpg,2026:10:12 14:51:29,iPhone 13 Pro Max,3024x4032,"Straight on, glare spot over 3542 area"
+eh-3-elevators-dir-01-glare.jpg,3,elevators,dir,glare,20261012_195136164_iOS.jpg,2026:10:12 14:51:36,iPhone 13 Pro Max,3024x4032,"Straight on, large glare blob mid-map"
+eh-3-elevators-dir-02-left30.jpg,3,elevators,dir,left30,20261012_195139997_iOS.jpg,2026:10:12 14:51:39,iPhone 13 Pro Max,3024x4032,Shot from the left
+eh-3-elevators-dir-03-front.jpg,3,elevators,dir,front,20261012_195142288_iOS.jpg,2026:10:12 14:51:42,iPhone 13 Pro Max,3024x4032,Best straight-on directory shot
+eh-3-elevators-dir-04-down.jpg,3,elevators,dir,down,20261012_195144116_iOS.jpg,2026:10:12 14:51:44,iPhone 13 Pro Max,3024x4032,Shot from above
+eh-3-elevators-dir-05-up-glare.jpg,3,elevators,dir,up-glare,20261012_195146127_iOS.jpg,2026:10:12 14:51:46,iPhone 13 Pro Max,3024x4032,"Shot from below, glare top-right"
+eh-3-elevators-dir-06-right30.jpg,3,elevators,dir,right30,20261012_195148252_iOS.jpg,2026:10:12 14:51:48,iPhone 13 Pro Max,3024x4032,Shot from the right
+eh-3-stair-3542-evac-01-front.jpg,3,stair-3542,evac,front,20261012_195224319_iOS.jpg,2026:10:12 14:52:24,iPhone 13 Pro Max,3024x4032,Rotated: Parking Ramp at top; YAH by NE stair
+eh-3-stair-3542-dir-01-front-crop.jpg,3,stair-3542,dir,front-crop,20261012_195227182_iOS.jpg,2026:10:12 14:52:27,iPhone 13 Pro Max,3024x4032,Rotated portrait layout; right side cropped; glare stripe
+eh-3-stair-3424-evac-01-front.jpg,3,stair-3424,evac,front,20261012_195314225_iOS.jpg,2026:10:12 14:53:14,iPhone 13 Pro Max,3024x4032,Tile wall; YAH by stair south of 3418
+eh-3-stair-3424-dir-01-front.jpg,3,stair-3424,dir,front,20261012_195425909_iOS.jpg,2026:10:12 14:54:25,iPhone 13 Pro Max,3024x4032,Rotated 180 deg; reflection of photographer
+eh-3-stair-3114-evac-01-front.jpg,3,stair-3114,evac,front,20261012_195623008_iOS.jpg,2026:10:12 14:56:23,iPhone 13 Pro Max,3024x4032,West wing; Camp Randall at top; YAH by 3114 stair
