@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "buildingId": "example",
+  "floor": "slide-10",
+  "startNodeId": "S",
+  "verified": true,
+  "source": { "image": null, "note": "Stand-in from proposal slide 10 until Engineering Hall is traced" },
+  "nodes": [
+    { "id": "W",     "type": "DEAD_END", "x": 0,   "y": 0 },
+    { "id": "D3650", "type": "DOOR",     "x": 100, "y": 0 },
+    { "id": "J",     "type": "JUNCTION", "x": 200, "y": 0 },
+    { "id": "E",     "type": "DEAD_END", "x": 400, "y": 0 },
+    { "id": "S",     "type": "START",    "x": 200, "y": 150 }
+  ],
+  "edges": [
+    { "from": "W",     "to": "D3650" },
+    { "from": "D3650", "to": "J" },
+    { "from": "J",     "to": "E" },
+    { "from": "S",     "to": "J" }
+  ],
+  "landmarks": [
+    { "label": "3650", "nodeId": "D3650" }
+  ]
+}
