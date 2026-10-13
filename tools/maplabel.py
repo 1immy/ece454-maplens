@@ -7,6 +7,8 @@ Commands
   warp     Straighten one photo using its labeled corners. Saves a flat image.
   trace    Click-to-trace a FloorGraph on a (straightened) image. Saves *.graph.json
            in the format read by FloorGraphJson (core/model).
+  tidy     Clean a traced graph: route corridor edges through doors placed on
+           them and drop duplicate edges.
 
 Examples
   python tools/maplabel.py corners data/fixtures/photos/ehall/*.jpg -o data/fixtures/rectify/ehall-corners.json
@@ -160,6 +162,49 @@ class Graph:
         self.nodes.pop(node_id, None)
         self.labels.pop(node_id, None)
         self.edges = [e for e in self.edges if node_id not in e]
+
+    def tidy(self, tolerance: float = 10.0) -> list[str]:
+        """Route every edge through any node lying on it, and drop duplicates.
+
+        Fixes the usual tracing leftovers: a door placed on a corridor while the
+        old corner-to-corner edge still runs straight past it, door chains that
+        were never attached at their ends, and unconnected nodes sitting on a
+        corridor. Returns a log of the splits made.
+        """
+        log = []
+        changed = True
+        while changed:
+            changed = False
+            for a, b in list(self.edges):
+                on = self._nodes_on_segment(a, b, tolerance)
+                if not on:
+                    continue
+                self.edges = [e for e in self.edges if {a, b} != set(e)]
+                chain = [a] + on + [b]
+                for u, v in zip(chain, chain[1:]):
+                    self.connect(u, v)
+                log.append(f"{a}-{b} now runs through {', '.join(on)}")
+                changed = True
+                break
+        return log
+
+    def _nodes_on_segment(self, a: str, b: str, tolerance: float) -> list[str]:
+        ax, ay = self.nodes[a]["x"], self.nodes[a]["y"]
+        bx, by = self.nodes[b]["x"], self.nodes[b]["y"]
+        length2 = (bx - ax) ** 2 + (by - ay) ** 2
+        if length2 == 0:
+            return []
+        hits = []
+        for node in self.nodes.values():
+            if node["id"] in (a, b):
+                continue
+            t = ((node["x"] - ax) * (bx - ax) + (node["y"] - ay) * (by - ay)) / length2
+            if not 0.0 < t < 1.0:
+                continue
+            px, py = ax + t * (bx - ax), ay + t * (by - ay)
+            if ((node["x"] - px) ** 2 + (node["y"] - py) ** 2) ** 0.5 <= tolerance:
+                hits.append((t, node["id"]))
+        return [nid for _, nid in sorted(hits)]
 
     def nearest(self, x: float, y: float, radius: float) -> str | None:
         best, best_d = None, radius
@@ -565,6 +610,23 @@ def cmd_trace(args):
     plt.show()
 
 
+def cmd_tidy(args):
+    path = Path(args.graph)
+    graph = Graph.from_json(json.loads(path.read_text()))
+    before = len(graph.edges)
+    log = graph.tidy(args.tolerance)
+    for line in log:
+        print(f"  {line}")
+    print(f"{len(log)} fixes, edges {before} -> {len(graph.edges)}")
+    if log and not args.dry_run:
+        backup = path.with_suffix(".json.bak")
+        backup.write_text(path.read_text())
+        path.write_text(json.dumps(graph.to_json(), indent=2) + "\n")
+        print(f"saved {path} (previous version in {backup.name})")
+    for p in graph.problems():
+        print(f"  ! {p}")
+
+
 # --------------------------------------------------------------------------- main
 
 def main(argv=None):
@@ -590,6 +652,12 @@ def main(argv=None):
     p.add_argument("--building", default="engineering-hall")
     p.add_argument("--floor", default="3")
     p.set_defaults(func=cmd_trace)
+
+    p = sub.add_parser("tidy", help="route edges through nodes lying on them; drop duplicates")
+    p.add_argument("graph", help="*.graph.json (close any trace window on it first)")
+    p.add_argument("--tolerance", type=float, default=10.0, help="px from the edge (default 10)")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_tidy)
 
     args = parser.parse_args(argv)
     args.func(args)

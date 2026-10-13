@@ -102,6 +102,19 @@ class GraphTest(unittest.TestCase):
         self.assertTrue(any("not connected" in p for p in problems))
         self.assertTrue(any("without a room label" in p for p in problems))
 
+    def test_tidy_routes_corridor_through_doors(self):
+        g = maplabel.Graph()
+        a = g.add_node(0, 0, "START")
+        b = g.add_node(100, 0, "JUNCTION")
+        d1 = g.add_node(30, 2, "DOOR")      # on the corridor, unconnected
+        d2 = g.add_node(60, -1, "DOOR")
+        g.connect(a, b)
+        g.connect(d1, d2)                    # floating door chain
+        g.add_node(50, 40, "DOOR")           # off the corridor: left alone
+        log = g.tidy()
+        self.assertTrue(log)
+        self.assertEqual(sorted(map(sorted, g.edges)), sorted(map(sorted, [(a, d1), (d1, d2), (d2, b)])))
+
     def test_json_round_trip_and_counter_resumes(self):
         g, *_ = self.chain()
         data = json.loads(json.dumps(g.to_json()))
