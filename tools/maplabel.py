@@ -7,6 +7,8 @@ Commands
   warp     Straighten one photo using its labeled corners. Saves a flat image.
   trace    Click-to-trace a FloorGraph on a (straightened) image. Saves *.graph.json
            in the format read by FloorGraphJson (core/model).
+  tidy     Clean a traced graph: route corridor edges through doors placed on
+           them and drop duplicate edges.
 
 Examples
   python tools/maplabel.py corners data/fixtures/photos/ehall/*.jpg -o data/fixtures/rectify/ehall-corners.json
@@ -161,6 +163,49 @@ class Graph:
         self.labels.pop(node_id, None)
         self.edges = [e for e in self.edges if node_id not in e]
 
+    def tidy(self, tolerance: float = 10.0) -> list[str]:
+        """Route every edge through any node lying on it, and drop duplicates.
+
+        Fixes the usual tracing leftovers: a door placed on a corridor while the
+        old corner-to-corner edge still runs straight past it, door chains that
+        were never attached at their ends, and unconnected nodes sitting on a
+        corridor. Returns a log of the splits made.
+        """
+        log = []
+        changed = True
+        while changed:
+            changed = False
+            for a, b in list(self.edges):
+                on = self._nodes_on_segment(a, b, tolerance)
+                if not on:
+                    continue
+                self.edges = [e for e in self.edges if {a, b} != set(e)]
+                chain = [a] + on + [b]
+                for u, v in zip(chain, chain[1:]):
+                    self.connect(u, v)
+                log.append(f"{a}-{b} now runs through {', '.join(on)}")
+                changed = True
+                break
+        return log
+
+    def _nodes_on_segment(self, a: str, b: str, tolerance: float) -> list[str]:
+        ax, ay = self.nodes[a]["x"], self.nodes[a]["y"]
+        bx, by = self.nodes[b]["x"], self.nodes[b]["y"]
+        length2 = (bx - ax) ** 2 + (by - ay) ** 2
+        if length2 == 0:
+            return []
+        hits = []
+        for node in self.nodes.values():
+            if node["id"] in (a, b):
+                continue
+            t = ((node["x"] - ax) * (bx - ax) + (node["y"] - ay) * (by - ay)) / length2
+            if not 0.0 < t < 1.0:
+                continue
+            px, py = ax + t * (bx - ax), ay + t * (by - ay)
+            if ((node["x"] - px) ** 2 + (node["y"] - py) ** 2) ** 0.5 <= tolerance:
+                hits.append((t, node["id"]))
+        return [nid for _, nid in sorted(hits)]
+
     def nearest(self, x: float, y: float, radius: float) -> str | None:
         best, best_d = None, radius
         for node in self.nodes.values():
@@ -247,31 +292,45 @@ def _view_span(ax) -> float:
 
 # --------------------------------------------------------------------------- corners
 
-CORNERS_HELP = """corners: click the 4 corners of the printed poster (any order).
-  u        undo last point
-  enter/n  save this image and go to the next
-  s        skip this image
-  q        save and quit
+CORNERS_HELP = """corners: click the 4 outer corners of the blue map frame (any order).
+  u            undo last point
+  enter/n/s    save this image and go to the next
+  k            skip this image (nothing saved)
+  q            save this image (if 4 corners) and quit
+Every save re-reads the file and only adds or replaces this image, so other
+windows or runs can never wipe existing labels.
 Use the toolbar magnifier to zoom; click it again to turn it off before clicking corners."""
+
+
+def _empty_corners_file() -> dict:
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "note": "Outer corners of the blue map frame in upright (EXIF-rotated) pixel coords, order TL, TR, BR, BL.",
+        "images": {},
+    }
+
+
+def save_corner_label(out: Path, name: str, entry: dict) -> int:
+    """Merge one image's label into the file on disk; returns how many images it now holds."""
+    data = json.loads(out.read_text()) if out.exists() else _empty_corners_file()
+    data["images"][name] = entry
+    data["images"] = dict(sorted(data["images"].items()))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(out)  # atomic: a crash mid-write can't leave a half-written file
+    return len(data["images"])
 
 
 def cmd_corners(args):
     out = Path(args.output)
-    data = json.loads(out.read_text()) if out.exists() else {
-        "schemaVersion": SCHEMA_VERSION,
-        "note": "Poster corners in upright (EXIF-rotated) pixel coords, order TL, TR, BR, BL.",
-        "images": {},
-    }
-    todo = [p for p in args.images if args.redo or Path(p).name not in data["images"]]
+    existing = json.loads(out.read_text())["images"] if out.exists() else {}
+    todo = [p for p in args.images if args.redo or Path(p).name not in existing]
     if not todo:
         print("All images already labeled (use --redo to relabel).")
         return
     plt = _setup_matplotlib()
     print(CORNERS_HELP)
-
-    def save():
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(data, indent=2) + "\n")
 
     for index, path in enumerate(todo, 1):
         image = load_image(path)
@@ -293,7 +352,8 @@ def cmd_corners(args):
                     quad = order_corners(points)
                     qx, qy = zip(*(quad + [quad[0]]))
                     markers.extend(ax.plot(qx, qy, "-", color="#ff00ff", lw=1.5))
-            ax.set_title(f"[{index}/{len(todo)}] {Path(path).name}: {len(points)}/4 corners")
+            ax.set_title(f"[{index}/{len(todo)}] {Path(path).name}: {len(points)}/4 corners"
+                         "   (enter/s save, k skip, q quit)")
             fig.canvas.draw_idle()
 
         def on_click(event):
@@ -307,14 +367,17 @@ def cmd_corners(args):
             if event.key == "u" and points:
                 points.pop()
                 redraw()
-            elif event.key in ("enter", "n"):
+            elif event.key in ("enter", "n", "s"):
                 if len(points) == 4:
                     state["action"] = "next"
                     plt.close(fig)
                 else:
-                    print("  need 4 corners first")
-            elif event.key in ("s", "q"):
-                state["action"] = "skip" if event.key == "s" else "quit"
+                    print("  need 4 corners first (k skips this image)")
+            elif event.key == "k":
+                state["action"] = "skip"
+                plt.close(fig)
+            elif event.key == "q":
+                state["action"] = "quit"
                 plt.close(fig)
 
         fig.canvas.mpl_connect("button_press_event", on_click)
@@ -322,17 +385,19 @@ def cmd_corners(args):
         redraw()
         plt.show()
 
-        if state["action"] in ("next", None) and len(points) == 4:
-            data["images"][Path(path).name] = {
+        name = Path(path).name
+        if state["action"] != "skip" and len(points) == 4:
+            total = save_corner_label(out, name, {
                 "corners": [[round(x, 1), round(y, 1)] for x, y in order_corners(points)],
                 "size": list(image.size),
-            }
-            save()
-            print(f"  saved {Path(path).name}")
+            })
+            print(f"  saved {name} ({total} labeled)")
+        elif state["action"] == "skip":
+            print(f"  skipped {name}")
         if state["action"] == "quit":
             break
-    save()
-    print(f"{len(data['images'])} images labeled -> {out}")
+    total = len(json.loads(out.read_text())["images"]) if out.exists() else 0
+    print(f"{total} images labeled -> {out}")
 
 
 def cmd_warp(args):
@@ -545,6 +610,23 @@ def cmd_trace(args):
     plt.show()
 
 
+def cmd_tidy(args):
+    path = Path(args.graph)
+    graph = Graph.from_json(json.loads(path.read_text()))
+    before = len(graph.edges)
+    log = graph.tidy(args.tolerance)
+    for line in log:
+        print(f"  {line}")
+    print(f"{len(log)} fixes, edges {before} -> {len(graph.edges)}")
+    if log and not args.dry_run:
+        backup = path.with_suffix(".json.bak")
+        backup.write_text(path.read_text())
+        path.write_text(json.dumps(graph.to_json(), indent=2) + "\n")
+        print(f"saved {path} (previous version in {backup.name})")
+    for p in graph.problems():
+        print(f"  ! {p}")
+
+
 # --------------------------------------------------------------------------- main
 
 def main(argv=None):
@@ -570,6 +652,12 @@ def main(argv=None):
     p.add_argument("--building", default="engineering-hall")
     p.add_argument("--floor", default="3")
     p.set_defaults(func=cmd_trace)
+
+    p = sub.add_parser("tidy", help="route edges through nodes lying on them; drop duplicates")
+    p.add_argument("graph", help="*.graph.json (close any trace window on it first)")
+    p.add_argument("--tolerance", type=float, default=10.0, help="px from the edge (default 10)")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_tidy)
 
     args = parser.parse_args(argv)
     args.func(args)
