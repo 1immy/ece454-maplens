@@ -24,6 +24,7 @@ google-services.json
 Thumbs.db
 
 # Python tooling
+*.json.bak
 __pycache__/
 *.pyc
 .venv/
