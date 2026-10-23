@@ -1,19 +1,20 @@
 # Reviews are requested automatically from the owner of the code a PR touches.
-# Replace the placeholders with GitHub usernames once areas are assigned,
-# then enable "Require review from Code Owners" in branch protection.
-#
-# Area A · Map understanding
-# /mapparse/      @area-a-owner
-#
-# Area B · Localization
-# /tracking/      @area-b-owner
-#
-# Area C · Navigation and app
-# /app/           @area-c-owner
-# /routing/       @area-c-owner
-# /guidance/      @area-c-owner
-#
-# Shared contracts: everyone reviews
-# /core/model/    @area-a-owner @area-b-owner @area-c-owner
-# /gradle/        @area-a-owner @area-b-owner @area-c-owner
-# /.github/       @area-a-owner @area-b-owner @area-c-owner
+# Areas: see docs/architecture.md
+
+# Area A · Map understanding (Limo)
+/mapparse/      @1immy
+/tools/         @1immy
+/data/          @1immy
+
+# Area B · Localization (Jayden)
+/tracking/      @JaJaBaa
+
+# Area C · Navigation and app (Johnny)
+/app/           @JohnnyHong0116
+/routing/       @JohnnyHong0116
+/guidance/      @JohnnyHong0116
+
+# Shared contracts and build: everyone reviews
+/core/model/    @1immy @JaJaBaa @JohnnyHong0116
+/gradle/        @1immy @JaJaBaa @JohnnyHong0116
+/.github/       @1immy @JaJaBaa @JohnnyHong0116
