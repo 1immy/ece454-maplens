@@ -47,6 +47,10 @@ python tools/maplabel.py trace data/fixtures/maps/eh-3-elevators-evac.jpg \
 | `Esc` | Deselect (start a new chain) |
 | `u` / `w` / `q` | Undo / save / save and quit |
 
+**Tidy:** after placing doors, close the trace window and run
+`python tools/maplabel.py tidy data/fixtures/maps/eh-3-elevators-evac.graph.json`.
+It routes every corridor edge through any node sitting on it (doors placed on a corridor, floating door chains, unconnected nodes) and drops duplicate edges. The previous file is kept as `*.json.bak`.
+
 A door asks for its room number as soon as you place it. Re-running `trace` on an existing `.graph.json` resumes it. Each save prints anything `FloorGraph.validate()` would reject, and `./gradlew :core:model:test` checks every fixture again.
 
 Tip: zoom with the toolbar magnifier, then click the magnifier again to turn it off before placing nodes.
@@ -70,8 +74,29 @@ How it works: Lab **b\*** channel below the wall's own b\* − 7 → blue mask �
 
 Known limit: under strong perspective the output aspect ratio is estimated from the photo, so it can be a few percent off (fine for tracing; the graph step will register against the poster's known shape).
 
+## `corridors.py`: corridor extraction and graph scoring
+
+Straightened evacuation poster → corridor graph, plus a scorer that compares any graph with a hand trace.
+
+```bash
+# Extract and score against the trace (green = traced, magenta = extracted)
+python tools/corridors.py evaluate data/fixtures/maps/eh-3-elevators-evac.jpg \
+    data/fixtures/maps/eh-3-elevators-evac.graph.json --debug /tmp/corridors.jpg
+
+# Just extract
+python tools/corridors.py extract data/fixtures/maps/eh-3-elevators-evac.jpg -o /tmp/auto.graph.json
+```
+
+How it works: orange evacuation-route lines (HSV) → drop filled symbols (AED heart, extinguishers, arrowheads) with a morphological opening → widen, close gaps, keep the main network → skeletonize → junction/end nodes and polyline edges → prune spurs < 90 px, merge junctions < 30 px apart. `--with-hatch` also uses the dotted corridor hatching; it finds more stubs but also fills shelter rooms and stairwells, so it is off by default.
+
+**Metrics** (`score`): corridor-length precision/recall/F1 (share of each graph's length within 15 px of the other) and junction F1 (degree ≥ 3 after removing stubs < 45 px, Hungarian matching within 40 px).
+
+**EH 3rd floor, elevator poster:** length F1 **0.91** (P 0.95, R 0.87), junction F1 **0.80** (6 found, all real; 9 traced). Defaults were tuned on this same poster, so expect lower numbers on a new map. Misses: short stubs with no route line (toward 3417, past the bottom-left EXIT, "To EXIT").
+
 ## Coming next
 
 - Port `rectify.py` to Kotlin in `mapparse` (OpenCV Android)
-- Corridor mask → skeleton → graph, scored by graph F1 against the traced fixtures
+- Trace a second poster and score `corridors.py` on it (held out from tuning)
+- Stubs without route lines: targeted hatch detection near route ends
+- Room-label OCR and "You Are Here" star detection → doors and START on the extracted graph
 - Trace replay and drift plots for conditions A–D
