@@ -1,18 +1,18 @@
 # Reviews are requested automatically from the owner of the code a PR touches.
-# Areas: see docs/architecture.md
+# Owners follow the graded Phase I plan; see docs/architecture.md
 
-# Area A · Map understanding (Limo)
-/mapparse/      @1immy
-/tools/         @1immy
-/data/          @1immy
+# Area A · Map understanding (Jayden)
+/mapparse/      @JaJaBaa
+/tools/         @JaJaBaa
+/data/          @JaJaBaa
 
-# Area B · Localization (Jayden)
-/tracking/      @JaJaBaa
+# Area B · Localization (Johnny)
+/tracking/      @JohnnyHong0116
 
-# Area C · Navigation and app (Johnny)
-/app/           @JohnnyHong0116
-/routing/       @JohnnyHong0116
-/guidance/      @JohnnyHong0116
+# Area C · Navigation and app (Limo); routing shared with Jayden
+/app/           @1immy
+/guidance/      @1immy
+/routing/       @1immy @JaJaBaa
 
 # Shared contracts and build: everyone reviews
 /core/model/    @1immy @JaJaBaa @JohnnyHong0116
