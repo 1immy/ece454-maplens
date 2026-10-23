@@ -14,10 +14,15 @@ Pipeline (evacuation posters)
   3. Widen, close gaps, keep the big connected network.
   4. Skeletonize, turn the pixel skeleton into nodes (junctions, ends) and
      edges (polylines), prune short spurs, merge nearby junctions.
+  5. Refine each junction to the least-squares intersection of straight line
+     fits to its corridors, 20-150 px out. Route lines curve around symbols
+     (AED, stairs) near a corner; the corridors themselves are straight.
 
-Result on the traced EH 3rd-floor elevator poster (defaults tuned on that same
-poster, so treat as optimistic until a second traced map is held out):
-  corridor length F1 0.91 (P 0.95, R 0.87), junction F1 0.80 (6/6 found real, 6/9 traced)
+Results (corridor-length F1 / junction F1 vs hand traces):
+  elevator evac poster (tuned on)       0.91 / 0.80
+  stair-3424 evac poster (held out)     0.93 / 0.86
+Remaining misses are corridors with no route line (e.g. 3609 -> 3605); the
+dotted hatching does not fix them (tested: it adds as many false junctions).
 
 Directory maps (corridors and rooms both white) need a different first step;
 this module covers the evacuation-poster style only.
@@ -57,7 +62,10 @@ class Params:
     open: int = 9               # only used with the hatch mask
     keep_fraction: float = 0.25  # keep blobs at least this share of the biggest
     spur_length: float = 90.0   # prune dead-end branches shorter than this
-    merge_radius: float = 30.0  # junctions closer than this become one
+    merge_radius: float = 60.0  # junctions closer than this become one
+    refine_near: float = 20.0   # junction line fits use each corridor from this far out...
+    refine_far: float = 150.0   # ...to this far out
+    refine_max_move: float = 80.0  # ignore a refinement that moves a junction further than this
     use_hatch: bool = False
 
 
@@ -260,6 +268,44 @@ def _drop_isolated(graph: PixelGraph) -> PixelGraph:
     return graph
 
 
+def _arm(pts, from_start: bool, near: float, far: float):
+    """Points of a polyline between `near` and `far` px from one of its ends."""
+    seq = pts if from_start else pts[::-1]
+    out, travelled = [], 0.0
+    for a, b in zip(seq, seq[1:]):
+        travelled += math.dist(a, b)
+        if near <= travelled <= far:
+            out.append(b)
+    return out
+
+
+def refine_junctions(graph: PixelGraph, near: float, far: float, max_move: float) -> PixelGraph:
+    """Move each junction to the least-squares intersection of its corridors' lines."""
+    for node, degree in graph.degree().items():
+        if degree < 3:
+            continue
+        lines = []
+        for a, b, pts in graph.edges:
+            for from_start in ([True] if a == node else []) + ([False] if b == node else []):
+                arm = _arm(pts, from_start, near, far)
+                if len(arm) >= 8:
+                    lines.append(cv2.fitLine(np.float32(arm), cv2.DIST_L2, 0, 0.01, 0.01).ravel())
+        if len(lines) < 2:
+            continue
+        a_mat, b_vec = np.zeros((2, 2)), np.zeros(2)
+        for vx, vy, x0, y0 in lines:
+            normal = np.array([-vy, vx])
+            proj = np.outer(normal, normal)
+            a_mat += proj
+            b_vec += proj @ np.array([x0, y0])
+        if np.linalg.cond(a_mat) > 50:  # all corridors (nearly) parallel: no corner to find
+            continue
+        point = np.linalg.solve(a_mat, b_vec)
+        if math.dist(point, graph.nodes[node]) <= max_move:
+            graph.nodes[node] = (float(point[0]), float(point[1]))
+    return graph
+
+
 def extract_graph(bgr: np.ndarray, p: Params | None = None) -> tuple[PixelGraph, np.ndarray]:
     p = p or Params()
     mask = corridor_mask(bgr, p)
@@ -267,6 +313,7 @@ def extract_graph(bgr: np.ndarray, p: Params | None = None) -> tuple[PixelGraph,
     graph = prune_spurs(graph, p.spur_length)
     graph = merge_close_nodes(graph, p.merge_radius)
     graph = contract_degree_two(graph)
+    graph = refine_junctions(graph, p.refine_near, p.refine_far, p.refine_max_move)
     return graph, mask
 
 

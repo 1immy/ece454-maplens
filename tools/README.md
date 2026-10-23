@@ -87,16 +87,20 @@ python tools/corridors.py evaluate data/fixtures/maps/eh-3-elevators-evac.jpg \
 python tools/corridors.py extract data/fixtures/maps/eh-3-elevators-evac.jpg -o /tmp/auto.graph.json
 ```
 
-How it works: orange evacuation-route lines (HSV) → drop filled symbols (AED heart, extinguishers, arrowheads) with a morphological opening → widen, close gaps, keep the main network → skeletonize → junction/end nodes and polyline edges → prune spurs < 90 px, merge junctions < 30 px apart. `--with-hatch` also uses the dotted corridor hatching; it finds more stubs but also fills shelter rooms and stairwells, so it is off by default.
+How it works: orange evacuation-route lines (HSV) → drop filled symbols (AED heart, extinguishers, arrowheads) with a morphological opening → widen, close gaps, keep the main network → skeletonize → junction/end nodes and polyline edges → prune spurs < 90 px, merge junctions < 60 px apart → move each junction to the intersection of straight-line fits to its corridors (route lines bend around symbols near corners). `--with-hatch` also uses the dotted corridor hatching; it is off by default because it fills shelter rooms and stairwells.
 
 **Metrics** (`score`): corridor-length precision/recall/F1 (share of each graph's length within 15 px of the other) and junction F1 (degree ≥ 3 after removing stubs < 45 px, Hungarian matching within 40 px).
 
-**EH 3rd floor, elevator poster:** length F1 **0.91** (P 0.95, R 0.87), junction F1 **0.80** (6 found, all real; 9 traced). Defaults were tuned on this same poster, so expect lower numbers on a new map. Misses: short stubs with no route line (toward 3417, past the bottom-left EXIT, "To EXIT").
+| Poster | Corridor length F1 | Junction F1 |
+|---|---|---|
+| Elevator evac (tuned on) | 0.91 (P 0.95, R 0.87) | 0.80 (6/6 found real, 9 traced) |
+| Stair-3424 evac (held out) | 0.93 (P 0.96, R 0.90) | 0.86 (6/6 found real, 8 traced) |
+
+Misses are corridors with **no route line** (3609 → 3605, "To EXIT", short stubs). Restricting the hatching to narrow bands next to the routes was tested and did not help (it recovers stubs but adds as many false junctions).
 
 ## Coming next
 
 - Port `rectify.py` to Kotlin in `mapparse` (OpenCV Android)
-- Trace a second poster and score `corridors.py` on it (held out from tuning)
-- Stubs without route lines: targeted hatch detection near route ends
+- Corridors without route lines: wall-gap analysis (hatching alone is not enough)
 - Room-label OCR and "You Are Here" star detection → doors and START on the extracted graph
 - Trace replay and drift plots for conditions A–D

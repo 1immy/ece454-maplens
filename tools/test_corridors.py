@@ -1,5 +1,6 @@
 """Tests for corridors.py on synthetic posters (no LFS data needed).
 Run: python -m unittest discover tools"""
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -42,6 +43,29 @@ def synthetic_poster():
         "landmarks": [],
     }
     return img, truth
+
+
+class RefineTest(unittest.TestCase):
+    def test_junction_moves_to_corridor_intersection(self):
+        g = corridors.PixelGraph()
+        # true corner at (200, 200); the skeleton put the junction 40 px off (a symbol bent the route)
+        g.nodes = {0: (230, 228), 1: (0, 200), 2: (400, 200), 3: (200, 450)}
+        line = lambda a, b: [(a[0] + (b[0] - a[0]) * t / 100, a[1] + (b[1] - a[1]) * t / 100) for t in range(101)]
+        g.edges = [(0, 1, [(230, 228)] + line((185, 200), (0, 200))),
+                   (0, 2, [(230, 228)] + line((215, 200), (400, 200))),
+                   (0, 3, [(230, 228)] + line((200, 215), (200, 450)))]
+        corridors.refine_junctions(g, near=20, far=150, max_move=80)
+        x, y = g.nodes[0]
+        self.assertLess(math.dist((x, y), (200, 200)), 3)
+
+    def test_parallel_corridors_leave_junction_alone(self):
+        g = corridors.PixelGraph()
+        g.nodes = {0: (100, 100), 1: (0, 100), 2: (300, 100), 3: (0, 104)}
+        g.edges = [(0, 1, [(100 - t, 100) for t in range(101)]),
+                   (0, 2, [(100 + t, 100) for t in range(201)]),
+                   (0, 3, [(100 - t, 100 + t * 0.04) for t in range(101)])]
+        corridors.refine_junctions(g, near=20, far=150, max_move=80)
+        self.assertEqual(g.nodes[0], (100, 100))
 
 
 class CorridorTest(unittest.TestCase):
