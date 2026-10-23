@@ -45,9 +45,9 @@ All coordinates are pixels on the rectified map. Meters are display-only (k px/s
 
 | Area | Modules | Gantt tasks | Owner |
 |---|---|---|---|
-| A · Map understanding | `mapparse` | 1–5, 11 | _TBD_ |
-| B · Localization | `tracking` | 7–10, 12 | _TBD_ |
-| C · Navigation and app | `app`, `routing`, `guidance` | 6, 13, 16, 17 | _TBD_ |
+| A · Map understanding | `mapparse`, `tools/` | 1–5, 11 | Limo Kemei (@1immy) |
+| B · Localization | `tracking` | 7–10, 12 | Jayden Lee (@JaJaBaa) |
+| C · Navigation and app | `app`, `routing`, `guidance` | 6, 13, 16, 17 | Johnny Hong (@JohnnyHong0116) |
 | Shared | `core/model`, `tools`, `data` | 1, 14, 18–21 | All |
 
 Load shifts over the term: A is heaviest now, B in weeks 8–10, C at integration. Once the parser is stable, A's owner moves to the sign scanner and graph-F1 evaluation; C's owner runs the A–D evaluation and user study.
