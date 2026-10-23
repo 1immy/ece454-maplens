@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 1,
+  "buildingId": "engineering-hall",
+  "floor": "3",
+  "startNodeId": "S1",
+  "verified": true,
+  "source": {
+    "image": "eh-3-stair3424-evac.jpg",
+    "size": [
+      2000,
+      1546
+    ]
+  },
+  "nodes": [
+    {
+      "id": "S1",
+      "type": "START",
+      "x": 1084.3,
+      "y": 1268.9
+    },
+    {
+      "id": "E2",
+      "type": "EXIT",
+      "x": 976.1,
+      "y": 1268.9
+    },
+    {
+      "id": "J3",
+      "type": "JUNCTION",
+      "x": 891.3,
+      "y": 1268.9
+    },
+    {
+      "id": "E4",
+      "type": "EXIT",
+      "x": 392.7,
+      "y": 1268.9
+    },
+    {
+      "id": "X7",
+      "type": "DEAD_END",
+      "x": 891.3,
+      "y": 1465.2
+    },
+    {
+      "id": "J8",
+      "type": "JUNCTION",
+      "x": 891.3,
+      "y": 619.7
+    },
+    {
+      "id": "J9",
+      "type": "JUNCTION",
+      "x": 891.3,
+      "y": 553.9
+    },
+    {
+      "id": "E10",
+      "type": "EXIT",
+      "x": 204.2,
+      "y": 558.3
+    },
+    {
+      "id": "J11",
+      "type": "JUNCTION",
+      "x": 1175.7,
+      "y": 619.7
+    },
+    {
+      "id": "J12",
+      "type": "JUNCTION",
+      "x": 1439.0,
+      "y": 619.7
+    },
+    {
+      "id": "J13",
+      "type": "JUNCTION",
+      "x": 1439.0,
+      "y": 890.7
+    },
+    {
+      "id": "E14",
+      "type": "EXIT",
+      "x": 1439.0,
+      "y": 1031.3
+    },
+    {
+      "id": "J15",
+      "type": "JUNCTION",
+      "x": 1439.0,
+      "y": 1277.8
+    },
+    {
+      "id": "E16",
+      "type": "EXIT",
+      "x": 1356.4,
+      "y": 1277.8
+    },
+    {
+      "id": "J17",
+      "type": "JUNCTION",
+      "x": 1652.0,
+      "y": 890.7
+    },
+    {
+      "id": "J18",
+      "type": "JUNCTION",
+      "x": 1652.0,
+      "y": 613.0
+    },
+    {
+      "id": "J19",
+      "type": "JUNCTION",
+      "x": 1652.0,
+      "y": 296.2
+    },
+    {
+      "id": "E20",
+      "type": "EXIT",
+      "x": 1179.1,
+      "y": 295.1
+    },
+    {
+      "id": "X21",
+      "type": "DEAD_END",
+      "x": 1945.4,
+      "y": 282.8
+    },
+    {
+      "id": "X22",
+      "type": "DEAD_END",
+      "x": 1945.4,
+      "y": 890.7
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "S1",
+      "to": "E2"
+    },
+    {
+      "id": "e2",
+      "from": "E2",
+      "to": "J3"
+    },
+    {
+      "id": "e3",
+      "from": "J3",
+      "to": "E4"
+    },
+    {
+      "id": "e4",
+      "from": "J3",
+      "to": "X7"
+    },
+    {
+      "id": "e5",
+      "from": "J3",
+      "to": "J8"
+    },
+    {
+      "id": "e6",
+      "from": "J8",
+      "to": "J9"
+    },
+    {
+      "id": "e7",
+      "from": "E10",
+      "to": "J9"
+    },
+    {
+      "id": "e8",
+      "from": "J8",
+      "to": "J11"
+    },
+    {
+      "id": "e9",
+      "from": "J11",
+      "to": "J12"
+    },
+    {
+      "id": "e10",
+      "from": "J12",
+      "to": "J13"
+    },
+    {
+      "id": "e11",
+      "from": "J13",
+      "to": "E14"
+    },
+    {
+      "id": "e12",
+      "from": "E14",
+      "to": "J15"
+    },
+    {
+      "id": "e13",
+      "from": "J15",
+      "to": "E16"
+    },
+    {
+      "id": "e14",
+      "from": "E16",
+      "to": "S1"
+    },
+    {
+      "id": "e15",
+      "from": "J13",
+      "to": "J17"
+    },
+    {
+      "id": "e16",
+      "from": "J18",
+      "to": "J12"
+    },
+    {
+      "id": "e17",
+      "from": "J18",
+      "to": "J17"
+    },
+    {
+      "id": "e18",
+      "from": "J18",
+      "to": "J19"
+    },
+    {
+      "id": "e19",
+      "from": "E20",
+      "to": "J19"
+    },
+    {
+      "id": "e20",
+      "from": "E20",
+      "to": "J11"
+    },
+    {
+      "id": "e21",
+      "from": "X21",
+      "to": "J19"
+    },
+    {
+      "id": "e22",
+      "from": "J17",
+      "to": "X22"
+    }
+  ],
+  "landmarks": [
+    {
+      "label": "TO-EXIT",
+      "nodeId": "X7"
+    },
+    {
+      "label": "OFFMAP",
+      "nodeId": "X21"
+    },
+    {
+      "label": "OFFMAP",
+      "nodeId": "X22"
+    }
+  ]
+}
