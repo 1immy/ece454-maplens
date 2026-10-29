@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/recorder_root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:fillViewport="true">
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp">
+    <TextView style="@style/RecorderBody"
+      android:text="@string/recorder_brand"
+      android:textColor="@color/recorder_accent"
+      android:textStyle="bold"
+      android:letterSpacing="0.12" />
+    <TextView style="@style/RecorderBody"
+      android:layout_marginTop="12dp"
+      android:text="@string/recorder_title"
+      android:textColor="@color/recorder_ink"
+      android:textSize="32sp"
+      android:textStyle="bold"
+      android:accessibilityHeading="true" />
+    <TextView style="@style/RecorderBody" android:text="@string/recorder_intro" />
+    <TextView android:id="@+id/recorder_summary" style="@style/RecorderBody"
+      android:layout_marginTop="24dp"
+      android:background="@drawable/recorder_card"
+      android:textColor="@color/recorder_ink"
+      android:textSize="22sp"
+      android:fontFamily="sans-serif-medium" />
+    <Button android:id="@+id/recorder_record"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:minHeight="60dp"
+      android:layout_marginTop="12dp"
+      android:text="@string/recorder_start"
+      android:textAllCaps="false"
+      android:textSize="18sp"
+      android:textColor="#FFFFFF"
+      android:backgroundTint="@color/recorder_accent" />
+    <TextView android:id="@+id/recorder_status" style="@style/RecorderBody"
+      android:layout_marginTop="8dp"
+      android:accessibilityLiveRegion="polite" />
+    <Button android:id="@+id/recorder_permission" style="@style/RecorderAction"
+      android:text="@string/recorder_permission" />
+    <TextView android:id="@+id/recorder_saved" style="@style/RecorderBody"
+      android:layout_marginTop="16dp"
+      android:text="@string/recorder_no_trace" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+      android:orientation="horizontal">
+      <Button android:id="@+id/recorder_export" style="@style/RecorderAction"
+        android:layout_width="0dp" android:layout_weight="1" android:minWidth="0dp"
+        android:text="@string/recorder_export" />
+      <Button android:id="@+id/recorder_details" style="@style/RecorderAction"
+        android:layout_width="0dp" android:layout_weight="1" android:minWidth="0dp"
+        android:text="@string/recorder_details" />
+    </LinearLayout>
+    <Button android:id="@+id/recorder_delete" style="@style/RecorderAction"
+      android:textColor="@color/recorder_danger"
+      android:text="@string/recorder_delete" />
+    <TextView style="@style/RecorderBody"
+      android:layout_marginTop="16dp"
+      android:text="@string/recorder_live"
+      android:textColor="@color/recorder_ink"
+      android:textSize="22sp"
+      android:textStyle="bold"
+      android:accessibilityHeading="true" />
+    <TextView style="@style/RecorderBody"
+      android:layout_marginTop="8dp"
+      android:text="@string/recorder_rates" />
+    <LinearLayout android:id="@+id/recorder_sensors"
+      android:layout_width="match_parent" android:layout_height="wrap_content"
+      android:orientation="vertical" />
+    <TextView style="@style/RecorderBody"
+      android:layout_marginTop="24dp"
+      android:text="@string/recorder_privacy" />
+  </LinearLayout>
+</ScrollView>

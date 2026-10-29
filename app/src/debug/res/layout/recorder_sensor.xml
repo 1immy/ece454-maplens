@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:layout_marginTop="12dp"
+  android:orientation="vertical"
+  android:background="@drawable/recorder_card">
+  <TextView android:id="@+id/sensor_title" style="@style/RecorderBody"
+    android:textColor="@color/recorder_ink" android:textStyle="bold" />
+  <TextView android:id="@+id/sensor_status" style="@style/RecorderBody"
+    android:layout_marginTop="4dp" />
+  <TextView android:id="@+id/sensor_values" style="@style/RecorderBody"
+    android:layout_marginTop="12dp" android:fontFamily="monospace"
+    android:textColor="@color/recorder_ink" android:textIsSelectable="true" />
+  <TextView android:id="@+id/sensor_note" style="@style/RecorderBody"
+    android:layout_marginTop="8dp" android:visibility="gone" />
+</LinearLayout>

@@ -5,6 +5,10 @@ package edu.wisc.maplens.tracking
  * pilot tuning changes them here, nowhere else.
  */
 data class TrackingConfig(
+    /** Requested 50 Hz for walking traces; Android may deliver a different rate. */
+    val recordingPeriodUs: Int = 20_000,
+    /** Live diagnostics refresh independently of the sensor sampling rate. */
+    val recordingUiPeriodMs: Long = 250,
     val particleCount: Int = 300,
     /** Per-particle step-length noise, as a fraction of k. */
     val stepLengthNoise: Double = 0.10,
