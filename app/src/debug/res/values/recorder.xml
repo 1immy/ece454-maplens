@@ -46,6 +46,10 @@
   <string name="recorder_peak_mode">Use accelerometer steps (experimental; may count hand movement)</string>
   <string name="recorder_step_comparison">Android detector: %1$d · Delayed counter: %4$s\nAccelerometer peaks: %2$d · No usable heading: %3$d</string>
   <string name="recorder_waiting_counter">waiting / unavailable</string>
+  <string name="recorder_room_hint">Room number, e.g. 3445</string>
+  <string name="recorder_checkpoint">Mark</string>
+  <string name="recorder_checkpoint_note">While recording, type the room number of the next door, then tap Mark as you pass it.</string>
+  <string name="recorder_checkpoint_count">Checkpoints %1$d · last %2$s</string>
   <string name="recorder_permission">Allow step sensors</string>
   <string name="recorder_permission_reason">Allow physical activity access for Android step detection and counting. Other motion sensors work without it.</string>
   <string name="recorder_permission_denied">Step permission was not granted. Motion recording still works; enable physical activity access in app settings to include steps.</string>

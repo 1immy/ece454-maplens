@@ -10,10 +10,14 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Switch
 import android.widget.TextView
@@ -22,6 +26,7 @@ import edu.wisc.maplens.R
 import edu.wisc.maplens.tracking.RecorderSnapshot
 import edu.wisc.maplens.tracking.SensorTraceRecorder
 import edu.wisc.maplens.tracking.TraceSensor
+import edu.wisc.maplens.tracking.checkpointLabel
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -83,6 +88,26 @@ class RecorderActivity : Activity() {
         findViewById<Button>(R.id.recorder_record).setOnClickListener {
             if (snapshot?.recording == true) recorder.stop() else recorder.start()
         }
+        val room = findViewById<EditText>(R.id.recorder_room)
+        val mark = findViewById<Button>(R.id.recorder_checkpoint)
+        mark.setOnClickListener {
+            val label = checkpointLabel(room.text.toString()) ?: return@setOnClickListener
+            recorder.checkpoint(label)
+            it.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            // Clearing also blocks an accidental double tap on the same door.
+            room.text.clear()
+        }
+        room.setOnEditorActionListener { _, _, _ ->
+            if (mark.isEnabled) mark.performClick()
+            true
+        }
+        room.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                snapshot?.let(::render)
+            }
+        })
         findViewById<Button>(R.id.recorder_permission).setOnClickListener {
             AlertDialog.Builder(this)
                 .setMessage(R.string.recorder_permission_reason)
@@ -202,6 +227,14 @@ class RecorderActivity : Activity() {
                 )
             )
         }
+        val room = findViewById<EditText>(R.id.recorder_room)
+        room.isEnabled = state.recording
+        findViewById<Button>(R.id.recorder_checkpoint).isEnabled =
+            state.recording && checkpointLabel(room.text.toString()) != null
+        findViewById<TextView>(R.id.recorder_checkpoints).text =
+            state.lastCheckpoint?.let {
+                getString(R.string.recorder_checkpoint_count, state.checkpoints, it)
+            } ?: getString(R.string.recorder_checkpoint_note)
         findViewById<Button>(R.id.recorder_permission).apply {
             visibility = if (Build.VERSION.SDK_INT >= 29 &&
                 checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) !=

@@ -55,7 +55,11 @@ timestamp_ns,type,v0,v1,v2,v3,label
 | `gyro` | x, y, z, empty | rad/s |
 | `game_rv` | x, y, z, w | quaternion components, unitless |
 
-`label` is empty: checkpoints are deferred. `step_counter` extends the proposed
+`label` is empty on sensor rows. A `checkpoint` row (all values empty) marks a
+tap at a door: `label` is `door-<room>`, the room number as printed on its sign
+and in the graph landmarks (`door-3445`, `door-3539A`). Its timestamp is taken
+from `elapsedRealtimeNanos` at the tap, the same clock as the sensor timestamps.
+The sidecar JSON lists every checkpoint. `step_counter` extends the proposed
 type list as a separate stream; it must not be replayed as additional `step` events.
 The Android since-boot total is not saved. Its baseline is the last preview reading
 at Start, or the first counter reading if none exists. Delayed counter delivery
@@ -77,7 +81,7 @@ the current app entry point. Before merging, coordinate that debug-launcher choi
 with the app owner. A later debug menu can expose the same Activity without changing
 the tracking module. No shared navigation contract is expanded.
 
-Required follow-ups: checkpoint marking with distinct door IDs; a real two-minute
+Required follow-ups: a real two-minute
 EH3 walk through LFS; validation of step accuracy at three speeds and three tilts;
 heading alignment/calibration; trace replay; handset power measurements. Do not
 close #11 until its full acceptance criteria are met.

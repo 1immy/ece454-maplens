@@ -2,6 +2,7 @@ package edu.wisc.maplens.tracking
 
 import java.io.Closeable
 import java.io.Writer
+import java.util.Locale
 
 /** Raw inputs, deliberately separate from the navigation model's processed MotionEvent. */
 enum class TraceSensor(val wireName: String, val components: Int) {
@@ -29,8 +30,22 @@ class TraceCsvWriter(private val writer: Writer) : Closeable {
         rows++
     }
 
+    /** A user tap at a known door; [label] must come from [checkpointLabel]. */
+    fun appendCheckpoint(timestampNs: Long, label: String) {
+        require(timestampNs >= 0 && CHECKPOINT_LABEL.matches(label))
+        writer.write("$timestampNs,checkpoint,,,,,$label\n")
+        rows++
+    }
+
     override fun close() = writer.close()
 }
+
+private val ROOM = Regex("[0-9]{3,4}[A-Z]?")
+private val CHECKPOINT_LABEL = Regex("door-${ROOM.pattern}")
+
+/** Room numbers as printed on signs and graph landmarks ("3539a" -> "door-3539A"), else null. */
+fun checkpointLabel(room: String): String? =
+    room.trim().uppercase(Locale.ROOT).takeIf(ROOM::matches)?.let { "door-$it" }
 
 /** Keep only session-relative counter values, rather than the user's since-boot history. */
 class SessionStepCounter {

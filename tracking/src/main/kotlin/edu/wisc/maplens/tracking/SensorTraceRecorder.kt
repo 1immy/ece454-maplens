@@ -42,6 +42,8 @@ data class RecorderSnapshot(
     val savedSteps: Long?,
     val savedDetectorSteps: Long?,
     val savedPeakSteps: Long?,
+    val checkpoints: Int,
+    val lastCheckpoint: String?,
 )
 
 /** Sensor callbacks, CSV writes, metadata and lifecycle commands share one worker queue. */
@@ -73,6 +75,7 @@ class SensorTraceRecorder(
     private val motion = SensorMotionProcessor(config)
     private var screenRotation = 0
     private var rotations = JSONArray()
+    private var checkpoints = JSONArray()
     private var savedSteps: Long? = null
     private var savedDetectorSteps: Long? = null
     private var savedPeakSteps: Long? = null
@@ -168,6 +171,21 @@ class SensorTraceRecorder(
         publish()
     }
 
+    /** Stamp on the caller's thread so queue delay doesn't shift the tap; boot clock as sensors. */
+    fun checkpoint(label: String, timestampNs: Long = SystemClock.elapsedRealtimeNanos()) =
+        worker.post {
+            val csv = writer ?: return@post
+            try {
+                csv.appendCheckpoint(timestampNs, label)
+                rows = csv.rows
+                checkpoints.put(JSONObject().put("timestampNs", timestampNs).put("label", label))
+                message = "Checkpoint $label marked."
+            } catch (error: Exception) {
+                fail(error)
+            }
+            publish()
+        }
+
     fun start() = worker.post {
         if (!active || writer != null) return@post
         if (readings.values.none { it.status == "Live" || it.status == "Waiting for data" }) {
@@ -184,6 +202,7 @@ class SensorTraceRecorder(
             motion.resetCounts()
             rows = 0
             elapsedMs = 0
+            checkpoints = JSONArray()
             counter.reset(lastCounter)
             readings[TraceSensor.STEP_COUNTER]?.let {
                 readings[TraceSensor.STEP_COUNTER] = it.copy(values = emptyList())
@@ -197,7 +216,7 @@ class SensorTraceRecorder(
                 put("androidApi", Build.VERSION.SDK_INT)
                 put("requestedContinuousPeriodUs", config.recordingPeriodUs)
                 put("counter", "session delta; first reading is baseline if preview has none")
-                put("checkpointsImplemented", false)
+                put("checkpointsImplemented", true)
                 put("headingOffsetRad", motion.offsetRad ?: JSONObject.NULL)
                 put("headingFrame", "clockwise map radians; atan2(dy, dx); manual alignment")
                 put("stepSource", if (motion.usePeaks) "accel_peak" else "step_detector")
@@ -343,6 +362,7 @@ class SensorTraceRecorder(
             )
             metadata.put("stepsWithoutUsableHeading", motion.skippedSteps)
             metadata.put("screenRotations", rotations)
+            metadata.put("checkpoints", checkpoints)
             File(directory, destination.nameWithoutExtension + ".json")
                 .writeText(metadata.toString(2))
             check(file.renameTo(destination)) { "Could not finalize recording" }
@@ -404,6 +424,8 @@ class SensorTraceRecorder(
             savedSteps,
             savedDetectorSteps,
             savedPeakSteps,
+            checkpoints.length(),
+            checkpoints.optJSONObject(checkpoints.length() - 1)?.getString("label"),
         )
         main.post { callback?.invoke(snapshot) }
     }

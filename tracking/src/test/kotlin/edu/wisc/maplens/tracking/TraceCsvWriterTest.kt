@@ -59,6 +59,39 @@ class TraceCsvWriterTest {
     }
 
     @Test
+    fun `checkpoint rows carry the door label and no values`() {
+        val output = StringWriter()
+        TraceCsvWriter(output).use { csv ->
+            csv.append(20, TraceSensor.STEP, floatArrayOf(1f))
+            csv.appendCheckpoint(25, checkNotNull(checkpointLabel(" 3539a ")))
+            assertEquals(2L, csv.rows)
+        }
+        assertEquals("25,checkpoint,,,,,door-3539A", output.toString().lines()[2])
+    }
+
+    @Test
+    fun `only room numbers become checkpoint labels`() {
+        assertEquals("door-3445", checkpointLabel("3445"))
+        assertEquals("door-342", checkpointLabel("342"))
+        listOf("", "34", "3445AB", "door-3445", "34,45", "34 45", "OFFMAP").forEach {
+            assertEquals(null, checkpointLabel(it), it)
+        }
+    }
+
+    @Test
+    fun `unsafe checkpoint labels do not corrupt the trace`() {
+        val output = StringWriter()
+        TraceCsvWriter(output).use { csv ->
+            listOf("3445", "door-34,45", "door-3445\n1,step,1.0,,,,").forEach {
+                assertFailsWith<IllegalArgumentException> { csv.appendCheckpoint(1, it) }
+            }
+            assertFailsWith<IllegalArgumentException> { csv.appendCheckpoint(-1, "door-3445") }
+            assertEquals(0L, csv.rows)
+        }
+        assertEquals(1, output.toString().trimEnd().lines().size)
+    }
+
+    @Test
     fun `counter excludes steps before the session and resets each session`() {
         val counter = SessionStepCounter()
         assertEquals(0f, counter.observe(900f))
