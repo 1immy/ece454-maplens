@@ -11,9 +11,11 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import edu.wisc.maplens.model.MotionEvent
 import java.io.File
 import java.time.Instant
 import kotlin.math.sqrt
+import org.json.JSONArray
 import org.json.JSONObject
 
 data class SensorReading(
@@ -32,6 +34,14 @@ data class RecorderSnapshot(
     val readings: List<SensorReading>,
     val message: String,
     val latestFile: File?,
+    val heading: HeadingReading?,
+    val detectorSteps: Long,
+    val peakSteps: Long,
+    val usePeaks: Boolean,
+    val skippedSteps: Long,
+    val savedSteps: Long?,
+    val savedDetectorSteps: Long?,
+    val savedPeakSteps: Long?,
 )
 
 /** Sensor callbacks, CSV writes, metadata and lifecycle commands share one worker queue. */
@@ -40,6 +50,7 @@ class SensorTraceRecorder(
     private val directory: File,
     private val config: TrackingConfig = TrackingConfig(),
     onSnapshot: (RecorderSnapshot) -> Unit,
+    private val onMotionEvent: (MotionEvent.Step) -> Unit = {},
 ) : SensorEventListener {
     private val manager = context.getSystemService(SensorManager::class.java)
     private val appContext = context.applicationContext
@@ -59,6 +70,12 @@ class SensorTraceRecorder(
     private val firstTimes = mutableMapOf<TraceSensor, Long>()
     private val counts = mutableMapOf<TraceSensor, Long>()
     private val counter = SessionStepCounter()
+    private val motion = SensorMotionProcessor(config)
+    private var screenRotation = 0
+    private var rotations = JSONArray()
+    private var savedSteps: Long? = null
+    private var savedDetectorSteps: Long? = null
+    private var savedPeakSteps: Long? = null
     private var lastCounter: Float? = null
     private var writer: TraceCsvWriter? = null
     private var pending: File? = null
@@ -83,11 +100,14 @@ class SensorTraceRecorder(
         latest = directory.listFiles()?.filter { it.extension == "csv" }?.maxByOrNull {
             it.lastModified()
         }
+        loadSavedCounts()
         firstTimes.clear()
         counts.clear()
         readings.clear()
         lastCounter = null
         counter.reset()
+        motion.reset()
+        steps = 0
         sensors.forEach { (kind, type) ->
             val sensor = manager.getDefaultSensor(type)
             val needsPermission = kind == TraceSensor.STEP || kind == TraceSensor.STEP_COUNTER
@@ -114,7 +134,38 @@ class SensorTraceRecorder(
             }
             readings[kind] = SensorReading(kind, status)
         }
+        val detectorReady = readings[TraceSensor.STEP]?.status == "Waiting for data"
+        motion.selectPeaks(!detectorReady)
         worker.post(refresh)
+    }
+
+    fun setScreenRotation(rotation: Int) = worker.post {
+        require(rotation in 0..3)
+        if (screenRotation != rotation && writer != null) {
+            rotations.put(
+                JSONObject().put("timestampNs", SystemClock.elapsedRealtimeNanos())
+                    .put("rotation", rotation)
+            )
+        }
+        screenRotation = rotation
+    }
+
+    fun alignHeading(mapBearingRad: Double) = worker.post {
+        if (writer != null) return@post
+        message = if (motion.align(mapBearingRad, SystemClock.elapsedRealtimeNanos())) {
+            "Heading aligned to the selected map direction. Re-align if you change your grip."
+        } else {
+            "Heading not ready. Hold the screen facing you, pointing along the corridor."
+        }
+        publish()
+    }
+
+    fun useAccelerometerSteps(enabled: Boolean) = worker.post {
+        if (writer != null) return@post
+        motion.selectPeaks(enabled)
+        steps = 0
+        message = "Step source changed; live counts reset. Accelerometer peaks are experimental."
+        publish()
     }
 
     fun start() = worker.post {
@@ -130,6 +181,7 @@ class SensorTraceRecorder(
             pending = File(directory, "trace-$startedNs.csv.partial")
             writer = TraceCsvWriter(pending!!.bufferedWriter())
             steps = 0
+            motion.resetCounts()
             rows = 0
             elapsedMs = 0
             counter.reset(lastCounter)
@@ -146,6 +198,13 @@ class SensorTraceRecorder(
                 put("requestedContinuousPeriodUs", config.recordingPeriodUs)
                 put("counter", "session delta; first reading is baseline if preview has none")
                 put("checkpointsImplemented", false)
+                put("headingOffsetRad", motion.offsetRad ?: JSONObject.NULL)
+                put("headingFrame", "clockwise map radians; atan2(dy, dx); manual alignment")
+                put("stepSource", if (motion.usePeaks) "accel_peak" else "step_detector")
+                rotations = JSONArray().put(
+                    JSONObject().put("timestampNs", startedNs)
+                        .put("rotation", screenRotation)
+                )
                 put(
                     "sensors",
                     JSONObject().apply {
@@ -191,6 +250,7 @@ class SensorTraceRecorder(
                 check(it.delete()) { "Could not delete ${it.name}" }
             }
             latest = null
+            loadSavedCounts()
             message = "Local recordings deleted. Exported copies are managed separately."
         } catch (error: Exception) {
             message = "Delete failed: ${error.message}"
@@ -235,11 +295,24 @@ class SensorTraceRecorder(
             kind, "Live", values.toList(), event.timestamp,
             if (seconds > 0) (count - 1) / seconds else 0.0,
         )
+        // Ignore samples queued before Start for both raw and processed session counts.
+        if (writer != null && event.timestamp < startedNs) return
+        val step = when (kind) {
+            TraceSensor.GAME_RV -> {
+                motion.rotation(event.timestamp, values, screenRotation)
+                null
+            }
+            TraceSensor.ACCEL -> motion.acceleration(event.timestamp, values)
+            TraceSensor.STEP -> motion.detector(event.timestamp)
+            else -> null
+        }
+        steps = motion.steps
+        // This callback runs on the sensor worker; the session must enqueue its own state updates.
+        step?.let(onMotionEvent)
         val csv = writer ?: return
         if (event.timestamp < startedNs) return
         try {
             csv.append(event.timestamp, kind, values)
-            if (kind == TraceSensor.STEP) steps++
             rows = csv.rows
         } catch (error: Exception) {
             fail(error)
@@ -260,11 +333,21 @@ class SensorTraceRecorder(
             metadata.put("endedUtc", Instant.now().toString())
             metadata.put("durationMs", elapsedMs)
             metadata.put("rows", rows)
-            metadata.put("detectedSteps", steps)
+            metadata.put("detectedSteps", motion.detectorSteps)
+            metadata.put("estimatedPeakSteps", motion.peakSteps)
+            metadata.put("selectedSourceSteps", steps)
+            metadata.put(
+                "counterSteps",
+                readings[TraceSensor.STEP_COUNTER]
+                    ?.values?.firstOrNull()?.toLong() ?: JSONObject.NULL
+            )
+            metadata.put("stepsWithoutUsableHeading", motion.skippedSteps)
+            metadata.put("screenRotations", rotations)
             File(directory, destination.nameWithoutExtension + ".json")
                 .writeText(metadata.toString(2))
             check(file.renameTo(destination)) { "Could not finalize recording" }
             latest = destination
+            loadSavedCounts()
             message = reason
         } catch (error: Exception) {
             message = "Save failed: ${error.message}. Partial data remains private on this phone."
@@ -281,6 +364,24 @@ class SensorTraceRecorder(
             "Retry when ready; partial data is not exported."
     }
 
+    private fun loadSavedCounts() {
+        savedSteps = null
+        savedDetectorSteps = null
+        savedPeakSteps = null
+        val file = latest ?: return
+        try {
+            val details =
+                JSONObject(File(directory, file.nameWithoutExtension + ".json").readText())
+            savedDetectorSteps = details.optLong("detectedSteps")
+            savedSteps = details.optLong("selectedSourceSteps", savedDetectorSteps!!)
+            if (details.has("estimatedPeakSteps")) {
+                savedPeakSteps = details.getLong("estimatedPeakSteps")
+            }
+        } catch (_: Exception) {
+            // Legacy or interrupted metadata must not prevent opening the recorder.
+        }
+    }
+
     private fun publish() {
         if (writer != null) {
             elapsedMs = (SystemClock.elapsedRealtimeNanos() - startedNs) / 1_000_000
@@ -293,6 +394,16 @@ class SensorTraceRecorder(
             readings.values.toList(),
             message,
             latest,
+            motion.heading?.takeIf {
+                SystemClock.elapsedRealtimeNanos() - it.timestampNs <= config.headingFreshnessNs
+            },
+            motion.detectorSteps,
+            motion.peakSteps,
+            motion.usePeaks,
+            motion.skippedSteps,
+            savedSteps,
+            savedDetectorSteps,
+            savedPeakSteps,
         )
         main.post { callback?.invoke(snapshot) }
     }

@@ -8,7 +8,8 @@
     </activity>
     <activity android:name=".debug.RecorderActivity"
       android:exported="true"
-      android:screenOrientation="portrait"
+      android:screenOrientation="fullSensor"
+      android:configChanges="orientation|screenSize"
       android:theme="@style/RecorderTheme">
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />

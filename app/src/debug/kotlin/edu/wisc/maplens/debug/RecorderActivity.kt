@@ -6,6 +6,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -14,6 +15,7 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import edu.wisc.maplens.R
@@ -23,6 +25,7 @@ import edu.wisc.maplens.tracking.TraceSensor
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
 /** Debug source set only: no entry point, resources or permission prompts in release. */
 class RecorderActivity : Activity() {
@@ -32,6 +35,7 @@ class RecorderActivity : Activity() {
     private var snapshot: RecorderSnapshot? = null
     private var exportSource: File? = null
     private var exportBusy = false
+    private var lastDisplayRotation = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,7 +69,17 @@ class RecorderActivity : Activity() {
             container.addView(card)
         }
         exportSource = savedInstanceState?.getString("exportSource")?.let(::File)
-        recorder = SensorTraceRecorder(this, File(filesDir, "recordings")) { render(it) }
+        recorder = SensorTraceRecorder(this, File(filesDir, "recordings"), onSnapshot = ::render)
+        findViewById<Button>(R.id.recorder_align).setOnClickListener {
+            AlertDialog.Builder(this).setTitle(R.string.recorder_align)
+                .setItems(R.array.recorder_map_directions) { _, choice ->
+                    val bearings = doubleArrayOf(-Math.PI / 2, 0.0, Math.PI / 2, Math.PI)
+                    recorder.alignHeading(bearings[choice])
+                }.show()
+        }
+        findViewById<Switch>(R.id.recorder_peak_mode).setOnCheckedChangeListener { _, enabled ->
+            if (snapshot?.usePeaks != enabled) recorder.useAccelerometerSteps(enabled)
+        }
         findViewById<Button>(R.id.recorder_record).setOnClickListener {
             if (snapshot?.recording == true) recorder.stop() else recorder.start()
         }
@@ -90,6 +104,21 @@ class RecorderActivity : Activity() {
     override fun onResume() {
         super.onResume()
         recorder.resume()
+        updateDisplayRotation()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updateDisplayRotation()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun updateDisplayRotation() {
+        val rotation = windowManager.defaultDisplay.rotation
+        if (rotation != lastDisplayRotation) {
+            lastDisplayRotation = rotation
+            recorder.setScreenRotation(rotation)
+        }
     }
 
     override fun onPause() {
@@ -125,6 +154,8 @@ class RecorderActivity : Activity() {
 
     private fun render(state: RecorderSnapshot) {
         if (isDestroyed) return
+        // A 180-degree change need not produce an orientation Configuration change.
+        updateDisplayRotation()
         snapshot = state
         if (state.recording) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -137,6 +168,31 @@ class RecorderActivity : Activity() {
             R.string.recorder_summary, clock, state.steps, state.rows,
         )
         findViewById<TextView>(R.id.recorder_status).text = state.message
+        findViewById<Switch>(R.id.recorder_peak_mode).apply {
+            isChecked = state.usePeaks
+            isEnabled = !state.recording && !exportBusy
+        }
+        findViewById<Button>(R.id.recorder_align).isEnabled =
+            !state.recording && state.heading != null && !exportBusy
+        val heading = state.heading
+        val mapHeading = heading?.mapRad
+        findViewById<TextView>(R.id.recorder_heading).text = when {
+            heading == null -> getString(R.string.recorder_heading_unavailable)
+            mapHeading == null -> getString(R.string.recorder_heading_unaligned)
+            else -> getString(
+                R.string.recorder_heading_value,
+                (Math.toDegrees(mapHeading) + 360).roundToInt() % 360
+            )
+        }
+        findViewById<TextView>(R.id.recorder_step_comparison).text = getString(
+            R.string.recorder_step_comparison,
+            state.detectorSteps,
+            state.peakSteps,
+            state.skippedSteps,
+            state.readings.firstOrNull { it.kind == TraceSensor.STEP_COUNTER }
+                ?.values?.firstOrNull()?.toLong()?.toString()
+                ?: getString(R.string.recorder_waiting_counter),
+        )
         findViewById<Button>(R.id.recorder_record).apply {
             setText(if (state.recording) R.string.recorder_stop else R.string.recorder_start)
             isEnabled = !exportBusy
@@ -158,7 +214,17 @@ class RecorderActivity : Activity() {
             isEnabled = !state.recording
         }
         findViewById<TextView>(R.id.recorder_saved).text = state.latestFile?.let {
-            getString(R.string.recorder_saved, it.name, (it.length() + 1023) / 1024)
+            val file = getString(R.string.recorder_saved, it.name, (it.length() + 1023) / 1024)
+            if (state.savedSteps == null) {
+                file
+            } else {
+                file + "\n" + getString(
+                    R.string.recorder_saved_counts,
+                    state.savedSteps,
+                    state.savedDetectorSteps,
+                    state.savedPeakSteps?.toString() ?: getString(R.string.recorder_not_measured),
+                )
+            }
         } ?: getString(R.string.recorder_no_trace)
         listOf(R.id.recorder_export, R.id.recorder_details).forEach {
             findViewById<Button>(it).isEnabled =

@@ -8,7 +8,17 @@ data class TrackingConfig(
     /** Requested 50 Hz for walking traces; Android may deliver a different rate. */
     val recordingPeriodUs: Int = 20_000,
     /** Live diagnostics refresh independently of the sensor sampling rate. */
-    val recordingUiPeriodMs: Long = 250,
+    val recordingUiPeriodMs: Long = 100,
+    val headingSmoothingSeconds: Double = 0.08,
+    val headingMinProjection: Double = 0.25,
+    val headingFreshnessNs: Long = 500_000_000,
+    val headingHistoryNs: Long = 3_000_000_000,
+    val peakGravitySeconds: Double = 0.8,
+    val peakSmoothingSeconds: Double = 0.04,
+    val peakThreshold: Double = 0.75,
+    val peakRearmThreshold: Double = -0.15,
+    val peakMinIntervalNs: Long = 300_000_000,
+    val peakMaxGapNs: Long = 500_000_000,
     val particleCount: Int = 300,
     /** Per-particle step-length noise, as a fraction of k. */
     val stepLengthNoise: Double = 0.10,

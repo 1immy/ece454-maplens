@@ -28,6 +28,17 @@
       android:textColor="@color/recorder_ink"
       android:textSize="22sp"
       android:fontFamily="sans-serif-medium" />
+    <TextView android:id="@+id/recorder_heading" style="@style/RecorderBody"
+      android:layout_marginTop="12dp" android:textSize="22sp"
+      android:textColor="@color/recorder_ink" />
+    <Button android:id="@+id/recorder_align" style="@style/RecorderAction"
+      android:text="@string/recorder_align" />
+    <TextView style="@style/RecorderBody" android:text="@string/recorder_heading_note" />
+    <TextView android:id="@+id/recorder_step_comparison" style="@style/RecorderBody"
+      android:layout_marginTop="12dp" />
+    <Switch android:id="@+id/recorder_peak_mode"
+      android:layout_width="match_parent" android:layout_height="wrap_content"
+      android:minHeight="48dp" android:text="@string/recorder_peak_mode" />
     <Button android:id="@+id/recorder_record"
       android:layout_width="match_parent"
       android:layout_height="wrap_content"

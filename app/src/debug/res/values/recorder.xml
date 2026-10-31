@@ -34,7 +34,18 @@
   <string name="recorder_start">Start recording</string>
   <string name="recorder_stop">Stop and save</string>
   <string name="recorder_live">Live sensors</string>
-  <string name="recorder_rates">Motion: GAME / ~50 Hz requested. Steps: event-driven / NORMAL. Readings refresh 4 times per second.</string>
+  <string name="recorder_rates">Motion: GAME / ~50 Hz requested, no requested batching. Steps: event-driven / NORMAL. Readings refresh up to 10 times per second; Android detector delivery can lag. Counter updates may lag by up to 10 seconds.</string>
+  <string name="recorder_align">Align facing direction on map</string>
+  <string-array name="recorder_map_directions">
+    <item>↑ Map up</item><item>→ Map right</item><item>↓ Map down</item><item>← Map left</item>
+  </string-array>
+  <string name="recorder_heading_unavailable">Heading unavailable · adjust hold or wait for sensors</string>
+  <string name="recorder_heading_unaligned">Heading ready · choose your facing direction on the map</string>
+  <string name="recorder_heading_value">Map heading %1$d° · 0° right, 90° down</string>
+  <string name="recorder_heading_note">Hold the phone in front, screen facing you: flat or upright, portrait or landscape. Face along a known corridor and select its map direction. This measures phone direction, not independent body direction. Re-align after changing your grip; drift remains possible. No compass, GPS or north assumption.</string>
+  <string name="recorder_peak_mode">Use accelerometer steps (experimental; may count hand movement)</string>
+  <string name="recorder_step_comparison">Android detector: %1$d · Delayed counter: %4$s\nAccelerometer peaks: %2$d · No usable heading: %3$d</string>
+  <string name="recorder_waiting_counter">waiting / unavailable</string>
   <string name="recorder_permission">Allow step sensors</string>
   <string name="recorder_permission_reason">Allow physical activity access for Android step detection and counting. Other motion sensors work without it.</string>
   <string name="recorder_permission_denied">Step permission was not granted. Motion recording still works; enable physical activity access in app settings to include steps.</string>
@@ -44,7 +55,9 @@
   <string name="recorder_delete_question">Delete every trace and details file stored by this recorder? Copies you exported will remain.</string>
   <string name="recorder_cancel">Cancel</string>
   <string name="recorder_no_trace">No saved trace yet. Preview readings are not recorded.</string>
-  <string name="recorder_summary">Elapsed %1$s · Steps %2$d\nSensor rows %3$d</string>
+  <string name="recorder_summary">Live steps %2$d · Recording time %1$s\nSensor rows %3$d</string>
+  <string name="recorder_saved_counts">Last saved: %1$d selected steps · Android %2$d · Peaks %3$s</string>
+  <string name="recorder_not_measured">not measured</string>
   <string name="recorder_saved">Latest: %1$s\n%2$d KB · stored privately on this phone</string>
   <string name="recorder_exported">Export complete.</string>
   <string name="recorder_export_failed">Export failed: %1$s</string>
