@@ -102,5 +102,62 @@ Misses are corridors with **no route line** (3609 → 3605, "To EXIT", short stu
 
 - Port `rectify.py` to Kotlin in `mapparse` (OpenCV Android)
 - Corridors without route lines: wall-gap analysis (hatching alone is not enough)
-- Room-label OCR and "You Are Here" star detection → doors and START on the extracted graph
+- Port room-label OCR to Android; "You Are Here" star detection → START
 - Trace replay and drift plots for conditions A–D
+
+## `room_labels.py`: offline room OCR and corridor attachment (#14)
+
+Install **Tesseract 5 with English data** (`brew install tesseract` on macOS;
+`apt install tesseract-ocr tesseract-ocr-eng` on Debian/Ubuntu). No new Python
+package is needed. OCR runs offline. ML Kit on Android is a later port.
+
+Run from the project root, using the **same straightened image** for corridor
+extraction and OCR. Coordinates from another camera warp are not interchangeable.
+
+```bash
+mkdir -p work/room-label-ocr
+python tools/corridors.py extract data/fixtures/maps/eh-3-elevators-evac.jpg \
+    -o work/room-label-ocr/corridors.graph.json
+python tools/room_labels.py extract data/fixtures/maps/eh-3-elevators-evac.jpg \
+    --graph work/room-label-ocr/corridors.graph.json \
+    -o work/room-label-ocr/labeled.graph.json \
+    --readings work/room-label-ocr/readings.json --debug work/room-label-ocr/overlay.png
+python tools/room_labels.py score work/room-label-ocr/readings.json \
+    work/room-label-ocr/labeled.graph.json data/fixtures/maps/eh-3-elevators-evac.graph.json
+```
+
+`evaluate` takes the same arguments as `extract` plus `--truth TRACE`; it scores
+after extraction. `extract` never reads the reference. The audit JSON contains
+raw OCR, accepted labels and each attachment/rejection. Overlay: magenta corridors,
+green attached boxes/connectors, red boxes without a corridor within 180 px.
+Green means attached, **not verified correct**. Use `--max-distance` to change the
+attachment radius; all parameters use original-image pixels. New doors split
+polylines without disconnecting the graph; existing entrances are preserved.
+Readings below 0.5 confidence and ambiguous digit substitutions are rejected.
+Only four digits plus an optional suffix are supported (e.g. 3540B, 3539A).
+
+Measured with Tesseract **5.5.4**, default English data, on the supplied matching
+2000 × 1467 elevator image/trace pair (tuning data):
+
+| Metric | Result |
+|---|---|
+| Exact distinct room-number recall | 31/51 = 60.8% |
+| Exact distinct room-number precision against trace | 31/45 = 68.9% |
+| Correct entrance recall (exact label, ≤40 px, one-to-one) | 11/52 = 21.2% |
+| Correct entrance precision | 11/33 = 33.3% |
+| Median error of matched entrances | 16.8 px |
+
+The trace's 55 landmarks are **52 room entrances / 51 distinct room numbers**,
+plus two OFFMAP and one TO-EXIT. Suffixes count as distinct labels; both 3546
+entrances count in attachment recall. There were 45 accepted word occurrences,
+33 attached and 12 rejected by distance. Against this trace, manual review would
+remove/reposition 22 unmatched predictions and add/recover 41 unmatched reference
+entrances (these overlap when a correction replaces a prediction). No manual
+corrections were applied to these results or the fixtures. Some extra text comes
+from the AED legend; some real printed labels are absent from the trace. Full-image
+OCR alone found 16/51 labels and attached 8/52 correctly; crops improve recognition
+but do not solve physical door inference. The output stays `verified: false`.
+No held-out room score is available: stair-3424 has corridors but incomplete labels.
+
+Unit tests mock only the OCR process boundary; they require neither Tesseract nor
+network. The commands above are the separate real-engine integration/evaluation.
