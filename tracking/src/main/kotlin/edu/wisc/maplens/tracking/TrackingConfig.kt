@@ -61,4 +61,14 @@ data class TrackingConfig(
     val landmarkBlendOld: Double = 0.7,
     /** Display-only stride used to turn steps into meters. */
     val nominalStrideMeters: Double = 0.7,
+    /** Scan-to-orient (ADR 0004): bearing noise per observation kind. */
+    val orientDoorSigmaDeg: Double = 10.0,
+    val orientAxisSigmaDeg: Double = 5.0,
+    val orientOpeningSigmaDeg: Double = 20.0,
+    /** Likelihood floor so one misread or misdetection can't veto the true offset. */
+    val orientOutlierFloor: Double = 0.05,
+    /** Candidate offsets closer than this are one peak. */
+    val orientPeakSeparationDeg: Double = 20.0,
+    /** Auto-apply only if the best peak beats the runner-up by this log-likelihood (~10x). */
+    val orientClearMargin: Double = 2.3,
 )
