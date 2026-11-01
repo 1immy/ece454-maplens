@@ -32,13 +32,33 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
-/** Debug source set only: no entry point, resources or permission prompts in release. */
+/**
+ * Developer screen for recording walking traces (#11). Debug source set only: release builds
+ * get no entry point, resources or permission prompts from it.
+ *
+ * The Activity is a thin view over [SensorTraceRecorder]: buttons post commands, and
+ * [render] redraws everything from each [RecorderSnapshot]. It holds no recording state of its
+ * own, so the screen can never disagree with what is being written.
+ *
+ * The debug manifest handles rotation itself (`configChanges`), so turning the phone doesn't
+ * recreate the Activity and interrupt a recording; leaving the screen saves the trace.
+ */
 class RecorderActivity : Activity() {
     private lateinit var recorder: SensorTraceRecorder
+
+    /** One reading card per stream, filled in by [render]. */
     private val cards = mutableMapOf<TraceSensor, View>()
+
+    /** Copies exports off the main thread; a long trace can take a moment. */
     private val exportWorker = Executors.newSingleThreadExecutor()
+
+    /** Last state received, used to re-render after local UI changes such as typing. */
     private var snapshot: RecorderSnapshot? = null
+
+    /** File chosen for export while the system file picker is open; survives recreation. */
     private var exportSource: File? = null
+
+    /** True while an export copy runs; recording and deleting are disabled meanwhile. */
     private var exportBusy = false
     private var lastDisplayRotation = -1
 
@@ -78,6 +98,7 @@ class RecorderActivity : Activity() {
         findViewById<Button>(R.id.recorder_align).setOnClickListener {
             AlertDialog.Builder(this).setTitle(R.string.recorder_align)
                 .setItems(R.array.recorder_map_directions) { _, choice ->
+                    // Up, right, down, left on the y-down map: atan2(dy, dx) of each direction.
                     val bearings = doubleArrayOf(-Math.PI / 2, 0.0, Math.PI / 2, Math.PI)
                     recorder.alignHeading(bearings[choice])
                 }.show()
@@ -88,6 +109,7 @@ class RecorderActivity : Activity() {
         findViewById<Button>(R.id.recorder_record).setOnClickListener {
             if (snapshot?.recording == true) recorder.stop() else recorder.start()
         }
+        // Checkpoints: type the next door's number while walking, tap Mark when passing it.
         val room = findViewById<EditText>(R.id.recorder_room)
         val mark = findViewById<Button>(R.id.recorder_checkpoint)
         mark.setOnClickListener {
@@ -97,10 +119,12 @@ class RecorderActivity : Activity() {
             // Clearing also blocks an accidental double tap on the same door.
             room.text.clear()
         }
+        // The keyboard's Done key marks too. performClick() ignores isEnabled, hence the check.
         room.setOnEditorActionListener { _, _, _ ->
             if (mark.isEnabled) mark.performClick()
             true
         }
+        // Re-render on each keystroke so Mark enables only for a valid room number.
         room.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
@@ -137,6 +161,7 @@ class RecorderActivity : Activity() {
         updateDisplayRotation()
     }
 
+    /** Tells the recorder which screen edge is "up", so heading follows landscape use. */
     @Suppress("DEPRECATION")
     private fun updateDisplayRotation() {
         val rotation = windowManager.defaultDisplay.rotation
@@ -177,6 +202,7 @@ class RecorderActivity : Activity() {
         }
     }
 
+    /** Redraws the whole screen from [state]; called on the main thread for every snapshot. */
     private fun render(state: RecorderSnapshot) {
         if (isDestroyed) return
         // A 180-degree change need not produce an orientation Configuration change.
@@ -302,6 +328,10 @@ class RecorderActivity : Activity() {
         }
     }
 
+    /**
+     * Opens the system "save as" picker for the latest trace's CSV, or its JSON if [details].
+     * The copy happens in [onActivityResult]; the private original is kept either way.
+     */
     private fun export(details: Boolean) {
         val latest = snapshot?.latestFile ?: return
         if (snapshot?.recording == true || exportBusy) return

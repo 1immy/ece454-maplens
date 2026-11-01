@@ -18,6 +18,13 @@ import kotlin.math.sqrt
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * Latest state of one sensor for the live diagnostics screen.
+ *
+ * @property status human-readable registration state ("Live", "Waiting for data", ...).
+ * @property values last raw sample; for the step counter, the session-relative delta.
+ * @property hz observed delivery rate since registration, which can differ from the request.
+ */
 data class SensorReading(
     val kind: TraceSensor,
     val status: String,
@@ -26,6 +33,15 @@ data class SensorReading(
     val hz: Double = 0.0,
 )
 
+/**
+ * Immutable view of the recorder, published to the UI every `recordingUiPeriodMs` and after
+ * each command. "Live" counts restart whenever sensors re-register (e.g. after leaving the
+ * screen); the `saved*` fields come from the latest finished trace's JSON, so they survive that.
+ *
+ * @property steps selected-source steps, i.e. what the tracker would receive.
+ * @property skippedSteps selected-source steps dropped for lack of an aligned heading.
+ * @property checkpoints door taps in the current, or else the last, recording.
+ */
 data class RecorderSnapshot(
     val recording: Boolean,
     val elapsedMs: Long,
@@ -46,7 +62,24 @@ data class RecorderSnapshot(
     val lastCheckpoint: String?,
 )
 
-/** Sensor callbacks, CSV writes, metadata and lifecycle commands share one worker queue. */
+/**
+ * Debug sensor recorder (#11): shows live readings and writes walking traces for replay.
+ *
+ * Threading: sensor callbacks, CSV writes, metadata and every public command run on one
+ * `HandlerThread`, so recorder state needs no locks. Public methods only post work to it; the
+ * UI learns the outcome through [RecorderSnapshot]s posted back to the main thread.
+ *
+ * Files, all private to the app under [directory]:
+ * - `trace-<start ns>.csv.partial` while recording; renamed to `.csv` only after the JSON
+ *   details file is written, so a `.csv` is always complete (see ADR 0002 for the format).
+ * - `trace-<start ns>.json` with device, sensors, counts, heading alignment and checkpoints.
+ *
+ * Timestamps stay in Android's boot clock (`elapsedRealtimeNanos`), the clock sensor events
+ * use, so rows and checkpoint taps line up without conversion.
+ *
+ * @param onMotionEvent receives each selected-source step with its map heading, on the
+ *   worker thread; a consumer such as the tracker must hand it to its own thread.
+ */
 class SensorTraceRecorder(
     context: Context,
     private val directory: File,
@@ -60,7 +93,10 @@ class SensorTraceRecorder(
     private val worker = Handler(thread.looper)
     private val main = Handler(context.mainLooper)
 
+    /** Cleared by [close] so a late snapshot can't reach a destroyed Activity. */
     @Volatile private var callback: ((RecorderSnapshot) -> Unit)? = onSnapshot
+
+    /** Recorded streams, in the order their cards appear on screen. */
     private val sensors = linkedMapOf(
         TraceSensor.STEP to Sensor.TYPE_STEP_DETECTOR,
         TraceSensor.STEP_COUNTER to Sensor.TYPE_STEP_COUNTER,
@@ -69,17 +105,27 @@ class SensorTraceRecorder(
         TraceSensor.GAME_RV to Sensor.TYPE_GAME_ROTATION_VECTOR,
     )
     private val readings = mutableMapOf<TraceSensor, SensorReading>()
+
+    /** First event time and event count per stream, for the observed-rate display. */
     private val firstTimes = mutableMapOf<TraceSensor, Long>()
     private val counts = mutableMapOf<TraceSensor, Long>()
     private val counter = SessionStepCounter()
     private val motion = SensorMotionProcessor(config)
     private var screenRotation = 0
+
+    /** Display rotation changes during the recording, saved so replay uses the same heading. */
     private var rotations = JSONArray()
+
+    /** Door taps of the current recording, mirrored into the JSON details file. */
     private var checkpoints = JSONArray()
     private var savedSteps: Long? = null
     private var savedDetectorSteps: Long? = null
     private var savedPeakSteps: Long? = null
+
+    /** Last raw since-boot counter value; becomes the baseline when a recording starts. */
     private var lastCounter: Float? = null
+
+    /** Non-null exactly while recording; most commands check it to tell preview from recording. */
     private var writer: TraceCsvWriter? = null
     private var pending: File? = null
     private var latest: File? = null
@@ -88,8 +134,12 @@ class SensorTraceRecorder(
     private var elapsedMs = 0L
     private var steps = 0L
     private var rows = 0L
+
+    /** Sensors are registered (screen visible); false between [pause] and [resume]. */
     private var active = false
     private var message = "Live preview · nothing is saved until you record."
+
+    /** Periodic UI refresh while active, independent of the sensor rate. */
     private val refresh = object : Runnable {
         override fun run() {
             publish()
@@ -97,6 +147,12 @@ class SensorTraceRecorder(
         }
     }
 
+    /**
+     * Registers sensors and starts the live preview; call from `onResume`. Continuous streams
+     * use `recordingPeriodUs`; the step sensors use NORMAL because they are event driven and
+     * need the activity-recognition permission on API 29+. If the step detector is unavailable,
+     * accelerometer peaks become the selected source so steps still flow.
+     */
     fun resume() = worker.post {
         if (active) return@post
         active = true
@@ -142,6 +198,7 @@ class SensorTraceRecorder(
         worker.post(refresh)
     }
 
+    /** Display rotation (0..3) from the Activity; logged with a time when it changes mid-recording. */
     fun setScreenRotation(rotation: Int) = worker.post {
         require(rotation in 0..3)
         if (screenRotation != rotation && writer != null) {
@@ -153,6 +210,10 @@ class SensorTraceRecorder(
         screenRotation = rotation
     }
 
+    /**
+     * Sets θ0 so the current facing direction reads as [mapBearingRad]. Locked while recording,
+     * so a trace has exactly one offset, which is saved in its JSON.
+     */
     fun alignHeading(mapBearingRad: Double) = worker.post {
         if (writer != null) return@post
         message = if (motion.align(mapBearingRad, SystemClock.elapsedRealtimeNanos())) {
@@ -163,6 +224,7 @@ class SensorTraceRecorder(
         publish()
     }
 
+    /** Switches the selected step source; locked while recording, like alignment. */
     fun useAccelerometerSteps(enabled: Boolean) = worker.post {
         if (writer != null) return@post
         motion.selectPeaks(enabled)
@@ -171,7 +233,13 @@ class SensorTraceRecorder(
         publish()
     }
 
-    /** Stamp on the caller's thread so queue delay doesn't shift the tap; boot clock as sensors. */
+    /**
+     * Writes a door checkpoint; ignored when not recording. The default timestamp is taken on
+     * the caller's (UI) thread at the tap, so time spent in the worker queue doesn't shift it,
+     * and it uses the same boot clock as sensor events.
+     *
+     * @param label from [checkpointLabel], e.g. `door-3445`.
+     */
     fun checkpoint(label: String, timestampNs: Long = SystemClock.elapsedRealtimeNanos()) =
         worker.post {
             val csv = writer ?: return@post
@@ -186,6 +254,7 @@ class SensorTraceRecorder(
             publish()
         }
 
+    /** Starts a new trace file; no-op while paused or already recording. */
     fun start() = worker.post {
         if (!active || writer != null) return@post
         if (readings.values.none { it.status == "Live" || it.status == "Waiting for data" }) {
@@ -203,6 +272,7 @@ class SensorTraceRecorder(
             rows = 0
             elapsedMs = 0
             checkpoints = JSONArray()
+            // Count only steps taken from now on, never the phone's since-boot total.
             counter.reset(lastCounter)
             readings[TraceSensor.STEP_COUNTER]?.let {
                 readings[TraceSensor.STEP_COUNTER] = it.copy(values = emptyList())
@@ -249,11 +319,16 @@ class SensorTraceRecorder(
         publish()
     }
 
+    /** Finishes and saves the current trace; the live preview keeps running. */
     fun stop() = worker.post {
         finish("Saved on this phone.")
         publish()
     }
 
+    /**
+     * Unregisters every sensor and saves any recording in progress; call from `onPause`. The
+     * recorder does not record in the background, which keeps it simple and saves battery.
+     */
     fun pause() = worker.post {
         active = false
         manager.unregisterListener(this)
@@ -262,6 +337,7 @@ class SensorTraceRecorder(
         publish()
     }
 
+    /** Deletes every private trace and JSON file; exported copies are untouched. */
     fun deleteRecordings() = worker.post {
         if (writer != null) return@post
         try {
@@ -277,6 +353,7 @@ class SensorTraceRecorder(
         publish()
     }
 
+    /** Final shutdown from `onDestroy`: saves, then stops the worker thread. */
     fun close() {
         callback = null
         worker.post {
@@ -314,7 +391,8 @@ class SensorTraceRecorder(
             kind, "Live", values.toList(), event.timestamp,
             if (seconds > 0) (count - 1) / seconds else 0.0,
         )
-        // Ignore samples queued before Start for both raw and processed session counts.
+        // Android may still deliver samples measured before Start; keep them out of the
+        // session counts and the file. The live readings above still show them.
         if (writer != null && event.timestamp < startedNs) return
         val step = when (kind) {
             TraceSensor.GAME_RV -> {
@@ -341,6 +419,10 @@ class SensorTraceRecorder(
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
+    /**
+     * Closes the CSV, writes the JSON details, then renames `.csv.partial` to `.csv`. The rename
+     * comes last, so a crash part-way leaves only a `.partial` file, which is never exported.
+     */
     private fun finish(reason: String) {
         val csv = writer ?: return
         writer = null
@@ -375,6 +457,7 @@ class SensorTraceRecorder(
         pending = null
     }
 
+    /** Abandons the recording after an I/O error; its `.partial` file stays private. */
     private fun fail(error: Exception) {
         try {
             writer?.close()
@@ -384,6 +467,7 @@ class SensorTraceRecorder(
             "Retry when ready; partial data is not exported."
     }
 
+    /** Reloads the "last saved" totals from the newest trace's JSON, for display after resume. */
     private fun loadSavedCounts() {
         savedSteps = null
         savedDetectorSteps = null
@@ -402,6 +486,7 @@ class SensorTraceRecorder(
         }
     }
 
+    /** Posts a snapshot to the main thread; a heading older than `headingFreshnessNs` shows as unavailable. */
     private fun publish() {
         if (writer != null) {
             elapsedMs = (SystemClock.elapsedRealtimeNanos() - startedNs) / 1_000_000
