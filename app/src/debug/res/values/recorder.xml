@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="recorder_background">#F3F5F2</color>
+  <color name="recorder_ink">#182C2A</color>
+  <color name="recorder_muted">#536764</color>
+  <color name="recorder_accent">#08695F</color>
+  <color name="recorder_danger">#A12E32</color>
+  <style name="RecorderBaseTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+    <item name="android:fontFamily">sans</item>
+    <item name="android:colorAccent">@color/recorder_accent</item>
+    <item name="android:windowLightStatusBar">true</item>
+    <item name="android:statusBarColor">@color/recorder_background</item>
+    <item name="android:navigationBarColor">@color/recorder_ink</item>
+    <item name="android:windowBackground">@color/recorder_background</item>
+  </style>
+  <style name="RecorderTheme" parent="RecorderBaseTheme" />
+  <style name="RecorderBody">
+    <item name="android:layout_width">match_parent</item>
+    <item name="android:layout_height">wrap_content</item>
+    <item name="android:textSize">16sp</item>
+    <item name="android:textColor">@color/recorder_muted</item>
+  </style>
+  <style name="RecorderAction" parent="android:style/Widget.Material.Button.Borderless">
+    <item name="android:layout_width">wrap_content</item>
+    <item name="android:layout_height">wrap_content</item>
+    <item name="android:minHeight">48dp</item>
+    <item name="android:textAllCaps">false</item>
+    <item name="android:textColor">@color/recorder_action_text</item>
+  </style>
+  <string name="recorder_brand">MAPLENS / FIELD TOOLS</string>
+  <string name="recorder_title">Sensor recorder</string>
+  <string name="recorder_intro">Developer mode · walking traces</string>
+  <string name="recorder_privacy">Local only. No location, camera or microphone collection. Leaving this screen stops sensors and saves your trace.</string>
+  <string name="recorder_start">Start recording</string>
+  <string name="recorder_stop">Stop and save</string>
+  <string name="recorder_live">Live sensors</string>
+  <string name="recorder_rates">Motion: GAME / ~50 Hz requested, no requested batching. Steps: event-driven / NORMAL. Readings refresh up to 10 times per second; Android detector delivery can lag. Counter updates may lag by up to 10 seconds.</string>
+  <string name="recorder_align">Align facing direction on map</string>
+  <string-array name="recorder_map_directions">
+    <item>↑ Map up</item><item>→ Map right</item><item>↓ Map down</item><item>← Map left</item>
+  </string-array>
+  <string name="recorder_heading_unavailable">Heading unavailable · adjust hold or wait for sensors</string>
+  <string name="recorder_heading_unaligned">Heading ready · choose your facing direction on the map</string>
+  <string name="recorder_heading_value">Map heading %1$d° · 0° right, 90° down</string>
+  <string name="recorder_heading_note">Hold the phone in front, screen facing you: flat or upright, portrait or landscape. Face along a known corridor and select its map direction. This measures phone direction, not independent body direction. Re-align after changing your grip; drift remains possible. No compass, GPS or north assumption.</string>
+  <string name="recorder_peak_mode">Use accelerometer steps (experimental; may count hand movement)</string>
+  <string name="recorder_step_comparison">Android detector: %1$d · Delayed counter: %4$s\nAccelerometer peaks: %2$d · No usable heading: %3$d</string>
+  <string name="recorder_waiting_counter">waiting / unavailable</string>
+  <string name="recorder_room_hint">Room number, e.g. 3445</string>
+  <string name="recorder_checkpoint">Mark</string>
+  <string name="recorder_checkpoint_note">While recording, type the room number of the next door, then tap Mark as you pass it.</string>
+  <string name="recorder_checkpoint_count">Checkpoints %1$d · last %2$s</string>
+  <string name="recorder_permission">Allow step sensors</string>
+  <string name="recorder_permission_reason">Allow physical activity access for Android step detection and counting. Other motion sensors work without it.</string>
+  <string name="recorder_permission_denied">Step permission was not granted. Motion recording still works; enable physical activity access in app settings to include steps.</string>
+  <string name="recorder_export">Export CSV</string>
+  <string name="recorder_details">Export details</string>
+  <string name="recorder_delete">Delete local recordings</string>
+  <string name="recorder_delete_question">Delete every trace and details file stored by this recorder? Copies you exported will remain.</string>
+  <string name="recorder_cancel">Cancel</string>
+  <string name="recorder_no_trace">No saved trace yet. Preview readings are not recorded.</string>
+  <string name="recorder_summary">Live steps %2$d · Recording time %1$s\nSensor rows %3$d</string>
+  <string name="recorder_saved_counts">Last saved: %1$d selected steps · Android %2$d · Peaks %3$s</string>
+  <string name="recorder_not_measured">not measured</string>
+  <string name="recorder_saved">Latest: %1$s\n%2$d KB · stored privately on this phone</string>
+  <string name="recorder_exported">Export complete.</string>
+  <string name="recorder_export_failed">Export failed: %1$s</string>
+  <string name="recorder_export_cancelled">Export cancelled. Your private recording is still saved.</string>
+  <string name="recorder_step">Step detector</string>
+  <string name="recorder_counter">Step counter</string>
+  <string name="recorder_accel">Accelerometer</string>
+  <string name="recorder_gyro">Gyroscope</string>
+  <string name="recorder_rotation">Game rotation vector</string>
+  <string name="recorder_sensor_status">%1$s · %2$s</string>
+  <string name="recorder_sensor_live">%1$s · %2$.1f Hz observed · %3$.1f s ago</string>
+  <string name="recorder_counter_note">Since the preview or recording baseline. Counter updates can be delayed; detector events drive per-step tracking.</string>
+</resources>
