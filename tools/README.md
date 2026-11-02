@@ -147,6 +147,10 @@ reasons for rejection/review. `--ocr tesseract` is the legacy word-based recogni
 it does not provide the same description/row grouping as the default model.
 
 Attachment uses visible walls after removing text and colored evacuation routes.
+It keeps long wall strokes and restores original short/curved ink within 8 px of
+those strokes. The enlarged support region only selects original dark pixels: it
+does not thicken walls or close white openings. This prevents erased circular
+wall details from becoming false doorways.
 A local image path searches for a nearby point on the **existing** corridor graph,
 penalizing wall pixels and rejecting paths crossing more than 6 wall pixels or
 longer than 350 px (`--max-distance`). This allows bending toward an opening
@@ -167,26 +171,30 @@ Measured on the matching 2000 × 1467 elevator image/trace pair (tuning data):
 |---|---|---|
 | Exact distinct room-number recall | 31/51 = 60.8% | 49/51 = 96.1% |
 | Exact distinct-number precision against trace | 31/45 = 68.9% | 49/52 = 94.2% |
-| Correct entrance recall (exact label, ≤40 px, one-to-one) | 11/52 = 21.2% | 35/52 = 67.3% |
-| Correct entrance precision against trace | 11/33 = 33.3% | 35/52 = 67.3% |
-| Median error of matched entrances | 16.8 px | 8.3 px |
+| Correct entrance recall (exact label, ≤40 px, one-to-one) | 11/52 = 21.2% | 38/52 = 73.1% |
+| Correct entrance precision against trace | 11/33 = 33.3% | 38/52 = 73.1% |
+| Median error of matched entrances | 16.8 px | 8.7 px |
 
 The trace's 55 landmarks are **52 room entrances / 51 distinct room numbers**,
 plus two OFFMAP and one TO-EXIT. Suffixes count separately; both 3546 entrances
 count in attachment recall. The refined run has 52 accepted occurrences and 52
-proposed attachments (55 nodes, 56 edges, 52 landmarks). Three readings absent
+proposed attachments (56 nodes, 57 edges, 52 landmarks). Three readings absent
 from the trace—3416, 3556A and 3546A—are visibly printed but lack reference door
 annotations. Confirm the small 3546A/3545A text manually; it was not relabeled to
 match an expectation. Two reference strings remain unread: 3560 and 3622 are
 partially cropped/obscured in this image; no digits are invented.
 
-3605 now attaches to its existing left corridor (~8.8 px reference error). 3540,
+3612 and 3614 now attach to their existing left/right side openings (9.8/9.3 px
+reference error), rather than sharing the middle point. Preserving short wall
+details raises correct entrance matches from 35/52 to 38/52 without losing a
+previously correct label placement on this tuned poster.
+3605 attaches to its existing left corridor (~8.8 px reference error). 3540,
 3540B, 3556 and one 3546 entrance also match within 40 px. 3445 is recognized, but
 3444/3446/3445 still share a distant proposed anchor near the incomplete lower-left
 corridor: orange review markers, not successful entrance matches. Recovery of that
 missing corridor remains **#28**, explicitly outside this refinement. A single
 printed 3546 label still cannot identify both entrances automatically.
-Against the trace, 17 predicted associations and 17 reference entrances remain
+Against the trace, 14 predicted associations and 14 reference entrances remain
 unmatched (replacement corrections overlap these counts). No manual corrections
 or fixture edits were applied. No held-out room score is claimed: stair-3424 has
 corridors but incomplete labels.

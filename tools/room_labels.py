@@ -48,6 +48,7 @@ class Params:
     max_distance: float = 350.0
     node_snap: float = 8.0
     wall_run: int = 25
+    wall_detail_radius: int = 8
     corridor_sample_step: float = 3.0
     max_wall_pixels: int = 6
     wall_penalty: float = 80.0
@@ -284,7 +285,7 @@ def _nearest(point, edges, nodes):
 
 
 def wall_mask(bgr: np.ndarray, readings: list[Reading], p: Params | None = None) -> np.ndarray:
-    """Long dark wall runs after erasing recognized text, without closing doors."""
+    """Long wall runs plus nearby original detail, without closing real openings."""
     p = p or Params()
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     dark = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -298,9 +299,13 @@ def wall_mask(bgr: np.ndarray, readings: list[Reading], p: Params | None = None)
             continue
         x, y, w, h = map(round, reading.box)
         dark[max(0, y):min(height, y + h), max(0, x):min(width, x + w)] = 0
+    dark[route_mask(bgr) > 0] = 0
     walls = (cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((1, p.wall_run), np.uint8)) |
              cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((p.wall_run, 1), np.uint8)))
-    walls[route_mask(bgr) > 0] = 0
+    size = 2 * p.wall_detail_radius + 1
+    support = cv2.dilate(walls, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size)))
+    # Preserve curved/short wall marks; dropping them can turn a closed circle into a false door.
+    walls |= dark & support
     return walls
 
 

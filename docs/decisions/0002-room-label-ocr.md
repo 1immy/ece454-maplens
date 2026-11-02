@@ -88,3 +88,22 @@ lower-left corridor still prevents correct placement of 3444/3446/3445. The user
 explicitly left corridor recovery under #28; no corridor extractor, shared model,
 hand trace or room-label fixture was modified. See tools/README.md for remaining
 errors and reproduction.
+
+
+## Preserve door-frame detail (Nov 1)
+
+The long-run-only wall mask dropped small curved/short strokes around a circular
+mark above the 3612/3614 divider. That created a cheap false passage and merged
+both room proposals with 3613 at the middle corridor point. Preserve original dark
+pixels within an 8 px support radius of long wall strokes. Dilation grows only the
+support region; no white gap is filled. Remove colored route pixels before seed
+selection so route lines cannot promote nearby hatch noise into walls.
+
+A synthetic pair of rooms reproduces the old shared middle anchor and verifies
+separate side attachments after the fix. Another test preserves short wall detail
+while rejecting isolated noise next to an orange route. On the same tuned poster,
+3612 error changes from 227.0 to 9.8 px and 3614 from 233.0 to 9.3 px. Entrance
+matches increase from 35/52 to 38/52; no previously correct room-label placement
+regresses beyond 40 px. OCR stays 49/51. Missing corridors remain #28; no shared
+model or hand trace changes are needed. This still relies on local wall evidence
+rather than complete room segmentation or guaranteed physical-door detection.

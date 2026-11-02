@@ -345,6 +345,38 @@ class WallAttachmentTest(unittest.TestCase):
         self.assertEqual(point, [350, 250])
         self.assertLessEqual(sum(math.dist(a, b) for a, b in zip(path, path[1:])), 350)
 
+    def test_small_wall_details_do_not_become_false_shared_doorway(self):
+        image = np.full((280, 400, 3), 235, np.uint8)
+        for a, b in [((50, 60), (350, 60)), ((50, 100), (50, 220)),
+                     ((350, 100), (350, 220)), ((200, 100), (200, 220)),
+                     ((50, 220), (350, 220))]:
+            cv2.line(image, a, b, (0, 0, 0), 3)
+        cv2.circle(image, (200, 60), 7, (235, 235, 235), -1)
+        cv2.circle(image, (200, 60), 7, (0, 0, 0), 2)
+        data = {"schemaVersion": 1, "buildingId": "test", "floor": "1", "startNodeId": "L",
+                "nodes": [{"id": "L", "type": "START", "x": 20, "y": 20},
+                          {"id": "R", "type": "JUNCTION", "x": 380, "y": 20},
+                          {"id": "LE", "type": "DEAD_END", "x": 20, "y": 250},
+                          {"id": "RE", "type": "DEAD_END", "x": 380, "y": 250}],
+                "edges": [{"from": "L", "to": "R"}, {"from": "L", "to": "LE"},
+                          {"from": "R", "to": "RE"}], "landmarks": []}
+        labels = [reading("1001", 170, 120), reading("1002", 230, 120)]
+        pred, audit = rooms.attach_labels(data, labels, walls=rooms.wall_mask(image, labels))
+        self.assertEqual([a["point"][0] for a in audit], [20, 380])
+        self.assertNotEqual(audit[0]["nodeId"], audit[1]["nodeId"])
+        self.assertTrue(all("reviewReason" not in a for a in audit))
+        rooms.validate_graph(pred)
+
+    def test_short_wall_detail_is_kept_but_isolated_noise_is_not(self):
+        image = np.full((160, 300, 3), 235, np.uint8)
+        cv2.line(image, (10, 100), (290, 100), (0, 0, 0), 3)
+        cv2.line(image, (150, 100), (150, 110), (0, 0, 0), 3)
+        cv2.circle(image, (200, 30), 3, (0, 0, 0), -1)
+        cv2.line(image, (180, 40), (280, 40), (40, 80, 190), 3)
+        walls = rooms.wall_mask(image, [])
+        self.assertGreater(walls[110, 150], 0)
+        self.assertEqual(walls[30, 200], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
