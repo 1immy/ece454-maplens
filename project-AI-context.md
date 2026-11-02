@@ -102,7 +102,8 @@ Package root: `edu.wisc.maplens` (`.model`, `.routing`, `.tracking`, `.mapparse`
 | Branch | What |
 |---|---|
 | `feat/guidance-ui-v1` (PR #43, closes #9, #10) | `guidance`: `RoutePath` (route as one polyline, project a pose onto it), `RouteGuide` (turn cues at > 30°, slight ≤ 60°, U-turn ≥ 150° in `GuidanceParams`; next `Instruction` = steps to the next cue at k), `FakePoseStream`. `app`: `MapView` (map, route, START, destination, position dot), `MainActivity` (room picker, banner with arrow + "N steps", demo walk), `NavigationSession.onCalibratedToRoom`, `Demo` (k = 25 px/step stand-in). Ran on a Pixel 7a |
-| `feat/room-label-ocr` (Jayden, PR pending, closes #14) | `tools/room_labels.py`: Tesseract OCR → door nodes on the corridor graph. Tuning-poster results: room-number recall 60.8%, precision 68.9%; correct-entrance recall 21.2% |
+| `feat/room-label-ocr` (Jayden, PR #46, closes #14) | `tools/room_labels.py`: RapidOCR (PP-OCRv6, ONNX Runtime, offline) → door nodes on the corridor graph. Tuning poster: room-number recall 96.1%, precision 94.2%; correct-entrance recall 73.1%, median error 8.7 px |
+| `feat/you-are-here-start` (Jayden, PR #47, closes #15) | `tools/start_marker.py`: gold star → START node on the corridor graph. Error to traced START: 16.0 px (elevators), 7.5 px (stair-3424); both posters used for tuning |
 
 ### Known gaps between the report and the code
 These are deliberate simplifications so far. Changing them touches `core/model`, so all three owners have to agree (section 7).
@@ -257,7 +258,7 @@ Closes #<issue>
 - Every new behavior gets a unit test with synthetic input (see `TestGraphs`, `tools/test_*.py`). Use the real fixtures for evaluation, not as the only test.
 - Don't edit or regenerate hand-labeled fixtures (`*-corners.json`, traced `*.graph.json`) unless the PR is about fixing them. They are ground truth.
 - Report metrics honestly: say when a number was tuned on the same data it is reported on, and keep held-out results separate.
-- Record any interface, dependency or algorithm decision as `docs/decisions/NNNN-title.md` (context, decision, consequences). Take the next free number on `main` (0001–0003 used; 0004 is claimed by the room-label OCR note).
+- Record any interface, dependency or algorithm decision as `docs/decisions/NNNN-title.md` (context, decision, consequences). Take the next free number on `main` (0001–0003 used; 0004 = You-Are-Here star in #47, 0005 = room-label OCR in #46).
 
 ### Never commit
 `local.properties`, keystores, API keys, `.venv/`, `data/raw/`, build output, large videos, `*.json.bak`.
@@ -313,8 +314,8 @@ Issues are created with owner, area label, milestone and a **"Done when"** check
 | #11 | Sensor-trace recorder (debug screen → CSV) | Johnny | Recorder merged (#40); still needs one 2-min EH3 walk committed |
 | #12 | Steps, heading and calibration k | Johnny | Live `MotionEvent` stream merged (#40); calibration k + ±5% step check open |
 | #13 | Particle tracker v1 on the corridor graph | Johnny | Open; **the G2 gate** |
-| #14 | Room-number OCR → door labels on the extracted graph | Jayden | Branch ready, PR pending; not on the G2 path |
-| #15 | "You Are Here" star detection → START node | Jayden | G3 |
+| #14 | Room-number OCR → door labels on the extracted graph | Jayden | PR #46; not on the G2 path |
+| #15 | "You Are Here" star detection → START node | Jayden | PR #47 (G3, early) |
 | #16 | "Check the map" graph editor screen | Jayden + Limo | G3 |
 
 Next for the app (Limo): live-tracking integration (START "which way are you facing" tap → `align`, pose source that swaps `FakePoseStream` for `Tracker`, checkpoint logging for the G2 gate and A–D), then #20 voice/vibration + offline.
