@@ -53,8 +53,13 @@ fun FloorGraph.checkpoint(
     val same = truthEdge != null && estimate.edgeId != null &&
         corridors[truthEdge] == corridors[estimate.edgeId]
     return CheckpointResult(
-        label, estimate, truth, truthEdge, errorPx,
-        errorPx / estimate.stepLengthPx * strideMeters, same,
+        label = label,
+        estimate = estimate,
+        truth = truth,
+        truthEdgeId = truthEdge,
+        errorPx = errorPx,
+        errorMeters = errorPx / estimate.stepLengthPx * strideMeters,
+        sameCorridor = same,
     )
 }
 
@@ -76,8 +81,16 @@ class SessionLog(private val out: Writer) {
         row(pose.timestampNanos, "pose", "", pose, kPx = pose.stepLengthPx)
 
     fun checkpoint(timestampNs: Long, c: CheckpointResult) = row(
-        timestampNs, "checkpoint", c.label, c.estimate, c.truth, c.truthEdgeId,
-        c.errorPx, c.errorMeters, c.sameCorridor, c.estimate.stepLengthPx,
+        timestampNs = timestampNs,
+        event = "checkpoint",
+        label = c.label,
+        estimate = c.estimate,
+        truth = c.truth,
+        truthEdge = c.truthEdgeId,
+        errorPx = c.errorPx,
+        errorMeters = c.errorMeters,
+        same = c.sameCorridor,
+        kPx = c.estimate.stepLengthPx,
     )
 
     fun arrive(pose: PoseEstimate) =
@@ -99,11 +112,20 @@ class SessionLog(private val out: Writer) {
         extra: String = "",
     ) {
         val fields = listOf(
-            timestampNs.toString(), event, label,
-            fmt(estimate?.position?.x), fmt(estimate?.position?.y), estimate?.edgeId.orEmpty(),
+            timestampNs.toString(),
+            event,
+            label,
+            fmt(estimate?.position?.x),
+            fmt(estimate?.position?.y),
+            estimate?.edgeId.orEmpty(),
             fmt(estimate?.headingRad).ifEmpty { extra },
-            fmt(truth?.x), fmt(truth?.y), truthEdge.orEmpty(),
-            fmt(errorPx), fmt(errorMeters), same?.toString().orEmpty(), fmt(kPx),
+            fmt(truth?.x),
+            fmt(truth?.y),
+            truthEdge.orEmpty(),
+            fmt(errorPx),
+            fmt(errorMeters),
+            same?.toString().orEmpty(),
+            fmt(kPx),
         )
         out.write(fields.joinToString(",") + "\n")
         out.flush()

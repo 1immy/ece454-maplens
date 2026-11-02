@@ -348,7 +348,11 @@ class MainActivity : Activity() {
         remaining.text = when {
             stepsLeft <= 0 -> getString(R.string.arrived_phase, session?.phase?.name.orEmpty())
             liveMode && sensors != null -> getString(
-                R.string.remaining_live, stepsLeft, meters, sensors.steps, sensors.skipped,
+                R.string.remaining_live,
+                stepsLeft,
+                meters,
+                sensors.steps,
+                sensors.skipped,
                 getString(
                     if (sensors.usingPeaks) R.string.source_peaks else R.string.source_detector,
                 ),

@@ -45,7 +45,12 @@ class LiveTrackingTest {
             floor = "1",
             nodes = nodes,
             edges = listOf(
-                e("L", "S"), e("S", "D1"), e("D1", "J"), e("J", "U"), e("J", "E"), e("R", "J"),
+                e("L", "S"),
+                e("S", "D1"),
+                e("D1", "J"),
+                e("J", "U"),
+                e("J", "E"),
+                e("R", "J"),
             ),
             landmarks = listOf(Landmark("3418", "D1", 1f), Landmark("3420", "R", 1f)),
             startNodeId = "S",
