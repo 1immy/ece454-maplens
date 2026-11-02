@@ -8,7 +8,7 @@ straightened elevator image and trace share a 2000 × 1467 pixel coordinate syst
 The 55 reference landmarks contain 52 room entrances (51 distinct room labels,
 including suffixes; 3546 has two doors), two OFFMAP entries and one TO-EXIT entry.
 
-## Decision
+## Initial baseline decision
 
 Use Tesseract 5 English OCR via its command-line TSV interface, without a Python
 wrapper dependency. Install the executable and English data separately; runtime
@@ -50,3 +50,41 @@ items; wall/door inference and missing-route corridors remain later work.
 The four-digit grammar and pixel defaults target the current 2000 px posters.
 The stair-3424 corridor trace has no complete room annotations, so no held-out
 OCR accuracy is claimed. See tools/README.md for reproduction and measured results.
+
+
+## Refinement after screenshot review (Nov 1)
+
+Use **RapidOCR 3.10.0 / PP-OCRv6 small** as the default Python recognizer, with
+ONNX Runtime on CPU. Its wheel bundles the detection, orientation and recognition
+weights. Pass explicit local model paths and disable ONNX telemetry; fail if a
+model is absent rather than downloading at inference time. Keep Tesseract as an
+explicit legacy comparison option, not an automatic fallback. Installation and
+weights are additional prototype dependencies, not changes to the planned Android
+ML Kit interface. Primary documentation:
+[installation](https://rapidai.github.io/RapidOCRDocs/main/en/install_usage/rapidocr/install/),
+[outputs](https://rapidai.github.io/RapidOCRDocs/main/en/install_usage/rapidocr/usage/).
+
+Preserve whole descriptive lines, rejecting them as room labels. Split only lines
+made entirely of room tokens using returned character boxes. This removes the
+AED legend destinations without hardcoding text positions, room numbers, floor
+prefixes or reference labels. Numeric row parent boxes must not erase intervening
+room-divider walls; only their individual word boxes are erased.
+
+Replace center projection in the CLI with a local least-cost image path to an
+existing corridor sample (scikit-image MCP_Geometric). Long dark wall runs cost
+80 per pixel versus 1 for free image space; colored route lines are removed from
+the wall mask. Accept only paths ≤350 px with ≤6 sampled wall pixels, tolerating
+thin door symbols. If the cheapest weighted path exceeds a hard cap, test direct alternatives before
+rejecting; more complex admissible alternatives may still need manual review.
+Save the actual connector polyline for review. Plain
+`attach_labels(..., walls=None)` keeps the earlier projection API for geometry-only
+callers. Splitting and scoring remain separate and unchanged in meaning.
+
+The fixed 40 px entrance scorer reports 49/51 distinct labels and 35/52 entrances,
+versus the original 31/51 and 11/52. These are tuned on the same matching poster,
+not held-out evidence. Shared candidate nodes are flagged in the audit and overlay;
+all labels remain available for manual verification. In particular the missing
+lower-left corridor still prevents correct placement of 3444/3446/3445. The user
+explicitly left corridor recovery under #28; no corridor extractor, shared model,
+hand trace or room-label fixture was modified. See tools/README.md for remaining
+errors and reproduction.

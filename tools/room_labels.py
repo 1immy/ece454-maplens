@@ -16,14 +16,15 @@ import json
 import math
 import re
 import subprocess
-import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+from skimage.graph import MCP_Geometric
 
+from corridors import route_mask
 from maplabel import PREFIX, load_image
 
 
@@ -44,8 +45,12 @@ class Params:
     min_confidence: float = 0.5
     duplicate_radius: float = 15.0
     duplicate_overlap: float = 0.5
-    max_distance: float = 180.0
+    max_distance: float = 350.0
     node_snap: float = 8.0
+    wall_run: int = 25
+    corridor_sample_step: float = 3.0
+    max_wall_pixels: int = 6
+    wall_penalty: float = 80.0
 
 
 @dataclass
@@ -85,6 +90,62 @@ def room_labels(readings: list[Reading], p: Params | None = None) -> list[Readin
                        for other in kept):
                 kept.append(Reading(label, r.box, r.confidence))
     return sorted(kept, key=lambda r: (r.center[1], r.center[0]))
+
+
+def split_numeric_line(reading: Reading, characters) -> list[Reading]:
+    """Split all-room rows using OCR character boxes, never numbers inside prose."""
+    compact = re.sub(r"\s+", "", reading.text.upper())
+    tokens = re.findall(r"[0-9]{4}[A-Z]?", compact)
+    if len(tokens) < 2 or "".join(tokens) != compact:
+        return [reading]
+    chars = [(c.upper(), score, box) for c, score, box in characters if c.strip()]
+    if "".join(c for c, _, _ in chars) != compact:
+        return [reading]
+    out, offset = [reading], 0
+    for token in tokens:
+        group = chars[offset:offset + len(token)]
+        points = np.asarray([box for _, _, box in group]).reshape(-1, 2)
+        x, y = points.min(axis=0)
+        right, bottom = points.max(axis=0)
+        confidence = min(reading.confidence, min(score for _, score, _ in group))
+        out.append(Reading(token, tuple(map(float, (x, y, right - x, bottom - y))), confidence))
+        offset += len(token)
+    return out
+
+
+def read_rapidocr(bgr: np.ndarray, p: Params | None = None) -> list[Reading]:
+    """PP-OCRv6 small on CPU. Select bundled local weights to prevent downloads."""
+    try:
+        import rapidocr
+        import onnxruntime
+    except ImportError as e:
+        raise ValueError("RapidOCR unavailable; install tools/requirements.txt or use --ocr tesseract") from e
+    root = Path(rapidocr.__file__).parent / "models"
+    models = {"Det": "PP-OCRv6_det_small.onnx", "Rec": "PP-OCRv6_rec_small.onnx",
+              "Cls": "ch_ppocr_mobile_v2.0_cls_mobile.onnx"}
+    if not all((root / name).is_file() for name in models.values()):
+        raise ValueError("bundled OCR model missing; reinstall rapidocr==3.10.0 (no runtime downloads)")
+    onnxruntime.disable_telemetry_events()
+    p = p or Params()
+    try:
+        engine = rapidocr.RapidOCR(params={
+            **{f"{stage}.model_path": str(root / name) for stage, name in models.items()},
+            "Global.return_word_box": True, "Global.return_single_char_box": True,
+            "Global.log_level": "error", "Global.text_score": p.min_confidence,
+            "Det.limit_side_len": max(bgr.shape[:2]),
+        })
+        result = engine(bgr)
+    except Exception as e:
+        raise ValueError(f"RapidOCR failed to load/run its local models: {e}") from e
+    if result.boxes is None:
+        return []
+    out = []
+    for points, text, confidence, chars in zip(result.boxes, result.txts, result.scores, result.word_results):
+        x, y = points.min(axis=0)
+        right, bottom = points.max(axis=0)
+        reading = Reading(text, tuple(map(float, (x, y, right - x, bottom - y))), float(confidence))
+        out.extend(split_numeric_line(reading, chars))
+    return out
 
 
 def text_regions(bgr: np.ndarray, p: Params) -> list[tuple[int, int, int, int]]:
@@ -222,8 +283,68 @@ def _nearest(point, edges, nodes):
     return best
 
 
-def attach_labels(data: dict, readings: list[Reading], p: Params | None = None):
-    """Project labels onto nearest corridor, splitting edges without moving rooms."""
+def wall_mask(bgr: np.ndarray, readings: list[Reading], p: Params | None = None) -> np.ndarray:
+    """Long dark wall runs after erasing recognized text, without closing doors."""
+    p = p or Params()
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    dark = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                 cv2.THRESH_BINARY_INV, p.threshold_window, p.threshold_offset)
+    height, width = dark.shape
+    for reading in readings:
+        # Parent row boxes cover room dividers; erase their individual word boxes instead.
+        if re.fullmatch(r"(?:[0-9]{4}[A-Z]?\s*){2,}", reading.text.upper().strip()):
+            continue
+        if len(re.sub(r"[^0-9A-Za-z]", "", reading.text)) < 2:
+            continue
+        x, y, w, h = map(round, reading.box)
+        dark[max(0, y):min(height, y + h), max(0, x):min(width, x + w)] = 0
+    walls = (cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((1, p.wall_run), np.uint8)) |
+             cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((p.wall_run, 1), np.uint8)))
+    walls[route_mask(bgr) > 0] = 0
+    return walls
+
+
+def _corridor_path(point, samples, walls, p):
+    """Local image path to an existing edge; wall crossings are expensive and capped."""
+    height, width = walls.shape
+    if not len(samples) or not (0 <= point[0] < width and 0 <= point[1] < height):
+        return None
+    x0, y0 = np.maximum(0, np.floor(np.subtract(point, p.max_distance))).astype(int)
+    x1, y1 = np.minimum((width, height), np.ceil(np.add(point, p.max_distance + 1))).astype(int)
+    nearby = samples[(samples[:, 0] >= x0) & (samples[:, 0] < x1) &
+                     (samples[:, 1] >= y0) & (samples[:, 1] < y1)]
+    if not len(nearby):
+        return None
+    grid = np.rint(nearby - (x0, y0)).astype(int)
+    grid = np.clip(grid, (0, 0), (x1 - x0 - 1, y1 - y0 - 1))
+    costs = np.ones((y1 - y0, x1 - x0))
+    costs[walls[y0:y1, x0:x1] > 0] = p.wall_penalty
+    solver = MCP_Geometric(costs)
+    origin = (min(y1 - y0 - 1, round(point[1] - y0)), min(x1 - x0 - 1, round(point[0] - x0)))
+    cumulative, _ = solver.find_costs([origin], ends=grid[:, ::-1], find_all_ends=False)
+    values = cumulative[grid[:, 1], grid[:, 0]]
+    i = int(values.argmin())
+    if not math.isfinite(values[i]):
+        return None
+    path = np.asarray(solver.traceback(tuple(grid[i, ::-1])))[:, ::-1] + (x0, y0)
+    # shortcut: a few pixels tolerate thin door symbols; thick/curved walls need door inference.
+    if np.count_nonzero(walls[path[:, 1], path[:, 0]]) <= p.max_wall_pixels and _length(path) <= p.max_distance:
+        return nearby[i].tolist(), path.tolist()
+    # A cheap wall-free detour can exceed the cap while a short thin-door crossing is valid.
+    distances = np.linalg.norm(nearby - point, axis=1)
+    for i in np.argsort(distances):
+        distance = float(distances[i])
+        if distance > p.max_distance:
+            break
+        direct = np.rint(np.linspace(point, nearby[i], max(2, math.ceil(distance) + 1))).astype(int)
+        direct = np.clip(direct, (0, 0), (width - 1, height - 1))
+        if np.count_nonzero(walls[direct[:, 1], direct[:, 0]]) <= p.max_wall_pixels and _length(direct) <= p.max_distance:
+            return nearby[i].tolist(), direct.tolist()
+    return None
+
+
+def attach_labels(data: dict, readings: list[Reading], p: Params | None = None, walls=None):
+    """Attach to existing corridor geometry, preferring wall-clear connectors."""
     p = p or Params()
     validate_graph(data)
     out = copy.deepcopy(data)
@@ -244,15 +365,29 @@ def attach_labels(data: dict, readings: list[Reading], p: Params | None = None):
         edge.setdefault("id", f"e{i + 1}")
         edge["polyline"] = _line(edge, nodes)
         edge["lengthPx"] = _length(edge["polyline"])
+    samples = []
+    if walls is not None:
+        for edge in out["edges"]:
+            pts = edge["polyline"]
+            for a, b in zip(pts, pts[1:]):
+                samples.extend(np.linspace(a, b, max(2, math.ceil(math.dist(a, b) / p.corridor_sample_step) + 1)))
+    samples = np.asarray(samples).reshape(-1, 2)
     attachments = []
     for r in readings:
         record = {"label": r.text, "center": list(r.center), "nodeId": None, "point": None}
         attachments.append(record)
-        nearest = _nearest(r.center, out["edges"], nodes)
+        connector = None
+        target = r.center
+        if walls is not None:
+            found = _corridor_path(r.center, samples, walls, p)
+            target, connector = found if found else (None, None)
+        nearest = _nearest(target, out["edges"], nodes) if target is not None else None
         if nearest is None or nearest[0] > p.max_distance:
-            record["reason"] = "no corridor within maximum attachment distance"
+            record["reason"] = ("no wall-clear corridor within maximum attachment distance; review wall evidence or missing corridor"
+                                if walls is not None else "no corridor within maximum attachment distance")
             continue
         distance, ei, si, q = nearest
+        distance = math.dist(r.center, q)
         edge = out["edges"][ei]
         pts = edge["polyline"]
         # Reuse only endpoints of this edge: never jump to a nearby parallel corridor.
@@ -272,6 +407,14 @@ def attach_labels(data: dict, readings: list[Reading], p: Params | None = None):
         if not any(l["label"] == r.text and l["nodeId"] == nid for l in out["landmarks"]):
             out["landmarks"].append({"label": r.text, "nodeId": nid, "ocrConfidence": r.confidence})
         record.update(nodeId=nid, point=_point(nodes[nid]), distancePx=distance)
+        if connector is not None:
+            record["connector"] = [list(r.center)] + connector + [_point(nodes[nid])]
+    labels_by_node = {}
+    for landmark in out["landmarks"]:
+        labels_by_node.setdefault(landmark["nodeId"], set()).add(landmark["label"])
+    for record in attachments:
+        if len(labels_by_node.get(record["nodeId"], ())) > 1:
+            record["reviewReason"] = "several room labels share this proposed node; verify entrances or missing corridor"
     validate_graph(out)
     return out, attachments
 
@@ -318,12 +461,13 @@ def draw_overlay(bgr, readings, attachments, graph):
         cv2.polylines(out, [np.int32(_line(e, nodes))], False, (200, 80, 200), 2)
     for r, a in zip(readings, attachments):
         x, y, w, h = map(round, r.box)
-        color = (0, 160, 0) if a["nodeId"] else (0, 0, 220)
+        color = (0, 140, 255) if a.get("reviewReason") else (0, 160, 0) if a["nodeId"] else (0, 0, 220)
         cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
         cv2.putText(out, r.text, (x, y - 4), cv2.FONT_HERSHEY_SIMPLEX, .5, color, 1)
         if a["point"]:
             q = tuple(round(v) for v in a["point"])
-            cv2.line(out, tuple(round(v) for v in r.center), q, color, 1)
+            path = a.get("connector") or [r.center, a["point"]]
+            cv2.polylines(out, [np.rint(path).astype(np.int32)], False, color, 1)
             cv2.circle(out, q, 5, color, -1)
     return out
 
@@ -339,6 +483,7 @@ def main(argv=None):
         cli.add_argument("--debug")
         cli.add_argument("--readings", help="OCR boxes, confidence and attachment audit JSON")
         cli.add_argument("--max-distance", type=float, default=Params().max_distance)
+        cli.add_argument("--ocr", choices=("rapidocr", "tesseract"), default="rapidocr")
         if command == "evaluate":
             cli.add_argument("--truth", required=True, help="matching hand trace; used only after extraction")
     cli = sub.add_parser("score")
@@ -364,12 +509,12 @@ def main(argv=None):
             if data.get("source", {}).get("size") not in (None, list((bgr.shape[1], bgr.shape[0]))):
                 raise ValueError("graph source size does not match image; use the exact straightened map")
             p = Params(max_distance=args.max_distance)
-            raw = read_tesseract(bgr, p)
+            raw = read_rapidocr(bgr, p) if args.ocr == "rapidocr" else read_tesseract(bgr, p)
             readings = room_labels(raw, p)
-            pred, attachments = attach_labels(data, readings, p)
+            pred, attachments = attach_labels(data, readings, p, walls=wall_mask(bgr, raw, p))
             Path(args.output).write_text(json.dumps(pred, indent=2) + "\n")
             if args.readings:
-                Path(args.readings).write_text(json.dumps({"raw": [asdict(r) for r in raw],
+                Path(args.readings).write_text(json.dumps({"ocr": args.ocr, "raw": [asdict(r) for r in raw],
                     "labels": [asdict(r) for r in readings], "attachments": attachments}, indent=2) + "\n")
             if args.debug and not cv2.imwrite(args.debug, draw_overlay(bgr, readings, attachments, pred)):
                 raise ValueError(f"could not write overlay: {args.debug}")

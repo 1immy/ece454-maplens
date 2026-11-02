@@ -114,7 +114,7 @@ class OcrTest(unittest.TestCase):
             truth["landmarks"] = [{"label": "9999", "nodeId": "X"}]
             reference.write_text(json.dumps(truth))
             with patch("room_labels.read_tesseract", return_value=[reading("3546", 30, 15)]):
-                rooms.main(["evaluate", str(image), "--graph", str(corridor), "--truth", str(reference),
+                rooms.main(["evaluate", str(image), "--graph", str(corridor), "--truth", str(reference), "--ocr", "tesseract",
                             "-o", str(out), "--readings", str(audit), "--debug", str(root / "overlay.png")])
             saved = json.loads(out.read_text())
             self.assertEqual([l["label"] for l in saved["landmarks"]], ["3546"])
@@ -224,6 +224,126 @@ class ScoreTest(unittest.TestCase):
                           {"id": "P2", "type": "DOOR", "x": 79, "y": 0}]
         pred["landmarks"] = [{"label": "3546", "nodeId": "P1"}, {"label": "3546", "nodeId": "P2"}]
         self.assertEqual(rooms.score([], pred, truth)["attachments_matched"], 2)
+
+
+class StrongOcrTest(unittest.TestCase):
+    def test_numeric_line_splits_using_character_boxes_but_prose_stays_unsplit(self):
+        line = rooms.Reading("3442 3440", (0, 0, 200, 20), .95)
+        chars = [(c, .9, [[x, 0], [x + 10, 0], [x + 10, 20], [x, 20]])
+                 for c, x in zip("34423440", [10, 20, 30, 40, 110, 120, 130, 140])]
+        split = rooms.split_numeric_line(line, chars)
+        self.assertEqual([r.text for r in rooms.room_labels(split)], ["3442", "3440"])
+        self.assertEqual([r.box for r in split[1:]], [(10, 0, 40, 20), (110, 0, 40, 20)])
+        prose = rooms.Reading("Outside Room 1224, 1412, 2239", (0, 0, 400, 20), .99)
+        self.assertEqual(rooms.room_labels(rooms.split_numeric_line(prose, chars)), [])
+        concatenated = rooms.Reading("34423440", (0, 0, 200, 20), .95)
+        self.assertEqual([r.text for r in rooms.room_labels(rooms.split_numeric_line(concatenated, chars))],
+                         ["3442", "3440"])
+        self.assertEqual(rooms.split_numeric_line(line, []), [line])
+
+    def test_rapidocr_empty_results_and_bundled_models_only(self):
+        import types
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp)
+            (package / "models").mkdir()
+            for name in ("PP-OCRv6_det_small.onnx", "PP-OCRv6_rec_small.onnx", "ch_ppocr_mobile_v2.0_cls_mobile.onnx"):
+                (package / "models" / name).write_bytes(b"model")
+
+            response = types.SimpleNamespace(boxes=None, txts=None, scores=None, word_results=())
+
+            class Engine:
+                def __init__(self, params):
+                    for stage in ("Det", "Rec", "Cls"):
+                        if not Path(params[f"{stage}.model_path"]).is_file():
+                            raise AssertionError("a bundled local model was not selected")
+
+                def __call__(self, image):
+                    if isinstance(response, Exception):
+                        raise response
+                    return response
+
+            module = types.SimpleNamespace(__file__=str(package / "__init__.py"), RapidOCR=Engine)
+            with patch.dict(sys.modules, {"rapidocr": module, "onnxruntime": types.SimpleNamespace(disable_telemetry_events=lambda: None)}):
+                self.assertEqual(rooms.read_rapidocr(np.full((100, 100, 3), 255, np.uint8)), [])
+                response = types.SimpleNamespace(boxes=np.array([[[10, 20], [50, 20], [50, 35], [10, 35]]]),
+                                                 txts=("3540B",), scores=(.9,), word_results=((),))
+                self.assertEqual(rooms.read_rapidocr(np.zeros((100, 100, 3), np.uint8)),
+                                 [rooms.Reading("3540B", (10, 20, 40, 15), .9)])
+                response = RuntimeError("bad model")
+                with self.assertRaisesRegex(ValueError, "RapidOCR failed"):
+                    rooms.read_rapidocr(np.zeros((100, 100, 3), np.uint8))
+                (package / "models" / "PP-OCRv6_det_small.onnx").unlink()
+                with self.assertRaisesRegex(ValueError, "model"):
+                    rooms.read_rapidocr(np.full((100, 100, 3), 255, np.uint8))
+
+
+class WallAttachmentTest(unittest.TestCase):
+    def corridor(self):
+        data = graph()
+        data["nodes"][1].update(x=200, y=100)
+        data["nodes"][0].update(y=100)
+        data["edges"][0].update(polyline=[[0, 100], [200, 100]], lengthPx=200)
+        return data
+
+    def test_wall_gap_beats_nearer_projection_through_solid_wall(self):
+        walls = np.zeros((120, 220), np.uint8)
+        walls[50:62, :] = 255
+        walls[50:62, 65:85] = 0
+        pred, audit = rooms.attach_labels(self.corridor(), [reading("3540", 100, 20)], walls=walls)
+        self.assertLessEqual(audit[0]["point"][0], 85)
+        self.assertGreater(len(audit[0]["connector"]), 2)
+        self.assertEqual(audit[0]["point"][1], 100)
+        rooms.validate_graph(pred)
+
+    def test_no_visible_corridor_is_explicitly_rejected(self):
+        walls = np.zeros((120, 220), np.uint8)
+        walls[40:70, :] = 255
+        pred, audit = rooms.attach_labels(self.corridor(), [reading("3540", 100, 20)], walls=walls)
+        self.assertEqual(pred["landmarks"], [])
+        self.assertIsNone(audit[0]["nodeId"])
+        self.assertIn("wall", audit[0]["reason"])
+
+    def test_wall_mask_removes_text_without_erasing_long_walls(self):
+        image = np.full((160, 300, 3), 235, np.uint8)
+        cv2.line(image, (10, 120), (290, 120), (0, 0, 0), 5)
+        cv2.putText(image, "3540", (80, 75), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+        cv2.line(image, (10, 140), (290, 140), (40, 80, 190), 5)
+        walls = rooms.wall_mask(image, [rooms.Reading("3540", (75, 45, 100, 35), .9)])
+        self.assertGreater(walls[120, 150], 0)
+        self.assertEqual(walls[140, 150], 0)
+        self.assertEqual(np.count_nonzero(walls[45:80, 75:175]), 0)
+
+    def test_grouped_row_box_does_not_erase_walls_between_rooms(self):
+        image = np.full((160, 220, 3), 235, np.uint8)
+        cv2.line(image, (100, 0), (100, 159), (0, 0, 0), 5)
+        readings = [rooms.Reading("3442 3440", (10, 50, 190, 30), .95),
+                    rooms.Reading("3442", (10, 50, 50, 30), .95),
+                    rooms.Reading("3440", (140, 50, 50, 30), .95)]
+        self.assertGreater(rooms.wall_mask(image, readings)[60, 100], 0)
+
+    def test_shared_candidate_is_flagged_without_losing_valid_multiple_labels(self):
+        pred, audit = rooms.attach_labels(self.corridor(), [reading("3444", 100, 20), reading("3446", 100, 180)])
+        self.assertEqual(len(pred["landmarks"]), 2)
+        self.assertEqual(audit[0]["nodeId"], audit[1]["nodeId"])
+        self.assertTrue(all("share" in a["reviewReason"] for a in audit))
+
+    def test_fractional_center_at_image_border_does_not_abort_extraction(self):
+        data = self.corridor()
+        data["nodes"][0].update(y=80)
+        data["nodes"][1].update(x=90, y=80)
+        data["edges"][0].update(polyline=[[0, 80], [90, 80]], lengthPx=90)
+        pred, audit = rooms.attach_labels(data, [reading("3540", 99.8, 50)], walls=np.zeros((100, 100), np.uint8))
+        self.assertIsNotNone(audit[0]["nodeId"])
+        rooms.validate_graph(pred)
+
+    def test_short_admissible_connector_survives_longer_weighted_detour(self):
+        walls = np.zeros((500, 750), np.uint8)
+        walls[150:154, :560] = 255
+        result = rooms._corridor_path((350, 50), np.array([[350, 250], [350, 300]]), walls, rooms.Params())
+        self.assertIsNotNone(result)
+        point, path = result
+        self.assertEqual(point, [350, 250])
+        self.assertLessEqual(sum(math.dist(a, b) for a, b in zip(path, path[1:])), 350)
 
 
 if __name__ == "__main__":
