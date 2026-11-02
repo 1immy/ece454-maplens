@@ -2,7 +2,7 @@
 
 Give this file to any AI assistant before asking it to write code, tests, docs or PR text for this repo. It describes what the project is, how the repo is organized, what is already built, the rules for contributing, and where each piece of work stands. **If anything here conflicts with the code on `main`, the code wins; if it conflicts with the graded Phase I report, ask the team.**
 
-Last updated: Oct 23, 2026.
+Last updated: Nov 1, 2026.
 
 ---
 
@@ -34,8 +34,8 @@ Each gate passes only when its tests pass (section 10). A failed gate becomes th
 | Milestone | Due | Passes when |
 |---|---|---|
 | G0 · Floor chosen | Oct 4 | Target floor chosen, map legible, plaques readable, sensors confirmed. **Done** (EH 3rd floor) |
-| G1 · Graph and route approved | Oct 18 | Verified FloorGraph saved; A* reaches every destination; graph survives restart. **Graph done; routing by label + persistence still open** |
-| G2 · Baseline navigates | **Nov 1** | Step/heading errors measured at 3 speeds × 3 tilts; tracker follows one full route with the dot on the correct corridor at every checkpoint |
+| G1 · Graph and route approved | Oct 18 | Verified FloorGraph saved; A* reaches every destination; graph survives restart. **Graph and routing by label done (#42); persistence across restart still open** |
+| G2 · Baseline navigates | **Nov 8** (moved from Nov 1) | Step/heading errors measured at 3 speeds × 3 tilts; tracker follows one full route with the dot on the correct corridor at every checkpoint |
 | G3 · Sign reset works | Nov 15 | Each confidence check fires when forced; correct nearby signs accepted, wrong/distant rejected; drift recovery end to end. **Phase II demo Nov 16** |
 | G4 · Evaluation build frozen | Nov 29 | All readiness criteria met, every end-to-end scenario passes incl. airplane mode, thresholds frozen |
 | G5 · Final report | Dec 13 | A–D trials (Nov 30–Dec 6) + user study done; **final demo Dec 7**; results in report |
@@ -87,22 +87,22 @@ Package root: `edu.wisc.maplens` (`.model`, `.routing`, `.tracking`, `.mapparse`
 ### On `main`
 | Area | What | Notes |
 |---|---|---|
-| `core/model` | `FloorGraph`, `Node`, `Edge`, `Landmark`, `PixelPoint`, `NodeType`, `Route`, `MotionEvent`, `PoseEstimate`, `ConfidenceState` (+ `ConfidenceCheck`, `RecoveryAction`), `SignObservation`, `EvalCondition`; `FloorGraph.validate()`, `adjacency()`, `landmark()`; `FloorGraphJson` encode/decode | `landmark(label)` returns only the **first** match; rooms can have several doors |
-| `routing` | `Router` interface, `AStarRouter` (node → node, straight-line heuristic over `lengthPx`) | Tests on a T-junction. Missing: route by **label** to the nearest door |
-| `tracking` | `TrackingConfig` (all thresholds), `StepLength` (calibrate, 70/30 refine, px→m), `Tracker` + `ConfidenceMonitor` **interfaces only** | Implementations are G2/G3 work |
+| `core/model` | `FloorGraph`, `Node`, `Edge`, `Landmark`, `PixelPoint`, `NodeType`, `Route`, `MotionEvent`, `PoseEstimate`, `ConfidenceState` (+ `ConfidenceCheck`, `RecoveryAction`), `SignObservation`, `EvalCondition`; `FloorGraph.validate()`, `adjacency()`, `landmark()`; `FloorGraphJson` encode/decode. **`CorridorGeometry.kt`** (#41): `bearing`, `wrapBearing`, `bearingDifference`, `edge(id)`, `edgePoints`, `pointOnEdge`, `bearingOnEdge`, `corridorsAt(node)` (ways out + bearings, for θ0 and turn cues), `nearestEdge(point)` | Bearing convention: `atan2(dy, dx)` on the y-down image, clockwise, 0 = right; matches `HeadingEstimator`. `landmark(label)` returns only the **first** match; use `nodesForLabel` |
+| `routing` | `Router`, `AStarRouter` (node → node); **`LabelRouting.kt`** (#42): `normalizeLabel`, `nodesForLabel`, `roomDestinations()`, `Router.routeToLabel` (nearest of all doors with that label) | Tested on all 51 EH3 rooms against a Dijkstra reference |
+| `tracking` | `TrackingConfig` (all thresholds), `StepLength`; **#40**: `HeadingEstimator` (game rotation vector, `align(mapBearing)` sets θ0), `SensorMotionProcessor` (sensor events → `MotionEvent.Step` with map heading), `AccelerationStepDetector` (peak fallback), `SensorTraceRecorder`, `TraceCsvWriter`; `Tracker` + `ConfidenceMonitor` **interfaces only** | Particle filter (#13) and calibration k (#12) are the G2 gate. Decisions 0002, 0003 |
 | `mapparse` | `MapParser`, `SignScanner` **interfaces only** | Kotlin port of `tools/` is G3 work |
-| `guidance` | `GuidanceOutput`, `Instruction`, `Maneuver` | No implementation yet |
-| `app` | Placeholder `MainActivity`; `NavigationSession` state machine (Capture → Verify → Calibrate → Navigate ⇄ Recover → Arrived) with tests | Not wired to UI or data yet |
-| `tools/maplabel.py` | `corners` (label map-frame corners), `warp` (straighten), `trace` (click-to-trace a graph), `tidy` (route corridors through placed doors) | Close the trace window before `tidy` |
+| `guidance` | `GuidanceOutput`, `Instruction`, `Maneuver` | Implementation in PR #43 |
+| `app` | `MapAssets` (#41: bundles `data/fixtures/maps` as assets; `loadGraph`, `loadImage`); placeholder `MainActivity`; `NavigationSession` state machine (Capture → Verify → Calibrate → Navigate ⇄ Recover → Arrived); debug-only `RecorderActivity` (#40) | UI in PR #43 |
+| `tools/maplabel.py` | `corners`, `warp`, `trace`, `tidy` | Close the trace window before `tidy` |
 | `tools/rectify.py` | Automatic blue-frame detection + homography; `evaluate` vs labels | 15/16 accepted, median corner error 0.31% of diagonal (~8 px); returns a **retake** reason instead of a bad warp |
-| Data | 16 EH3 photos (7 maps, 4 locations, 2 poster styles), 16 corner labels, straightened elevator posters (evac + directory), **hand-traced elevator evac graph: 75 nodes, 77 edges, 55 rooms, 7 exits, elevator, AED**, synthetic `t-junction.graph.json` | |
+| `tools/corridors.py` | Orange route lines → mask → skeleton → graph, junction refinement, graph F1 scorer | Corridor-length F1 **0.91** (tuned poster) / **0.93** (held out); junction F1 **0.80 / 0.86** |
+| Data | 16 EH3 photos, 16 corner labels, straightened elevator posters (evac + directory), **hand-traced elevator evac graph: 75 nodes, 77 edges, 55 landmarks (51 distinct rooms), 7 exits, elevator, AED**, hand-traced stair-3424 evac graph (held out; corridors only), synthetic `t-junction.graph.json` | No sensor traces yet |
 
-### In open PRs (check GitHub for status)
+### In open PRs and branches (check GitHub for status)
 | Branch | What |
 |---|---|
-| `feat/corridor-extraction` | `tools/corridors.py`: route lines → mask → skeleton → graph, junction refinement, scorer. Corridor-length F1 **0.91** (tuned poster) / **0.93** (held out); junction F1 **0.80 / 0.86** |
-| `data/ehall-3-stair3424` | Hand-traced stair-3424 evac poster (held-out test; corridors only, no doors) |
-| `chore/team-setup` | Owners per graded plan, CODEOWNERS, CI `tools` job, ignore `*.json.bak` |
+| `feat/guidance-ui-v1` (PR #43, closes #9, #10) | `guidance`: `RoutePath` (route as one polyline, project a pose onto it), `RouteGuide` (turn cues at > 30°, slight ≤ 60°, U-turn ≥ 150° in `GuidanceParams`; next `Instruction` = steps to the next cue at k), `FakePoseStream`. `app`: `MapView` (map, route, START, destination, position dot), `MainActivity` (room picker, banner with arrow + "N steps", demo walk), `NavigationSession.onCalibratedToRoom`, `Demo` (k = 25 px/step stand-in). Ran on a Pixel 7a |
+| `feat/room-label-ocr` (Jayden, PR pending, closes #14) | `tools/room_labels.py`: Tesseract OCR → door nodes on the corridor graph. Tuning-poster results: room-number recall 60.8%, precision 68.9%; correct-entrance recall 21.2% |
 
 ### Known gaps between the report and the code
 These are deliberate simplifications so far. Changing them touches `core/model`, so all three owners have to agree (section 7).
@@ -143,7 +143,7 @@ Edge `id`, `polyline` and `lengthPx` are optional on read (filled in). Node type
 
 ### Other data formats
 - **Corner labels** (`data/fixtures/rectify/*-corners.json`): outer corners of the **blue map frame** in upright (EXIF-rotated) pixels, order TL, TR, BR, BL.
-- **Sensor traces** (proposed, agree before recording): CSV `timestamp_ns,type,v0,v1,v2,v3,label` with `type` ∈ `step, accel, gyro, game_rv, checkpoint`.
+- **Sensor traces** (`TraceCsvWriter`, #40): CSV `timestamp_ns,type,v0,v1,v2,v3,label`, `type` ∈ `step, step_counter, accel, gyro, game_rv, checkpoint`; Android elapsed-realtime ns, streams may interleave (sort by timestamp); a JSON metadata file sits beside each CSV. Commit walks to `data/fixtures/traces/` (LFS).
 - **Photo names:** `eh-<floor>-<location>-<evac|dir>-<nn>-<shot>.jpg`.
 
 ## 7. Algorithms (from the graded report; implement to these specs)
@@ -257,7 +257,7 @@ Closes #<issue>
 - Every new behavior gets a unit test with synthetic input (see `TestGraphs`, `tools/test_*.py`). Use the real fixtures for evaluation, not as the only test.
 - Don't edit or regenerate hand-labeled fixtures (`*-corners.json`, traced `*.graph.json`) unless the PR is about fixing them. They are ground truth.
 - Report metrics honestly: say when a number was tuned on the same data it is reported on, and keep held-out results separate.
-- Record any interface, dependency or algorithm decision as `docs/decisions/NNNN-title.md` (context, decision, consequences).
+- Record any interface, dependency or algorithm decision as `docs/decisions/NNNN-title.md` (context, decision, consequences). Take the next free number on `main` (0001–0003 used; 0004 is claimed by the room-label OCR note).
 
 ### Never commit
 `local.properties`, keystores, API keys, `.venv/`, `data/raw/`, build output, large videos, `*.json.bak`.
@@ -304,18 +304,20 @@ Report error against scan count as a trade-off; within-route differences and unc
 
 Issues are created with owner, area label, milestone and a **"Done when"** checklist; a PR closes its issue with `Closes #N`. Use the **Task** issue template for new work (area, Gantt task, done-when).
 
-### G2 · Baseline navigates (Nov 1): current focus
-| # | Issue | Owner | Critical for G2? |
+### G2 · Baseline navigates (Nov 8): current focus
+| # | Issue | Owner | Status |
 |---|---|---|---|
-| #8 | Router: A* to the nearest door for a room label | Limo + Jayden | Yes (`AStarRouter` exists; add label → nearest door) |
-| #9 | Load a FloorGraph fixture in the app and wire NavigationSession | Limo | Yes |
-| #10 | Guidance UI v1: arrow, map with route, steps to next turn (works on a fake pose stream) | Limo | Yes |
-| #11 | Sensor-trace recorder (debug screen → CSV) | Johnny | Yes (first; everything in tracking replays its traces) |
-| #12 | Steps, heading and calibration k | Johnny | Yes |
-| #13 | Particle tracker v1 on the corridor graph | Johnny | Yes |
-| #14 | Room-number OCR → door labels on the extracted graph | Jayden | No; can slip to G3 (baseline can use the hand-traced graph) |
-| #15 | "You Are Here" star detection → START node | Jayden | No; can slip to G3 |
-| #16 | "Check the map" graph editor screen | Jayden + Limo | No; can slip to G3 |
+| #8 | Router: A* to the nearest door for a room label | Limo + Jayden | **Done** (#42) |
+| #9 | Load a FloorGraph fixture in the app and wire NavigationSession | Limo | PR #43 |
+| #10 | Guidance UI v1: arrow, map with route, steps to next turn (fake pose stream) | Limo | PR #43 |
+| #11 | Sensor-trace recorder (debug screen → CSV) | Johnny | Recorder merged (#40); still needs one 2-min EH3 walk committed |
+| #12 | Steps, heading and calibration k | Johnny | Live `MotionEvent` stream merged (#40); calibration k + ±5% step check open |
+| #13 | Particle tracker v1 on the corridor graph | Johnny | Open; **the G2 gate** |
+| #14 | Room-number OCR → door labels on the extracted graph | Jayden | Branch ready, PR pending; not on the G2 path |
+| #15 | "You Are Here" star detection → START node | Jayden | G3 |
+| #16 | "Check the map" graph editor screen | Jayden + Limo | G3 |
+
+Next for the app (Limo): live-tracking integration (START "which way are you facing" tap → `align`, pose source that swaps `FakePoseStream` for `Tracker`, checkpoint logging for the G2 gate and A–D), then #20 voice/vibration + offline.
 
 Later milestones hold: Kotlin port of rectify + corridors with CameraX, confidence monitor, sign scanner + re-anchor, voice/vibration + offline, recording EH3 evaluation walks, Phase II demo prep (G3); threshold pilot + QA, Writing Center draft (G4); A–D trials + user study, final report + demo, optional ARCore (G5); backlog: corridors without route lines (wall-gap analysis). G0 and G1 issues record the finished work.
 
