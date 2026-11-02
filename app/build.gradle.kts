@@ -27,6 +27,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    sourceSets {
+        getByName("main") {
+            // Verified map graphs + straightened images, loaded with MapAssets.
+            assets.srcDir(rootProject.file("data/fixtures/maps"))
+        }
+    }
 }
 
 kotlin {
