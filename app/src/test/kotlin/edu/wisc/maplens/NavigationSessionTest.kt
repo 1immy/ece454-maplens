@@ -5,6 +5,7 @@ import edu.wisc.maplens.model.ConfidenceLevel
 import edu.wisc.maplens.model.ConfidenceState
 import edu.wisc.maplens.model.Edge
 import edu.wisc.maplens.model.FloorGraph
+import edu.wisc.maplens.model.Landmark
 import edu.wisc.maplens.model.Node
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
@@ -12,6 +13,7 @@ import edu.wisc.maplens.model.RecoveryAction
 import edu.wisc.maplens.routing.AStarRouter
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class NavigationSessionTest {
@@ -45,6 +47,20 @@ class NavigationSessionTest {
 
         session.onArrived()
         assertEquals(Phase.ARRIVED, session.phase)
+    }
+
+    @Test
+    fun `calibrating to a room label routes to its door`() {
+        val labelled = graph.copy(landmarks = listOf(Landmark("3546", "D", 1f)))
+        val session = NavigationSession(AStarRouter())
+        session.onMapCaptured(labelled)
+        session.onGraphVerified(labelled)
+        assertFalse(session.onCalibratedToRoom(k = 25.0, roomLabel = "9999"))
+        assertEquals(Phase.CALIBRATE, session.phase)
+        assertTrue(session.onCalibratedToRoom(k = 25.0, roomLabel = "3546"))
+        assertEquals(listOf("S", "D"), session.route!!.nodeIds)
+        assertEquals(25.0, session.stepLengthPx)
+        assertEquals(Phase.NAVIGATE, session.phase)
     }
 
     private fun low() = ConfidenceState(
