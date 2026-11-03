@@ -1,0 +1,9 @@
+{
+  "description": "Steps counted by the walker between checkpoint taps, as ground truth for step-count error (#12). 'start' is the moment recording began.",
+  "counts": [
+    { "trace": "eh-3-elevators-3418-3446-03", "from": "start", "to": "door-3418", "steps": 32 },
+    { "trace": "eh-3-elevators-3418-3446-03", "from": "start", "to": "door-3446", "steps": 93 },
+    { "trace": "eh-3-elevators-3418-3434-04", "from": "door-3418", "to": "door-3425", "steps": 24 },
+    { "trace": "eh-3-elevators-3418-3434-04", "from": "door-3425", "to": "door-3434", "steps": 17 }
+  ]
+}

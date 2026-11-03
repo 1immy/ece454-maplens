@@ -1,0 +1,70 @@
+{
+  "formatVersion": 1,
+  "startedUtc": "2026-11-02T21:51:25.013533Z",
+  "startedElapsedRealtimeNs": 3605145132415,
+  "clock": "elapsedRealtimeNanos; sensor timestamps retained",
+  "device": "Google Pixel 7a",
+  "androidApi": 34,
+  "requestedContinuousPeriodUs": 20000,
+  "counter": "session delta; first reading is baseline if preview has none",
+  "checkpointsImplemented": true,
+  "headingOffsetRad": 1.1423261986816575,
+  "headingFrame": "clockwise map radians; atan2(dy, dx); manual alignment",
+  "stepSource": "step_detector",
+  "sensors": {
+    "step": {
+      "status": "Live",
+      "name": "Step Detector",
+      "vendor": "Google",
+      "version": 1
+    },
+    "step_counter": {
+      "status": "Live",
+      "name": "Step Counter",
+      "vendor": "Google",
+      "version": 1
+    },
+    "accel": {
+      "status": "Live",
+      "name": "LSM6DSV Accelerometer",
+      "vendor": "STMicro",
+      "version": 1
+    },
+    "gyro": {
+      "status": "Live",
+      "name": "LSM6DSV Gyroscope",
+      "vendor": "STMicro",
+      "version": 1
+    },
+    "game_rv": {
+      "status": "Live",
+      "name": "Game Rotation Vector Sensor",
+      "vendor": "Google",
+      "version": 1
+    }
+  },
+  "endedUtc": "2026-11-02T21:52:49.714009Z",
+  "durationMs": 84699,
+  "rows": 15878,
+  "detectedSteps": 96,
+  "estimatedPeakSteps": 101,
+  "selectedSourceSteps": 96,
+  "counterSteps": 99,
+  "stepsWithoutUsableHeading": 0,
+  "screenRotations": [
+    {
+      "timestampNs": 3605145132415,
+      "rotation": 0
+    }
+  ],
+  "checkpoints": [
+    {
+      "timestampNs": 3632521619123,
+      "label": "door-3418"
+    },
+    {
+      "timestampNs": 3689340216196,
+      "label": "door-3446"
+    }
+  ]
+}
