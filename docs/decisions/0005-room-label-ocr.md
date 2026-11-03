@@ -1,4 +1,4 @@
-# 0002 · Offline room-label OCR prototype
+# 0005 · Offline room-label OCR prototype
 
 ## Context
 
