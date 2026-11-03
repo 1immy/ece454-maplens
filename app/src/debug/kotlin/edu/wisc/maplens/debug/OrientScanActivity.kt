@@ -41,9 +41,9 @@ import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import edu.wisc.maplens.MapAssets
 import edu.wisc.maplens.R
 import edu.wisc.maplens.model.FloorGraph
-import edu.wisc.maplens.model.FloorGraphJson
 import edu.wisc.maplens.tracking.CameraPose
 import edu.wisc.maplens.tracking.OrientObservation
 import edu.wisc.maplens.tracking.OrientResult
@@ -199,9 +199,9 @@ class OrientScanActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun loadGraph() {
-        val name = assets.list("graphs").orEmpty().filter { it.endsWith(".graph.json") }
-            .sortedBy { if (it.startsWith("eh-3-elevators")) 0 else 1 }.firstOrNull()
-        graph = name?.let { FloorGraphJson.decode(assets.open("graphs/$it").reader().readText()) }
+        // Saved scans name the fixture file, so the replay test can find the same graph.
+        graph = runCatching { MapAssets.loadGraph(this) }.getOrNull()
+        val name = graph?.let { "${MapAssets.EH3_ELEVATORS}.graph.json" }
         graphName = name.orEmpty()
         findViewById<TextView>(R.id.scan_graph).text =
             name?.let { getString(R.string.scan_graph, it) } ?: getString(R.string.scan_no_graph)

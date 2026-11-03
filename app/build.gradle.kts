@@ -42,19 +42,6 @@ kotlin {
     }
 }
 
-// The scan-to-orient debug screen loads traced graphs (not the large map images) as assets.
-val scanGraphs = tasks.register<Copy>("copyScanGraphs") {
-    from(rootProject.file("data/fixtures/maps")) { include("*.graph.json") }
-    into(layout.buildDirectory.dir("generated/scanGraphs/graphs"))
-}
-android.sourceSets.getByName(
-    "debug"
-).assets.srcDir(layout.buildDirectory.dir("generated/scanGraphs"))
-tasks.matching {
-    it.name.contains("Debug") &&
-        (it.name.endsWith("DebugAssets") || it.name.contains("lint", ignoreCase = true))
-}.configureEach { dependsOn(scanGraphs) }
-
 dependencies {
     implementation(project(":mapparse"))
     implementation(project(":tracking"))
