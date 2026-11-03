@@ -102,8 +102,80 @@ Misses are corridors with **no route line** (3609 → 3605, "To EXIT", short stu
 
 - Port `rectify.py` to Kotlin in `mapparse` (OpenCV Android)
 - Corridors without route lines: wall-gap analysis (hatching alone is not enough)
-- Port room-label OCR to Android; "You Are Here" star detection → START
+- Port room-label OCR and START detection to Android
 - Trace replay and drift plots for conditions A–D
+
+## `start_marker.py`: gold star → START (#15)
+
+Offline Python prototype for straightened evacuation posters. Uses existing
+OpenCV/NumPy dependencies: gold HSV segmentation, a small gap close, star
+concavity/solidity checks, and a dark blue disk context check. Exactly one
+candidate is required. No OCR, model download or reference trace is used in
+prediction. Parameters live in `start_marker.Params` and target 2000 px maps.
+
+From the root, activate the Python environment described above (or source the
+local `start-maplens.sh` when present), then run:
+
+```bash
+mkdir -p work/issue-15
+for poster in eh-3-elevators-evac eh-3-stair3424-evac; do
+    python tools/corridors.py extract "data/fixtures/maps/$poster.jpg" \
+        -o "work/issue-15/$poster.corridors.graph.json"
+    python tools/start_marker.py evaluate "data/fixtures/maps/$poster.jpg" \
+        --graph "work/issue-15/$poster.corridors.graph.json" \
+        --truth "data/fixtures/maps/$poster.graph.json" \
+        -o "work/issue-15/$poster.start.graph.json" \
+        --report "work/issue-15/$poster.report.json" \
+        --debug "work/issue-15/$poster.overlay.png"
+done
+```
+
+For prediction alone use `extract` and omit `--truth`. `evaluate` creates the
+prediction before reading the trace. Independently rescore saved output with:
+
+```bash
+python tools/start_marker.py score work/issue-15/eh-3-elevators-evac.start.graph.json \
+    data/fixtures/maps/eh-3-elevators-evac.graph.json
+MPLBACKEND=Agg python -m unittest discover tools
+./gradlew ktlintCheck test
+```
+
+Use the exact same straightened image/pixel frame as the input graph. Projection
+searches every segment of every edge polyline, including interiors and bends.
+The default snap limit is 100 px (`--max-distance`). Safe endpoints within 2 px
+are reused; DOOR/EXIT/STAIRS/ELEVATOR/AED or landmark endpoint conflicts require
+manual review. Otherwise insert START and split its edge, preserving bends and
+recomputing geometric lengths. Graph/node/edge metadata and landmarks survive;
+implicit edge IDs are made explicit before insertion changes their array index.
+Previous START nodes become DEAD_END (degree ≤1) or JUNCTION. Outputs are always
+`verified: false`. Existing extractor geometry is preserved, including any
+polyline endpoint discrepancy with refined junction nodes.
+
+Missing/multiple candidates, excessive distance and semantic endpoint conflicts
+exit with code 2, saving an audit/review reason and optional overlay, without
+writing a prediction graph. A rejected detection/attachment also removes any
+earlier prediction at the requested output path, so it cannot be mistaken for
+the new result. Check exit status and audit before using outputs. Invalid
+input graphs fail explicitly. A placeholder `startNodeId` cannot be scored as a
+successful START. Overlays show **gold** marker/box, **green** projected START,
+**cyan** traced START (evaluation only), **magenta** existing corridors.
+
+Measured on independently extracted corridor inputs from `main` at `81d0f4c`:
+
+| Poster | Detected marker (px) | Projected START (px) | Traced START (px) | Snap (px) | START error (px) |
+|---|---|---|---|---|---|
+| elevators evac | (1541.0, 836.0) | (1541.48, 840.75) | (1540.4, 856.7) | 4.78 | **15.98** |
+| stair3424 evac | (1084.0, 1256.5) | (1084.25, 1261.44) | (1084.3, 1268.9) | 4.94 | **7.46** |
+
+Both posters informed threshold selection: these are **tuning results**, with
+one detected and attached marker per poster, not held-out accuracy. Each output
+has 11 nodes and 12 edges and passes existing Kotlin `FloorGraphJson.decode()`
+and `FloorGraph.validate()`. Reference traces were read only for scoring, and
+hand fixtures were unchanged. The route-line extractor bends around the star;
+its closest polyline point differs from the traced corridor center. No corridor
+correction or extension was applied. Missing corridor recovery stays under #28.
+Directory pink dots, severe glare/occlusion, other resolutions/poster styles,
+Android integration and phone tests remain outside this prototype.
 
 ## `room_labels.py`: offline room OCR and corridor attachment (#14)
 
