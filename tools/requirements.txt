@@ -4,3 +4,5 @@ matplotlib>=3.8
 opencv-python-headless>=4.9
 scipy>=1.11
 scikit-image>=0.22
+rapidocr==3.10.0
+onnxruntime==1.31.1
