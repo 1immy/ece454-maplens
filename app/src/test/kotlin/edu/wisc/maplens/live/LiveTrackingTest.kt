@@ -8,9 +8,9 @@ import edu.wisc.maplens.model.MotionEvent
 import edu.wisc.maplens.model.Node
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
-import edu.wisc.maplens.model.SignObservation
+import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.model.StepSource
-import edu.wisc.maplens.model.nearestEdge
+import edu.wisc.maplens.tracking.ParticleTracker
 import java.io.File
 import java.io.StringWriter
 import kotlin.math.PI
@@ -61,58 +61,20 @@ class LiveTrackingTest {
 
     private fun step(heading: Double) = MotionEvent.Step(++clock, heading, StepSource.STEP_DETECTOR)
 
-    private fun walker(heading: Double = 0.0) =
-        GraphWalker().apply { start(graph, "S", heading, stepLengthPx = 25.0) }
+    private fun pose(x: Double, y: Double, edgeId: String) =
+        PoseEstimate(clock, PixelPoint(x, y), 0.0, edgeId, 0.0, 1.0, 25.0)
 
+    /** The live path end to end, minus sensors: START facing → ParticleTracker → checkpoint. */
     @Test
-    fun `walker starts on the corridor it faces and moves k per step`() {
-        val w = walker()
-        assertEquals("S-D1", w.pose().edgeId)
-        assertEquals(PixelPoint(0.0, 0.0), w.pose().position)
-        repeat(4) { w.onMotion(step(0.0)) }
-        assertEquals(PixelPoint(100.0, 0.0), w.pose().position)
-        val p = w.onMotion(step(0.0))
-        assertEquals("D1-J", p.edgeId)
-        assertEquals(PixelPoint(125.0, 0.0), p.position)
-        assertEquals("L-S", walker(PI).pose().edgeId)
-    }
-
-    @Test
-    fun `walker takes the branch that matches the heading at a junction`() {
-        val w = walker()
-        repeat(8) { w.onMotion(step(0.0)) }
-        assertEquals(PixelPoint(200.0, 0.0), w.pose().position)
-        val down = w.onMotion(step(PI / 2))
-        assertEquals("J-E", down.edgeId)
-        assertEquals(PixelPoint(200.0, 25.0), down.position)
-    }
-
-    @Test
-    fun `walker turns around when the heading points back`() {
-        val w = walker()
-        repeat(3) { w.onMotion(step(0.0)) }
-        val back = w.onMotion(step(PI - 0.2))
-        assertEquals(PixelPoint(50.0, 0.0), back.position)
-        assertEquals(PI - 0.2, back.headingRad, 1e-9)
-    }
-
-    @Test
-    fun `turn events and sign scans do not move the walker`() {
-        val w = walker()
-        w.onMotion(step(0.0))
-        assertEquals(PixelPoint(25.0, 0.0), w.onMotion(MotionEvent.Turn(++clock, PI / 2)).position)
-        assertFalse(w.onSign(SignObservation(0L, "3418", 1f, "D1")))
-    }
-
-    @Test
-    fun `random headings always leave the walker on a corridor`() {
-        val random = Random(454)
-        val w = walker()
-        repeat(500) {
-            val pose = w.onMotion(step(random.nextDouble(-PI, PI)))
-            val hit = graph.nearestEdge(pose.position)!!
-            assertTrue(hit.distancePx < 1e-6, "off the graph at step $it: ${pose.position}")
-        }
+    fun `particle tracker from the START facing option stays on the walked corridor`() {
+        val facing = graph.facingOptions("S").single { it.arrow == "→" }
+        val tracker = ParticleTracker(random = Random(454))
+        tracker.start(graph, "S", facing.bearingRad, stepLengthPx = 25.0)
+        var estimate = tracker.pose
+        repeat(6) { estimate = tracker.onMotion(step(0.0)) }
+        val result = graph.checkpoint("C1", estimate, PixelPoint(150.0, 0.0), strideMeters = 0.7)
+        assertTrue(result.sameCorridor, "estimate ${estimate.position} on ${estimate.edgeId}")
+        assertTrue(result.errorPx < 50.0, "error ${result.errorPx} px")
     }
 
     @Test
@@ -146,9 +108,7 @@ class LiveTrackingTest {
 
     @Test
     fun `checkpoint compares the estimate with the tapped truth`() {
-        val w = walker()
-        repeat(6) { w.onMotion(step(0.0)) }
-        val estimate = w.pose()
+        val estimate = pose(150.0, 0.0, "D1-J")
         val near = graph.checkpoint("C1", estimate, PixelPoint(60.0, 5.0), strideMeters = 0.7)
         assertEquals("S-D1", near.truthEdgeId)
         assertTrue(near.sameCorridor)
@@ -163,9 +123,8 @@ class LiveTrackingTest {
     fun `session log writes one row per event under a fixed header`() {
         val out = StringWriter()
         val log = SessionLog(out)
-        val w = walker()
         log.start(0L, "live", "3418", 0.0, 25.0)
-        val pose = w.onMotion(step(0.0))
+        val pose = pose(25.0, 0.0, "S-D1")
         log.pose(pose)
         log.checkpoint(5L, graph.checkpoint("C1", pose, PixelPoint(25.0, 3.0), 0.7))
         log.arrive(pose)

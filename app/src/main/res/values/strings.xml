@@ -11,7 +11,7 @@
   <string name="no_route">No route to %1$s</string>
   <string name="walk">Demo walk</string>
   <string name="pause">Pause</string>
-  <string name="remaining">~%1$d steps, ~%2$d m to go (demo k = %3$d px/step)</string>
+  <string name="remaining">~%1$d steps, ~%2$d m to go (k = %3$.1f px/step)</string>
   <string name="arrived_phase">Session phase: %1$s</string>
   <string name="remaining_live">~%1$d steps, ~%2$d m to go · walked %3$d (%5$s), skipped %4$d</string>
   <string name="source_detector">step detector</string>

@@ -22,7 +22,6 @@ import edu.wisc.maplens.guidance.Maneuver
 import edu.wisc.maplens.guidance.RouteGuide
 import edu.wisc.maplens.guidance.headline
 import edu.wisc.maplens.live.FacingOption
-import edu.wisc.maplens.live.GraphWalker
 import edu.wisc.maplens.live.LiveMotionSource
 import edu.wisc.maplens.live.LiveStats
 import edu.wisc.maplens.live.SessionLog
@@ -34,6 +33,7 @@ import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.routing.AStarRouter
 import edu.wisc.maplens.routing.roomDestinations
+import edu.wisc.maplens.tracking.ParticleTracker
 import edu.wisc.maplens.tracking.TrackingConfig
 import java.io.File
 import java.text.SimpleDateFormat
@@ -48,7 +48,7 @@ import kotlin.math.roundToInt
  *
  * Two pose sources drive it. **Demo** walks the route with a [FakePoseStream]. **Live** asks
  * which corridor the user faces at START (sets θ0), then feeds real steps and heading through
- * [LiveMotionSource] into a tracker: [GraphWalker] until the particle filter (#13) replaces it.
+ * [LiveMotionSource] into Johnny's [ParticleTracker] (#50).
  * Live mode also logs every pose and tapped checkpoint to a CSV for the G2 gate.
  *
  * Capture and Verify are skipped: the hand-traced graph goes straight to Calibrate, and k is
@@ -243,7 +243,7 @@ class MainActivity : Activity() {
         val k = Demo.STEP_LENGTH_PX
         live.begin(
             facing.bearingRad,
-            GraphWalker(),
+            ParticleTracker(),
             setup = { it.start(g, g.startNodeId, facing.bearingRad, k) },
         ) { aligned ->
             if (!aligned) {
@@ -343,7 +343,7 @@ class MainActivity : Activity() {
         headline.text = instruction.headline()
         detail.text = instruction.detail
         val meters = (stepsLeft * stride).roundToInt()
-        val k = Demo.STEP_LENGTH_PX.roundToInt()
+        val k = Demo.STEP_LENGTH_PX
         val sensors = stats
         remaining.text = when {
             stepsLeft <= 0 -> getString(R.string.arrived_phase, session?.phase?.name.orEmpty())
