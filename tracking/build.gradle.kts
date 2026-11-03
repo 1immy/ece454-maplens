@@ -31,3 +31,8 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
 }
+
+tasks.withType<Test>().configureEach {
+    // Lets replay tests read data/fixtures (maps, recorded traces) without fragile relative paths.
+    systemProperty("maplens.fixtures", rootProject.file("data/fixtures").absolutePath)
+}

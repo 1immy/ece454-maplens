@@ -35,6 +35,16 @@ data class TrackingConfig(
     val particleCount: Int = 300,
     /** Per-particle step-length noise, as a fraction of k. */
     val stepLengthNoise: Double = 0.10,
+    /** Spread of each particle's own k around the calibrated k at start, as a fraction. */
+    val initialStepLengthSpread: Double = 0.15,
+    /** σθ in the heading weight exp(−(θ − β)² / 2σθ²), and for branch choice at junctions. */
+    val headingSigmaDeg: Double = 20.0,
+    /** Resample when the effective particle count drops below this fraction of N. */
+    val resampleFraction: Double = 0.5,
+    /** Weight multiplier for a particle that tries to walk past a dead end ("~0"). */
+    val deadEndWeight: Double = 1e-3,
+    /** Particles within this distance are one cluster; the estimate is the heaviest cluster. */
+    val clusterRadiusMeters: Double = 2.0,
     /** LOW if particle spread exceeds this (about one door gap). */
     val maxSpreadMeters: Double = 3.0,
     /** LOW if the top cluster holds less than this share of weight. */
