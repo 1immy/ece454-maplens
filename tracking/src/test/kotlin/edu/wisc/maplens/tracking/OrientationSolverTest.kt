@@ -145,6 +145,28 @@ class OrientationSolverTest {
     }
 
     @Test
+    fun `facing a posted map fixes the offset to map up`() {
+        val graph = junction(east, south, west)
+        val result = solver.solve(graph, "J", listOf(OrientObservation.MapUp(seen(-90.0, 140.0))))
+        assertEquals(OrientStatus.CLEAR, result.status)
+        assertOffset(140.0, result.best!!.offsetRad)
+    }
+
+    @Test
+    fun `a sign right beside you on the wall still breaks a straight corridor tie`() {
+        // Door 3417 is 23 px up the corridor; its sign on the side wall is seen 44 degrees off.
+        val graph = junction(
+            "E" to PixelPoint(23.0, 0.0),
+            "W" to PixelPoint(-62.0, 0.0),
+            doors = mapOf("3417" to "E"),
+        )
+        val scan = listOf(CorridorAxis(seen(0.0, 30.0)), Door("3417", seen(-44.0, 30.0)))
+        val result = solver.solve(graph, "J", scan)
+        assertEquals(OrientStatus.CLEAR, result.status)
+        assertOffset(30.0, result.best!!.offsetRad, toleranceDeg = 15.0)
+    }
+
+    @Test
     fun `offsets near plus or minus 180 degrees wrap correctly`() {
         val graph = junction(east, south, doors = mapOf("3445" to "E"))
         val result = solver.solve(graph, "J", listOf(Door("3445", seen(0.0, 179.6))))

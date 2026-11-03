@@ -33,6 +33,8 @@
       android:textColor="@color/recorder_ink" />
     <Button android:id="@+id/recorder_align" style="@style/RecorderAction"
       android:text="@string/recorder_align" />
+    <Button android:id="@+id/recorder_scan" style="@style/RecorderAction"
+      android:text="@string/recorder_scan" />
     <TextView style="@style/RecorderBody" android:text="@string/recorder_heading_note" />
     <TextView android:id="@+id/recorder_step_comparison" style="@style/RecorderBody"
       android:layout_marginTop="12dp" />

@@ -75,4 +75,24 @@
   <string name="recorder_sensor_status">%1$s · %2$s</string>
   <string name="recorder_sensor_live">%1$s · %2$.1f Hz observed · %3$.1f s ago</string>
   <string name="recorder_counter_note">Since the preview or recording baseline. Counter updates can be delayed; detector events drive per-step tracking.</string>
+  <string name="recorder_scan">Scan to orient (experimental)</string>
+  <string name="scan_title">Scan to orient</string>
+  <string name="scan_graph">Map: %1$s</string>
+  <string name="scan_no_graph">No traced map found in this build.</string>
+  <string name="scan_node_hint">Standing at: room number (3445) or node id (J2)</string>
+  <string name="scan_start">Start scan</string>
+  <string name="scan_cancel">Cancel scan</string>
+  <string name="scan_truth">Set true direction (for testing)</string>
+  <string name="scan_truth_note">Optional. Point the camera along a corridor whose map direction you know and pick it. The result then shows its error.</string>
+  <string name="scan_truth_set">True direction saved.</string>
+  <string name="scan_need_node">Enter where you are standing: a room number or node id from this map.</string>
+  <string name="scan_need_camera">Camera permission is needed to scan.</string>
+  <string name="scan_ready">Stand still, hold the phone upright and tap Start scan.</string>
+  <string name="scan_hold_upright">Hold the phone upright, level with the horizon</string>
+  <string name="scan_turn_right">Turn right to the dot · photo %1$d of %2$d</string>
+  <string name="scan_turn_left">Turn left to the dot · photo %1$d of %2$d</string>
+  <string name="scan_hold_still">Hold still · photo %1$d of %2$d</string>
+  <string name="scan_capturing">Taking photo %1$d of %2$d…</string>
+  <string name="scan_analysing">Reading photos…</string>
+  <string name="scan_done">Done · see the result below</string>
 </resources>

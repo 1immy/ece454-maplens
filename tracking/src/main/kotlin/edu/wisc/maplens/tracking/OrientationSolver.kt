@@ -1,14 +1,18 @@
 package edu.wisc.maplens.tracking
 
 import edu.wisc.maplens.model.FloorGraph
+import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Something seen during a turn-on-the-spot scan. [relativeRad] is its direction in the
@@ -28,6 +32,12 @@ sealed interface OrientObservation {
 
     /** A wall fills the view in this direction. */
     data class Blocked(override val relativeRad: Double) : OrientObservation
+
+    /**
+     * Facing a posted floor map. Evacuation posters are drawn rotated to the viewer's facing
+     * direction (#3, #4), so this direction is map up.
+     */
+    data class MapUp(override val relativeRad: Double) : OrientObservation
 }
 
 enum class OrientStatus { CLEAR, AMBIGUOUS, NO_EVIDENCE }
@@ -64,12 +74,15 @@ class OrientationSolver(private val config: TrackingConfig = TrackingConfig()) {
             bearing(here, next)
         }
         val doors = graph.landmarks.groupBy({ it.label.uppercase() }) { graph.nodes[it.nodeId] }
+        // Signs hang on the side walls, not on the corridor's centre line, so a near door's sign
+        // can appear well off the line to its node. Maps carry no scale: door spacing stands in.
+        val signSidePx = config.orientDoorSideFraction * typicalDoorGap(graph)
         val terms = observations.mapNotNull { obs ->
             when (obs) {
                 is OrientObservation.Door -> doors[obs.label.trim().uppercase()]
                     ?.mapNotNull { node -> node?.position?.takeIf { it.distanceTo(here) > 1e-6 } }
-                    ?.map { bearing(here, it) }?.takeIf { it.isNotEmpty() }
-                    ?.let { targets -> term(obs, config.orientDoorSigmaDeg) { error(it, targets) } }
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { targets -> doorTerm(obs, here, targets, signSidePx) }
                 // Corridor evidence needs at least one corridor at this node.
                 is OrientObservation.CorridorAxis -> if (corridors.isEmpty()) {
                     null
@@ -81,6 +94,8 @@ class OrientationSolver(private val config: TrackingConfig = TrackingConfig()) {
                 } else {
                     term(obs, config.orientOpeningSigmaDeg) { error(it, corridors) }
                 }
+                is OrientObservation.MapUp ->
+                    term(obs, config.orientPosterSigmaDeg) { error(it, listOf(MAP_UP)) }
                 is OrientObservation.Blocked -> if (corridors.isEmpty()) {
                     null
                 } else {
@@ -137,6 +152,39 @@ class OrientationSolver(private val config: TrackingConfig = TrackingConfig()) {
         }
     }
 
+    /** Best match over doors sharing the label; each widened by its sign's possible side offset. */
+    private fun doorTerm(
+        obs: OrientObservation,
+        here: PixelPoint,
+        doors: List<PixelPoint>,
+        signSidePx: Double,
+    ): (Double) -> Double {
+        val sigma = Math.toRadians(config.orientDoorSigmaDeg)
+        val floor = config.orientOutlierFloor
+        val targets = doors.map { door ->
+            val side = atan(signSidePx / door.distanceTo(here))
+            bearing(here, door) to sqrt(sigma * sigma + side * side)
+        }
+        return { offset ->
+            val map = obs.relativeRad + offset
+            ln(
+                floor + (1 - floor) * targets.maxOf { (target, s) ->
+                    val e = wrap(map - target)
+                    exp(-e * e / (2 * s * s))
+                }
+            )
+        }
+    }
+
+    /** Median length of door-to-door corridor edges (or of all edges), in map pixels. */
+    private fun typicalDoorGap(graph: FloorGraph): Double {
+        val doorIds = graph.nodes.values.filter { it.type == NodeType.DOOR }.map { it.id }.toSet()
+        val lengths = graph.edges.filter { it.from in doorIds && it.to in doorIds }
+            .map { it.lengthPx }
+            .ifEmpty { graph.edges.map { it.lengthPx } }
+        return lengths.sorted().let { if (it.isEmpty()) 0.0 else it[it.size / 2] }
+    }
+
     /** Weighted circular mean around a peak bin, for sub-degree output. */
     private fun refine(scores: DoubleArray, peak: Int, halfWidth: Int): Double {
         var s = 0.0
@@ -155,6 +203,7 @@ class OrientationSolver(private val config: TrackingConfig = TrackingConfig()) {
         const val BINS = 360
         const val MAX_CANDIDATES = 4
         const val FLAT_TOLERANCE = 1e-9
+        const val MAP_UP = -PI / 2
 
         fun binRad(bin: Int) = wrap(Math.toRadians(bin * BIN_DEG))
 

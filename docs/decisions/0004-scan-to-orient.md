@@ -104,9 +104,9 @@ follows that convention, so check this per building.
 
 | Phase | Deliverable | Needs |
 |---|---|---|
-| 1 | **Done on this branch.** `tracking/OrientationSolver.kt` + `OrientationSolverTest` (11 synthetic cases): graph + node + observations → θ0 candidates and CLEAR / AMBIGUOUS / NO_EVIDENCE. Tunables in `TrackingConfig.orient*` | `core/model` only |
-| 2 | Debug capture screen: guided 4–8 photo turn, saves photos + quaternions. Collect at EH3 **and a basement** | CameraX, #12 heading code |
-| 3 | OCR + vanishing-point extraction feeding the solver; replay on collected scans | ML Kit bundled, OpenCV; share OCR code with #19 |
+| 1 | **Done.** `tracking/OrientationSolver.kt` + `OrientationSolverTest` (11 synthetic cases) and `OrientationSolverEh3Test` (all 75 EH3 nodes: never confidently wrong; a neighbouring door settles 65/65): graph + node + observations → θ0 candidates and CLEAR / AMBIGUOUS / NO_EVIDENCE. Tunables in `TrackingConfig.orient*` | `core/model` only |
+| 2 | **Built.** Debug `OrientScanActivity` (open from the recorder): CameraX preview, gyro-guided target dot, auto photo when aimed, upright and steady (gates in `TrackingConfig.orientCapture*`). Saves photos + pose + `scan.json` under app files `scans/` | CameraX (debug only) |
+| 3 | **Built, untuned.** `ScanAnalysis.kt`: camera pose from the quaternion, pixel → bearing, room-number matching with OCR look-alikes, and a pure-Kotlin vanishing-point finder (blur, Sobel, structure-tensor line test, horizon voting; no OpenCV). OCR is ML Kit's bundled model, so it runs offline | ML Kit bundled (debug only) |
 | 4 | Plug into START flow; optional depth model if openings fail | #9 NavigationSession, team sign-off |
 
 **Measure:** θ0 error against the poster-aligned or checkpoint-derived truth;

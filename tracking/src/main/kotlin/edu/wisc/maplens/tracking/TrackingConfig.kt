@@ -63,6 +63,8 @@ data class TrackingConfig(
     val nominalStrideMeters: Double = 0.7,
     /** Scan-to-orient (ADR 0004): bearing noise per observation kind. */
     val orientDoorSigmaDeg: Double = 10.0,
+    /** Room signs sit this far off the corridor centre, as a share of typical door spacing. */
+    val orientDoorSideFraction: Double = 0.3,
     val orientAxisSigmaDeg: Double = 5.0,
     val orientOpeningSigmaDeg: Double = 20.0,
     /** Likelihood floor so one misread or misdetection can't veto the true offset. */
@@ -71,4 +73,28 @@ data class TrackingConfig(
     val orientPeakSeparationDeg: Double = 20.0,
     /** Auto-apply only if the best peak beats the runner-up by this log-likelihood (~10x). */
     val orientClearMargin: Double = 2.3,
+    /** A photo reading this many room numbers is a posted map; facing it means map up. */
+    val orientPosterMinLabels: Int = 3,
+    val orientPosterSigmaDeg: Double = 10.0,
+    /** Guided scan: photos per turn, evenly spaced, and the gates each photo must pass. */
+    val orientScanPhotos: Int = 8,
+    val orientCaptureYawToleranceDeg: Double = 4.0,
+    val orientCaptureMaxPitchDeg: Double = 20.0,
+    val orientCaptureMaxRollDeg: Double = 8.0,
+    /** "Steady": yaw moved less than this over [orientCaptureSteadyMs]. */
+    val orientCaptureSteadyDeg: Double = 1.5,
+    val orientCaptureSteadyMs: Long = 400,
+    /** Vanishing points: edges weaker than this share of the strongest don't vote. */
+    val orientVpEdgeFraction: Double = 0.15,
+    /** Edges this close to vertical (door frames) or to the horizon carry no depth. */
+    val orientVpSkipVerticalDeg: Double = 15.0,
+    val orientVpSkipHorizontalDeg: Double = 4.0,
+    val orientVpPeakHalfWidthDeg: Int = 3,
+    /** Neighbourhood radius (px) for edge direction, and how line-like (0–1) a voter must be. */
+    val orientVpTensorRadius: Int = 2,
+    val orientVpMinCoherence: Double = 0.7,
+    /** A peak needs this share of all votes to count as a corridor direction. */
+    val orientVpMinStrength: Double = 0.2,
+    /** "Looking down the corridor" only if the point is inside this share of the view. */
+    val orientVpInViewFraction: Double = 0.8,
 )
