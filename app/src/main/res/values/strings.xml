@@ -11,6 +11,23 @@
   <string name="no_route">No route to %1$s</string>
   <string name="walk">Demo walk</string>
   <string name="pause">Pause</string>
-  <string name="remaining">~%1$d steps, ~%2$d m to go (demo k = %3$d px/step)</string>
+  <string name="remaining">~%1$d steps, ~%2$d m to go (k = %3$.1f px/step)</string>
   <string name="arrived_phase">Session phase: %1$s</string>
+  <string name="remaining_live">~%1$d steps, ~%2$d m to go · walked %3$d (%5$s), skipped %4$d</string>
+  <string name="source_detector">step detector</string>
+  <string name="source_peaks">accel peaks</string>
+  <string name="mode_demo">Demo</string>
+  <string name="mode_live">Live</string>
+  <string name="checkpoint">Checkpoint</string>
+  <string name="facing">Which way are you facing?</string>
+  <string name="facing_again">Back at START? Which way are you facing?</string>
+  <string name="facing_hint">Stand on the START marker, hold the phone flat in front of you and face a corridor</string>
+  <string name="hold_flat">No steady heading yet. Hold the phone flat in front of you and try again.</string>
+  <string name="no_heading_sensor">This phone has no rotation sensor, so only Demo mode works</string>
+  <string name="using_peaks">No activity permission: counting steps from the accelerometer instead</string>
+  <string name="tap_position">Tap where you really are on the map</string>
+  <string name="same_corridor">correct corridor</string>
+  <string name="other_corridor">WRONG corridor</string>
+  <string name="checkpoint_result">%1$s: %2$.1f m off, %3$s</string>
+  <string name="log_saved">Session log saved: %1$s</string>
 </resources>

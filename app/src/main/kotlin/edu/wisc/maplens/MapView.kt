@@ -50,6 +50,16 @@ class MapView(context: Context) : View(context) {
             invalidate()
         }
 
+    /** Ground-truth positions tapped at checkpoints, drawn as small orange dots. */
+    var checkpoints: List<PixelPoint> = emptyList()
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** Receives the map-pixel position of a single tap, when set. */
+    var onMapTap: ((PixelPoint) -> Unit)? = null
+
     private val density = resources.displayMetrics.density
     private val toScreen = Matrix()
     private val routePath = Path()
@@ -64,6 +74,7 @@ class MapView(context: Context) : View(context) {
     private val dotRingPaint = stroke(Color.WHITE, 3f)
     private val startPaint = fill(Color.rgb(46, 125, 50))
     private val destinationPaint = fill(Color.rgb(198, 40, 40))
+    private val checkpointPaint = fill(Color.rgb(239, 108, 0))
 
     private val scaler = ScaleGestureDetector(
         context,
@@ -90,6 +101,16 @@ class MapView(context: Context) : View(context) {
             ): Boolean {
                 toScreen.postTranslate(-distanceX, -distanceY)
                 invalidate()
+                return true
+            }
+
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                val callback = onMapTap ?: return false
+                val inverse = Matrix()
+                if (!toScreen.invert(inverse)) return false
+                val tapped = floatArrayOf(e.x, e.y)
+                inverse.mapPoints(tapped)
+                callback(PixelPoint(tapped[0].toDouble(), tapped[1].toDouble()))
                 return true
             }
 
@@ -160,6 +181,10 @@ class MapView(context: Context) : View(context) {
             marker(canvas, route.last(), destinationPaint)
         }
         start?.let { marker(canvas, it, startPaint) }
+        for (truth in checkpoints) {
+            val (x, y) = screen(truth)
+            canvas.drawCircle(x, y, 5 * density, checkpointPaint)
+        }
         pose?.let { drawPose(canvas, it) }
     }
 
