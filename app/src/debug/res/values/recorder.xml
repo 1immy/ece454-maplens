@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+  <string name="recorder_launcher_label">MapLens Recorder</string>
   <color name="recorder_background">#F3F5F2</color>
   <color name="recorder_ink">#182C2A</color>
   <color name="recorder_muted">#536764</color>

@@ -1,4 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="app_name">MapLens</string>
+  <string name="loading_map">Loading map…</string>
+  <string name="map_failed">Could not load the map</string>
+  <string name="pick_destination">Pick a destination</string>
+  <string name="at_start">You are at the START marker</string>
+  <string name="where_to">Where to?</string>
+  <string name="choose_destination">Choose room</string>
+  <string name="destination">To %1$s</string>
+  <string name="no_route">No route to %1$s</string>
+  <string name="walk">Demo walk</string>
+  <string name="pause">Pause</string>
+  <string name="remaining">~%1$d steps, ~%2$d m to go (demo k = %3$d px/step)</string>
+  <string name="arrived_phase">Session phase: %1$s</string>
 </resources>

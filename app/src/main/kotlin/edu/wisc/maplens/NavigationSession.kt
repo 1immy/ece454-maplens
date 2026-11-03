@@ -7,6 +7,7 @@ import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.model.Route
 import edu.wisc.maplens.routing.Router
+import edu.wisc.maplens.routing.routeToLabel
 
 enum class Phase { CAPTURE, VERIFY, CALIBRATE, NAVIGATE, RECOVER, ARRIVED }
 
@@ -51,6 +52,16 @@ class NavigationSession(
         val g = checkNotNull(graph)
         stepLengthPx = k
         route = router.route(g, g.startNodeId, destinationNodeId) ?: return false
+        phase = Phase.NAVIGATE
+        return true
+    }
+
+    /** Like [onCalibrated], but routes to the nearest door of a room label. */
+    fun onCalibratedToRoom(k: Double, roomLabel: String): Boolean {
+        check(phase == Phase.CALIBRATE) { "calibrate only from CALIBRATE, was $phase" }
+        val g = checkNotNull(graph)
+        stepLengthPx = k
+        route = router.routeToLabel(g, g.startNodeId, roomLabel) ?: return false
         phase = Phase.NAVIGATE
         return true
     }

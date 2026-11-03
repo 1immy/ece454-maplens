@@ -1,12 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-  xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <application>
-    <activity android:name=".MainActivity" android:exported="false"
-      tools:replace="android:exported">
-      <intent-filter tools:node="removeAll" />
-    </activity>
+    <!-- Second launcher icon in debug builds; MainActivity stays the app's own entry. -->
     <activity android:name=".debug.RecorderActivity"
+      android:label="@string/recorder_launcher_label"
       android:exported="true"
       android:screenOrientation="fullSensor"
       android:configChanges="orientation|screenSize"
