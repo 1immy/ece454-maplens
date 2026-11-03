@@ -103,6 +103,9 @@ class RecorderActivity : Activity() {
                     recorder.alignHeading(bearings[choice])
                 }.show()
         }
+        findViewById<Button>(R.id.recorder_scan).setOnClickListener {
+            startActivity(Intent(this, OrientScanActivity::class.java))
+        }
         findViewById<Switch>(R.id.recorder_peak_mode).setOnCheckedChangeListener { _, enabled ->
             if (snapshot?.usePeaks != enabled) recorder.useAccelerometerSteps(enabled)
         }

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/scan_root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent">
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical">
+    <!-- Height set in code to the photo's 3:4 portrait shape, so the guide maps 1:1. -->
+    <FrameLayout android:id="@+id/scan_camera"
+      android:layout_width="match_parent" android:layout_height="wrap_content">
+      <androidx.camera.view.PreviewView android:id="@+id/scan_preview"
+        android:layout_width="match_parent" android:layout_height="match_parent" />
+      <edu.wisc.maplens.debug.ScanGuideView android:id="@+id/scan_guide"
+        android:layout_width="match_parent" android:layout_height="match_parent" />
+      <TextView android:id="@+id/scan_prompt"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_gravity="bottom" android:padding="12dp"
+        android:background="#99182C2A" android:textColor="#FFFFFF"
+        android:textSize="18sp" android:gravity="center"
+        android:accessibilityLiveRegion="polite" />
+    </FrameLayout>
+    <LinearLayout
+      android:layout_width="match_parent" android:layout_height="wrap_content"
+      android:orientation="vertical" android:padding="16dp">
+      <TextView style="@style/RecorderBody"
+        android:text="@string/scan_title" android:textColor="@color/recorder_ink"
+        android:textSize="24sp" android:textStyle="bold"
+        android:accessibilityHeading="true" />
+      <TextView android:id="@+id/scan_graph" style="@style/RecorderBody" />
+      <EditText android:id="@+id/scan_node"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:minHeight="48dp" android:hint="@string/scan_node_hint"
+        android:importantForAutofill="no"
+        android:inputType="textCapCharacters|textNoSuggestions"
+        android:imeOptions="actionDone"
+        android:textColor="@color/recorder_ink" />
+      <Button android:id="@+id/scan_start"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:minHeight="60dp" android:layout_marginTop="8dp"
+        android:text="@string/scan_start" android:textAllCaps="false"
+        android:textSize="18sp" android:textColor="#FFFFFF"
+        android:backgroundTint="@color/recorder_accent" />
+      <Button android:id="@+id/scan_truth" style="@style/RecorderAction"
+        android:text="@string/scan_truth" />
+      <TextView style="@style/RecorderBody" android:text="@string/scan_truth_note" />
+      <TextView android:id="@+id/scan_result" style="@style/RecorderBody"
+        android:layout_marginTop="12dp" android:background="@drawable/recorder_card"
+        android:textColor="@color/recorder_ink" android:textIsSelectable="true" />
+    </LinearLayout>
+  </LinearLayout>
+</ScrollView>

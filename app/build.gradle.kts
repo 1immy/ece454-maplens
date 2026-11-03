@@ -48,6 +48,12 @@ dependencies {
     implementation(project(":routing"))
     implementation(project(":guidance"))
 
+    // Scan-to-orient debug screen (ADR 0006). Bundled OCR model: works with no network.
+    debugImplementation(libs.androidx.camera.camera2)
+    debugImplementation(libs.androidx.camera.lifecycle)
+    debugImplementation(libs.androidx.camera.view)
+    debugImplementation(libs.mlkit.text.recognition)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
 }
