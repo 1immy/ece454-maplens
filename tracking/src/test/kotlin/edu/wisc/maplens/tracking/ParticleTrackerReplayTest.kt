@@ -16,6 +16,11 @@ import kotlin.test.assertTrue
 class ParticleTrackerReplayTest {
     private val fixtures = System.getProperty("maplens.fixtures")?.let(::File)
 
+    private companion object {
+        /** End error varies run to run, so report median and worst over several seeds. */
+        const val SEEDS = 10
+    }
+
     /** Calibrated from walks 01 and 02 (route px / detector steps); walk 03 is held out. */
     private val calibratedK = 17.3
 
@@ -52,50 +57,63 @@ class ParticleTrackerReplayTest {
             val offset = Regex("\"headingOffsetRad\":\\s*(-?[0-9.Ee+-]+)")
                 .find(json.readText())!!.groupValues[1].toDouble()
             val trace = TraceReplay.replay(csv.reader(), offset)
-            val tracker = ParticleTracker(random = Random(454))
-            tracker.start(graph, graph.startNodeId, trace.steps.first().headingRad, calibratedK)
-
-            var worstOffRoute = 0.0
-            val checkpointErrors = mutableListOf<String>()
-            var pending = trace.checkpoints
-            for (step in trace.steps) {
-                // Score each checkpoint against the estimate just before the tap.
-                while (pending.isNotEmpty() && pending.first().timestampNs < step.timestampNanos) {
-                    checkpointErrors += error(graph, door, pending.first(), tracker)
-                    pending = pending.drop(1)
-                }
-                val pose = tracker.onMotion(step)
-                val offRoute = routeGraph.nearestEdge(pose.position)!!.distancePx
-                worstOffRoute = maxOf(worstOffRoute, offRoute)
-            }
-            pending.forEach { checkpointErrors += error(graph, door, it, tracker) }
             val end = graph.nodes.getValue(door.getValue("door-3446")).position
-            val endError = tracker.pose.position.distanceTo(end)
+            val endErrors = mutableListOf<Double>()
+            val finalK = mutableListOf<Double>()
+            // Checkpoint label -> error across seeds, scored just before each tap.
+            val checkpointErrors = linkedMapOf<String, MutableList<Double>>()
+            var worstOffRoute = 0.0
+            for (seed in 1..SEEDS) {
+                val tracker = ParticleTracker(random = Random(seed))
+                tracker.start(graph, graph.startNodeId, trace.steps.first().headingRad, calibratedK)
+                var pending = trace.checkpoints
+                fun score(cp: TraceCheckpoint) {
+                    val at = graph.nodes.getValue(door.getValue(cp.label)).position
+                    val errors = checkpointErrors.getOrPut(cp.label.removePrefix("door-")) {
+                        mutableListOf()
+                    }
+                    errors += tracker.pose.position.distanceTo(at)
+                }
+                for (step in trace.steps) {
+                    // Score each checkpoint against the estimate just before the tap.
+                    while (pending.isNotEmpty() && pending[0].timestampNs < step.timestampNanos) {
+                        score(pending.first())
+                        pending = pending.drop(1)
+                    }
+                    val pose = tracker.onMotion(step)
+                    val offRoute = routeGraph.nearestEdge(pose.position)!!.distancePx
+                    worstOffRoute = maxOf(worstOffRoute, offRoute)
+                }
+                pending.forEach(::score)
+                endErrors += tracker.pose.position.distanceTo(end)
+                finalK += tracker.pose.stepLengthPx
+            }
+            val checkpoints = checkpointErrors.entries.joinToString { (label, errors) ->
+                "$label median ${px(errors.median())}"
+            }
             println(
-                "$name: ${trace.steps.size} steps, " +
-                    "worst off-route ${"%.1f".format(worstOffRoute)} px, " +
-                    "end error ${"%.1f".format(endError)} px " +
-                    "(${"%.1f".format(endError / pxPerMeter)} m), " +
-                    "k ${"%.1f".format(tracker.pose.stepLengthPx)}, checkpoints: $checkpointErrors",
+                "$name, $SEEDS seeds: ${trace.steps.size} steps, " +
+                    "worst off-route ${px(worstOffRoute)}, " +
+                    "end error median ${px(endErrors.median())} worst ${px(endErrors.max())}, " +
+                    "final k ${"%.1f".format(finalK.min())}-${"%.1f".format(finalK.max())}, " +
+                    "checkpoints: $checkpoints",
             )
             assertTrue(
                 worstOffRoute <= onCorridorTolerancePx,
-                "$name left the route by $worstOffRoute px"
+                "$name left the route by $worstOffRoute px",
             )
-            assertTrue(endError <= maxEndErrorPx, "$name ended $endError px from 3446")
+            assertTrue(
+                endErrors.max() <= maxEndErrorPx,
+                "$name ended up to ${endErrors.max()} px from 3446",
+            )
         }
     }
 
-    private fun error(
-        graph: FloorGraph,
-        door: Map<String, String>,
-        cp: TraceCheckpoint,
-        tracker: ParticleTracker,
-    ): String {
-        val at = graph.nodes.getValue(door.getValue(cp.label)).position
-        val distance = tracker.pose.position.distanceTo(at)
-        return "${cp.label.removePrefix("door-")} ${"%.0f".format(distance)} px " +
-            "(k ${"%.1f".format(tracker.pose.stepLengthPx)})"
+    private fun List<Double>.median() = sorted()[size / 2]
+
+    private fun px(value: Double): String {
+        val meters = value / pxPerMeter
+        return "${"%.0f".format(value)} px (${"%.1f".format(meters)} m)"
     }
 
     /** Dijkstra over edge lengths; returns the edges from [from] to [to] in order. */
