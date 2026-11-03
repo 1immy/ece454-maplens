@@ -12,7 +12,7 @@ import kotlin.math.sqrt
 import kotlin.math.tan
 
 /**
- * Where the back camera points, from a game-rotation-vector quaternion (ADR 0004).
+ * Where the back camera points, from a game-rotation-vector quaternion (ADR 0006).
  *
  * [yawRad] is in the same clockwise, arbitrary-zero frame as [HeadingReading.relativeRad]
  * (for an upright phone the two agree), so an offset found from a scan applies to both.
@@ -68,7 +68,7 @@ data class ScanFrame(val pose: CameraPose, val width: Int, val height: Int, val 
 data class VanishingPoint(val angleRad: Double, val strength: Double, val inView: Boolean)
 
 /**
- * Finds where a corridor's long lines meet the horizon (Kim and Manduchi style, ADR 0004).
+ * Finds where a corridor's long lines meet the horizon (Kim and Manduchi style, ADR 0006).
  *
  * Every strong edge pixel votes for where its line crosses the horizon; converging floor,
  * wall and ceiling lines pile their votes on one angle. Vertical edges (door frames) and

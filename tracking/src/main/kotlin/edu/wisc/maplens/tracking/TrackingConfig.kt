@@ -61,7 +61,7 @@ data class TrackingConfig(
     val landmarkBlendOld: Double = 0.7,
     /** Display-only stride used to turn steps into meters. */
     val nominalStrideMeters: Double = 0.7,
-    /** Scan-to-orient (ADR 0004): bearing noise per observation kind. */
+    /** Scan-to-orient (ADR 0006): bearing noise per observation kind. */
     val orientDoorSigmaDeg: Double = 10.0,
     /** Room signs sit this far off the corridor centre, as a share of typical door spacing. */
     val orientDoorSideFraction: Double = 0.3,

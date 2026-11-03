@@ -1,4 +1,4 @@
-# 0004 · Scan to orient: automatic map direction, offline
+# 0006 · Scan to orient: automatic map direction, offline
 
 **Status:** proposed · 2026-11-01 · needs team review (touches #12, #17, #19)
 

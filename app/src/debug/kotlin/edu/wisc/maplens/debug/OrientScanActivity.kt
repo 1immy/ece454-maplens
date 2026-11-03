@@ -68,7 +68,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Debug-only scan to orient (ADR 0004): a guided turn on the spot takes evenly spaced photos,
+ * Debug-only scan to orient (ADR 0006): a guided turn on the spot takes evenly spaced photos,
  * each read on the phone (room numbers by ML Kit's bundled model, corridor lines by
  * [VanishingPointFinder]); [OrientationSolver] then matches them to the traced map. No network.
  * Every scan is saved with its photos so it can be replayed while tuning.

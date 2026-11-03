@@ -56,7 +56,7 @@ data class OrientResult(
 
 /**
  * Finds the heading offset that best lines up scan observations with the corridors and
- * doors around the user's node (ADR 0004). Map bearings use atan2(dy, dx) in map pixels:
+ * doors around the user's node (ADR 0006). Map bearings use atan2(dy, dx) in map pixels:
  * 0 is map right, +π/2 is map down. Pure Kotlin; no camera or Android types.
  */
 class OrientationSolver(private val config: TrackingConfig = TrackingConfig()) {
