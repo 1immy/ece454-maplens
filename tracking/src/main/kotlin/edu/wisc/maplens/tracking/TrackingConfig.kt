@@ -54,6 +54,13 @@ data class TrackingConfig(
     val calibrationStepSlack: Double = 3.0,
     /** Spread of each particle's k around the calibrated k once it is known, as a fraction. */
     val calibratedStepLengthSpread: Double = 0.10,
+    /**
+     * Share of the cloud re-placed just past the calibration turn; the rest keeps its place and
+     * weight, so a turn put on the wrong branch is not a silent snap.
+     */
+    val calibrationReplaceFraction: Double = 0.5,
+    /** Weight of a kept particle against a re-placed one right after calibration. */
+    val calibrationKeptWeight: Double = 0.1,
     /** σθ in the heading weight exp(−(θ − β)² / 2σθ²), and for branch choice at junctions. */
     val headingSigmaDeg: Double = 20.0,
     /** Resample when the effective particle count drops below this fraction of N. */

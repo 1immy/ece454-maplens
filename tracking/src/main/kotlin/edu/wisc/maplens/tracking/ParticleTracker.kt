@@ -39,8 +39,10 @@ import kotlin.random.Random
  * the wrong bearing; this is how the cloud corrects k over a route. That only picks among the
  * k values drawn at start, so a stride outside that band stays wrong. With
  * `autoCalibrateStepLength`, a [StepLengthCalibrator] measures k on the legs out of START, once
- * (#12): every particle's k is re-drawn around it (`calibratedStepLengthSpread`) and the cloud
- * is re-placed just past the turn the calibration ended on.
+ * (#12): every particle's k is re-drawn around it (`calibratedStepLengthSpread`), and a share
+ * of the cloud (`calibrationReplaceFraction`) is re-placed just past the turn the calibration
+ * ended on. The rest stays where it was, so a turn placed on the wrong branch can still lose
+ * to the particles that disagree with it.
  *
  * Sign re-anchoring ([onSign]) is #19 and not implemented yet. Not thread safe: one
  * navigation worker owns it. Pass a seeded [random] for reproducible tests.
@@ -71,6 +73,10 @@ class ParticleTracker(
     var calibratedStepLengthPx: Double? = null
         private set
 
+    /** Timestamp of the step that recalibrated the cloud, for the session log; null if none. */
+    var calibratedAtNanos: Long? = null
+        private set
+
     /** Latest estimate; valid after [start]. */
     val pose: PoseEstimate get() = last
 
@@ -97,6 +103,7 @@ class ParticleTracker(
             Particle(edge, offset, forward, k.coerceAtLeast(0.5 * stepLengthPx))
         }
         calibratedStepLengthPx = null
+        calibratedAtNanos = null
         calibrator = if (config.autoCalibrateStepLength) {
             StepLengthCalibrator(graph, startNodeId, initialHeadingRad, stepLengthPx, config)
         } else {
@@ -112,7 +119,7 @@ class ParticleTracker(
             ?: return last.copy(timestampNanos = event.timestampNanos)
         val heading = step.headingRad
         calibrator?.let { c ->
-            c.onStep(heading)?.let { recalibrate(it, heading) }
+            c.onStep(heading)?.let { recalibrate(it, heading, step.timestampNanos) }
             if (c.finished) calibrator = null
         }
         for (p in particles) {
@@ -136,25 +143,40 @@ class ParticleTracker(
     override fun onSign(observation: SignObservation): Boolean = false
 
     /**
-     * Re-draws every particle's k around the calibrated k and walks it from the turn node along
-     * the exit corridor for the steps since the turn. Weights restart equal: the turn is placed
-     * from the whole walk so far, which says more than the weights of a cloud on the wrong k.
+     * Re-draws every particle's k around the calibrated k, and walks a random
+     * `calibrationReplaceFraction` of the cloud from the turn node along the exit corridor for
+     * the steps since the turn. Kept particles keep their place, with their weight scaled by
+     * `calibrationKeptWeight` against the re-placed ones, so they take over only if the map
+     * later disagrees with the turn placement.
      */
-    private fun recalibrate(calibration: StepLengthCalibrator.Calibration, heading: Double) {
+    private fun recalibrate(
+        calibration: StepLengthCalibrator.Calibration,
+        heading: Double,
+        timestampNanos: Long,
+    ) {
         val k = calibration.stepLengthPx
         calibratedStepLengthPx = k
-        val turn = calibration.turn
-        val edge = graph.edges.first { it.id == turn.edgeId }
-        val forward = turn.towardNodeId == edge.to
+        calibratedAtNanos = timestampNanos
         for (p in particles) {
             val drawn = k * (1 + config.calibratedStepLengthSpread * gaussian())
             p.stepLengthPx = drawn.coerceAtLeast(0.5 * k)
+        }
+        normalise()
+        // Kept particles become a minority hypothesis, not an equal one: on a straight corridor
+        // nothing tells the two groups apart, and the old one is on the wrong k.
+        val kept = ln(config.calibrationKeptWeight)
+        for (p in particles) p.logWeight += kept
+        val turn = calibration.turn
+        val edge = graph.edges.first { it.id == turn.edgeId }
+        val forward = turn.towardNodeId == edge.to
+        // This step is walked by onMotion next, so place the steps before it.
+        val past = (calibration.stepsPast - 1).coerceAtLeast(0)
+        val count = (config.calibrationReplaceFraction * particles.size).toInt()
+        for (p in particles.shuffled(random).take(count)) {
             p.edge = edge
             p.forward = forward
             p.offsetPx = if (forward) 0.0 else edge.lengthPx
             p.logWeight = 0.0
-            // This step is walked by onMotion next, so place the steps before it.
-            val past = (calibration.stepsPast - 1).coerceAtLeast(0)
             advance(p, past * p.stepLengthPx * (1 + config.stepLengthNoise * gaussian()), heading)
         }
     }

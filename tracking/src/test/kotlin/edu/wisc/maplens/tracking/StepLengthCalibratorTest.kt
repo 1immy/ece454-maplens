@@ -132,6 +132,8 @@ class StepLengthCalibratorTest {
             pose = tracker.onMotion(MotionEvent.Step(i + 1L, h, StepSource.STEP_DETECTOR))
         }
         assertEquals(12.0, assertNotNull(tracker.calibratedStepLengthPx), 1e-9)
+        // Confirmed on the second step down: step 27.
+        assertEquals(27L, tracker.calibratedAtNanos)
         assertEquals(12.0, pose.stepLengthPx, 1.0)
         assertEquals("A-B", pose.edgeId)
         // 10 steps down at 12 px/step.
@@ -146,5 +148,6 @@ class StepLengthCalibratorTest {
             tracker.onMotion(MotionEvent.Step(i + 1L, h, StepSource.STEP_DETECTOR))
         }
         assertNull(tracker.calibratedStepLengthPx)
+        assertNull(tracker.calibratedAtNanos)
     }
 }
