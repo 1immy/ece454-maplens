@@ -36,7 +36,11 @@ import kotlin.random.Random
  *    two candidate corridors can't produce an estimate in the wall between them.
  *
  * Particles whose k is too long reach a corner before the walker turns and are penalised for
- * the wrong bearing; this is how the cloud corrects k over a route.
+ * the wrong bearing; this is how the cloud corrects k over a route. That only picks among the
+ * k values drawn at start, so a stride outside that band stays wrong. With
+ * `autoCalibrateStepLength`, a [StepLengthCalibrator] measures k on the legs out of START, once
+ * (#12): every particle's k is re-drawn around it (`calibratedStepLengthSpread`) and the cloud
+ * is re-placed just past the turn the calibration ended on.
  *
  * Sign re-anchoring ([onSign]) is #19 and not implemented yet. Not thread safe: one
  * navigation worker owns it. Pass a seeded [random] for reproducible tests.
@@ -50,7 +54,7 @@ class ParticleTracker(
         var edge: Edge,
         var offsetPx: Double,
         var forward: Boolean,
-        val stepLengthPx: Double,
+        var stepLengthPx: Double,
         var logWeight: Double = 0.0,
     ) {
         fun copy() = Particle(edge, offsetPx, forward, stepLengthPx)
@@ -61,6 +65,11 @@ class ParticleTracker(
     private var particles = listOf<Particle>()
     private val sigmaRad get() = Math.toRadians(config.headingSigmaDeg)
     private lateinit var last: PoseEstimate
+    private var calibrator: StepLengthCalibrator? = null
+
+    /** k measured on the legs out of START, once known (#12); null before that or if skipped. */
+    var calibratedStepLengthPx: Double? = null
+        private set
 
     /** Latest estimate; valid after [start]. */
     val pose: PoseEstimate get() = last
@@ -87,6 +96,12 @@ class ParticleTracker(
             val offset = if (forward) 0.0 else edge.lengthPx
             Particle(edge, offset, forward, k.coerceAtLeast(0.5 * stepLengthPx))
         }
+        calibratedStepLengthPx = null
+        calibrator = if (config.autoCalibrateStepLength) {
+            StepLengthCalibrator(graph, startNodeId, initialHeadingRad, stepLengthPx, config)
+        } else {
+            null
+        }
         last = estimate(0L, initialHeadingRad)
     }
 
@@ -96,6 +111,10 @@ class ParticleTracker(
         val step = event as? MotionEvent.Step
             ?: return last.copy(timestampNanos = event.timestampNanos)
         val heading = step.headingRad
+        calibrator?.let { c ->
+            c.onStep(heading)?.let { recalibrate(it, heading) }
+            if (c.finished) calibrator = null
+        }
         for (p in particles) {
             // Face whichever way along the current corridor best matches the step.
             val ahead = graph.bearingOnEdge(p.edge.id, p.offsetPx, towardTo = true)
@@ -115,6 +134,30 @@ class ParticleTracker(
 
     /** Re-anchoring on a scanned sign arrives with #19; until then signs are ignored. */
     override fun onSign(observation: SignObservation): Boolean = false
+
+    /**
+     * Re-draws every particle's k around the calibrated k and walks it from the turn node along
+     * the exit corridor for the steps since the turn. Weights restart equal: the turn is placed
+     * from the whole walk so far, which says more than the weights of a cloud on the wrong k.
+     */
+    private fun recalibrate(calibration: StepLengthCalibrator.Calibration, heading: Double) {
+        val k = calibration.stepLengthPx
+        calibratedStepLengthPx = k
+        val turn = calibration.turn
+        val edge = graph.edges.first { it.id == turn.edgeId }
+        val forward = turn.towardNodeId == edge.to
+        for (p in particles) {
+            val drawn = k * (1 + config.calibratedStepLengthSpread * gaussian())
+            p.stepLengthPx = drawn.coerceAtLeast(0.5 * k)
+            p.edge = edge
+            p.forward = forward
+            p.offsetPx = if (forward) 0.0 else edge.lengthPx
+            p.logWeight = 0.0
+            // This step is walked by onMotion next, so place the steps before it.
+            val past = (calibration.stepsPast - 1).coerceAtLeast(0)
+            advance(p, past * p.stepLengthPx * (1 + config.stepLengthNoise * gaussian()), heading)
+        }
+    }
 
     /** Moves [p] [distance] px along the graph, choosing a branch at each node it reaches. */
     private fun advance(p: Particle, distance: Double, heading: Double) {
