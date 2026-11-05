@@ -13,12 +13,20 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
 import edu.wisc.maplens.model.PoseEstimate
+import edu.wisc.maplens.tracking.ParticleTracker
 import edu.wisc.maplens.tracking.SensorMotionProcessor
 import edu.wisc.maplens.tracking.Tracker
 import edu.wisc.maplens.tracking.TrackingConfig
 
-/** What the banner shows about the live sensors after each step. */
-data class LiveStats(val steps: Long, val skipped: Long, val usingPeaks: Boolean)
+/** What the banner and session log show about the live sensors after each step. */
+data class LiveStats(
+    val steps: Long,
+    val skipped: Long,
+    val usingPeaks: Boolean,
+    /** When the tracker last re-calibrated k (#12), and to what; null until it has. */
+    val calibratedAtNanos: Long? = null,
+    val calibratedStepLengthPx: Double? = null,
+)
 
 /**
  * Live sensors → [SensorMotionProcessor] (Johnny's #40) → [Tracker] → [PoseEstimate].
@@ -127,7 +135,14 @@ class LiveMotionSource(
         } ?: return
         val t = tracker ?: return
         val pose = t.onMotion(step)
-        val stats = LiveStats(processor.steps, processor.skippedSteps, processor.usePeaks)
+        val particles = t as? ParticleTracker
+        val stats = LiveStats(
+            steps = processor.steps,
+            skipped = processor.skippedSteps,
+            usingPeaks = processor.usePeaks,
+            calibratedAtNanos = particles?.calibratedAtNanos,
+            calibratedStepLengthPx = particles?.calibratedStepLengthPx,
+        )
         main.post { onPose(pose, stats) }
     }
 

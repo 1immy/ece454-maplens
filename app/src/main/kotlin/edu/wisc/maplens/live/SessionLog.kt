@@ -93,6 +93,10 @@ class SessionLog(private val out: Writer) {
         kPx = c.estimate.stepLengthPx,
     )
 
+    /** The tracker re-measured k on the legs out of START (#12); [kPx] is the new k. */
+    fun recalibrate(timestampNs: Long, kPx: Double) =
+        row(timestampNs, "recalibrate", "", kPx = kPx)
+
     fun arrive(pose: PoseEstimate) =
         row(pose.timestampNanos, "arrive", "", pose, kPx = pose.stepLengthPx)
 

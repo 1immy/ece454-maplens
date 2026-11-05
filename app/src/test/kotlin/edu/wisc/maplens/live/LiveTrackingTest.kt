@@ -127,11 +127,12 @@ class LiveTrackingTest {
         val pose = pose(25.0, 0.0, "S-D1")
         log.pose(pose)
         log.checkpoint(5L, graph.checkpoint("C1", pose, PixelPoint(25.0, 3.0), 0.7))
+        log.recalibrate(6L, 21.25)
         log.arrive(pose)
         val lines = out.toString().trim().lines()
         assertEquals(SessionLog.HEADER, lines.first())
         val events = lines.drop(1).map { it.split(",")[1] }
-        assertEquals(listOf("start", "pose", "checkpoint", "arrive"), events)
+        assertEquals(listOf("start", "pose", "checkpoint", "recalibrate", "arrive"), events)
         val columns = SessionLog.HEADER.split(",").size
         assertTrue(lines.all { it.split(",").size == columns })
         val checkpoint = lines[3].split(",")
@@ -139,6 +140,9 @@ class LiveTrackingTest {
         assertEquals("S-D1", checkpoint[9])
         assertEquals("3.000", checkpoint[10])
         assertEquals("true", checkpoint[12])
+        val recalibrate = lines[4].split(",")
+        assertEquals("6", recalibrate[0])
+        assertEquals("21.250", recalibrate[13])
     }
 
     /** On the traced EH3 graph, every START corridor gets a readable description. */

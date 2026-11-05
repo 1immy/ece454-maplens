@@ -88,6 +88,9 @@ class MainActivity : Activity() {
     private var following = false
     private var resumeFollowing = false
     private var stats: LiveStats? = null
+
+    /** Calibration already logged and announced for this navigation, by its timestamp. */
+    private var announcedCalibrationNs: Long? = null
     private var checkpoints = 0
 
     private val tick = object : Runnable {
@@ -205,6 +208,7 @@ class MainActivity : Activity() {
         guide = routeGuide
         room = destination
         stats = null
+        announcedCalibrationNs = null
         checkpoints = 0
         mapView.checkpoints = emptyList()
         mapView.route = routeGuide.path.points
@@ -271,6 +275,14 @@ class MainActivity : Activity() {
     private fun onLivePose(pose: PoseEstimate, latest: LiveStats) {
         if (!following) return
         stats = latest
+        val calibratedAt = latest.calibratedAtNanos
+        val k = latest.calibratedStepLengthPx
+        if (calibratedAt != null && k != null && calibratedAt != announcedCalibrationNs) {
+            // Never a silent change: the new k is logged and shown once.
+            announcedCalibrationNs = calibratedAt
+            logIo.execute { log?.recalibrate(calibratedAt, k) }
+            toast(getString(R.string.recalibrated, k))
+        }
         onPose(pose)
     }
 
@@ -282,7 +294,7 @@ class MainActivity : Activity() {
         mapView.pose = pose
         logIo.execute { log?.pose(pose) }
         val instruction = g.instruction(pose)
-        render(instruction, g.remainingSteps(pose))
+        render(instruction, g.remainingSteps(pose), pose.stepLengthPx)
         if (instruction.maneuver == Maneuver.ARRIVE && instruction.stepsUntil == 0 &&
             s.phase != Phase.ARRIVED
         ) {
@@ -336,14 +348,14 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun render(instruction: Instruction, stepsLeft: Int) {
+    /** [k] is the tracker's current step length, so the banner shows calibration as it happens. */
+    private fun render(instruction: Instruction, stepsLeft: Int, k: Double) {
         val heading = instruction.maneuver
         val straightOn = heading == Maneuver.ARRIVE && instruction.stepsUntil > 0
         arrow.text = ARROWS.getValue(if (straightOn) Maneuver.STRAIGHT else heading)
         headline.text = instruction.headline()
         detail.text = instruction.detail
         val meters = (stepsLeft * stride).roundToInt()
-        val k = Demo.STEP_LENGTH_PX
         val sensors = stats
         remaining.text = when {
             stepsLeft <= 0 -> getString(R.string.arrived_phase, session?.phase?.name.orEmpty())
@@ -356,6 +368,7 @@ class MainActivity : Activity() {
                 getString(
                     if (sensors.usingPeaks) R.string.source_peaks else R.string.source_detector,
                 ),
+                k,
             )
             else -> getString(R.string.remaining, stepsLeft, meters, k)
         }

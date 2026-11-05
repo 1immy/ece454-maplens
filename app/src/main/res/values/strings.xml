@@ -13,7 +13,8 @@
   <string name="pause">Pause</string>
   <string name="remaining">~%1$d steps, ~%2$d m to go (k = %3$.1f px/step)</string>
   <string name="arrived_phase">Session phase: %1$s</string>
-  <string name="remaining_live">~%1$d steps, ~%2$d m to go · walked %3$d (%5$s), skipped %4$d</string>
+  <string name="remaining_live">~%1$d steps, ~%2$d m to go (k = %6$.1f px/step) · walked %3$d (%5$s), skipped %4$d</string>
+  <string name="recalibrated">Step length calibrated: k = %1$.1f px/step</string>
   <string name="source_detector">step detector</string>
   <string name="source_peaks">accel peaks</string>
   <string name="mode_demo">Demo</string>
