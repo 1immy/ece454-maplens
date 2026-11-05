@@ -5,6 +5,7 @@ import edu.wisc.maplens.model.FloorGraphJson
 import edu.wisc.maplens.model.nearestEdge
 import java.io.File
 import java.util.PriorityQueue
+import kotlin.math.abs
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -31,9 +32,10 @@ class ParticleTrackerReplayTest {
     private val onCorridorTolerancePx = 1.0 * pxPerMeter
 
     /**
-     * Regression guard, not a target. End error follows from k, which the cloud learns from the
-     * corners before 3418; extra detector steps there (walk 03: 35 vs 32 counted) shorten it,
-     * and nothing on the straight corridor corrects it until signs re-anchor (#19).
+     * Regression guard, not a target. End error follows from k, which is calibrated on the legs
+     * before the J6 corner (#12); corner cutting and extra detector steps there (walk 03: 35 vs
+     * 32 counted to 3418) shorten it by 3–5%, and nothing on the straight corridor corrects it
+     * until signs re-anchor (#19).
      */
     private val maxEndErrorPx = 5.0 * pxPerMeter
 
@@ -106,6 +108,61 @@ class ParticleTrackerReplayTest {
                 endErrors.max() <= maxEndErrorPx,
                 "$name ended up to ${endErrors.max()} px from 3446",
             )
+        }
+    }
+
+    /**
+     * #12: k learned on the legs out of START (to the J6 corner, about 27 steps) must not
+     * depend on the starting k, must be within 5% of the walk's own route px / detector steps,
+     * and must put 3418 within about 2 steps of the tap (median 2, worst 2.5 over seeds). Starting k 12 and 24 stand in for walkers
+     * with a much longer or shorter stride than Johnny's.
+     */
+    @Test
+    fun `k calibrated after START matches the whole walk whatever the starting k`() {
+        val root = fixtures ?: return
+        val graph = File(root, "maps/eh-3-elevators-evac.graph.json").takeIf { it.exists() }
+            ?.let { FloorGraphJson.decode(it.readText()) } ?: return
+        val door = graph.landmarks.associate { "door-${it.label}" to it.nodeId }
+        val routePx = shortestPath(graph, graph.startNodeId, door.getValue("door-3446"))
+            .sumOf { it.lengthPx }
+        val at3418 = graph.nodes.getValue(door.getValue("door-3418")).position
+        for (name in listOf("01", "02", "03").map { "eh-3-elevators-3418-3446-$it" }) {
+            val csv = File(root, "traces/$name.csv")
+            val json = File(root, "traces/$name.json")
+            if (!csv.exists() || !json.exists() ||
+                csv.readText().startsWith("version https://git-lfs")
+            ) {
+                continue
+            }
+            val offset = Regex("\"headingOffsetRad\":\\s*(-?[0-9.Ee+-]+)")
+                .find(json.readText())!!.groupValues[1].toDouble()
+            val trace = TraceReplay.replay(csv.reader(), offset)
+            val walkK = routePx / trace.steps.size
+            val tap = trace.checkpoints.first { it.label == "door-3418" }.timestampNs
+            for (startK in listOf(12.0, calibratedK, 24.0)) {
+                val stepsOff = mutableListOf<Double>()
+                for (seed in 1..SEEDS) {
+                    val tracker = ParticleTracker(random = Random(seed))
+                    tracker.start(graph, graph.startNodeId, trace.steps.first().headingRad, startK)
+                    var errorAt3418: Double? = null
+                    for (step in trace.steps) {
+                        if (errorAt3418 == null && step.timestampNanos > tap) {
+                            errorAt3418 = tracker.pose.position.distanceTo(at3418)
+                        }
+                        tracker.onMotion(step)
+                    }
+                    val k = tracker.calibratedStepLengthPx
+                    assertTrue(k != null, "$name from k $startK: no calibration")
+                    assertTrue(
+                        abs(k / walkK - 1) <= 0.05,
+                        "$name from k $startK: calibrated $k vs walk $walkK",
+                    )
+                    stepsOff += errorAt3418!! / k
+                }
+                val label = "$name from k $startK: 3418 off by"
+                assertTrue(stepsOff.median() <= 2.0, "$label median ${stepsOff.median()} steps")
+                assertTrue(stepsOff.max() <= 2.5, "$label up to ${stepsOff.max()} steps")
+            }
         }
     }
 

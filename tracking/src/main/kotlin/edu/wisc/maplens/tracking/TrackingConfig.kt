@@ -37,6 +37,30 @@ data class TrackingConfig(
     val stepLengthNoise: Double = 0.10,
     /** Spread of each particle's own k around the calibrated k at start, as a fraction. */
     val initialStepLengthSpread: Double = 0.15,
+    /** Learn k on the legs out of START ([StepLengthCalibrator], #12) and re-draw particle k. */
+    val autoCalibrateStepLength: Boolean = true,
+    /** Calibrate at the first turn at least this many steps from START; ±1 step is then ≤ 7%. */
+    val calibrationMinSteps: Int = 15,
+    /** A step this far off the leg's corridor may be a turn (half of a right angle). */
+    val calibrationTurnDeg: Double = 45.0,
+    /** Consecutive off-corridor steps that confirm a turn, so one wobble isn't one. */
+    val calibrationTurnConfirmSteps: Int = 2,
+    /**
+     * Largest change from the starting k accepted, as a fraction; also how closely a turn node
+     * must match the step count at the starting k when the corridor has several...
+     */
+    val calibrationMaxChange: Double = 0.5,
+    /** ...or within this many steps, whichever is larger (short legs). */
+    val calibrationStepSlack: Double = 3.0,
+    /** Spread of each particle's k around the calibrated k once it is known, as a fraction. */
+    val calibratedStepLengthSpread: Double = 0.10,
+    /**
+     * Share of the cloud re-placed just past the calibration turn; the rest keeps its place and
+     * weight, so a turn put on the wrong branch is not a silent snap.
+     */
+    val calibrationReplaceFraction: Double = 0.5,
+    /** Weight of a kept particle against a re-placed one right after calibration. */
+    val calibrationKeptWeight: Double = 0.1,
     /** σθ in the heading weight exp(−(θ − β)² / 2σθ²), and for branch choice at junctions. */
     val headingSigmaDeg: Double = 20.0,
     /** Resample when the effective particle count drops below this fraction of N. */
