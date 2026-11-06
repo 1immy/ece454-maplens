@@ -11,7 +11,17 @@ android {
 
     defaultConfig {
         minSdk = 26
+        testInstrumentationRunner = "edu.wisc.maplens.mapparse.PosterParserChecks"
     }
+
+    sourceSets.getByName("androidTest") {
+        assets.srcDirs(
+            rootProject.file("data/fixtures/maps"),
+            rootProject.file("data/fixtures/photos/ehall")
+        )
+    }
+
+    sourceSets.getByName("main").resources.srcDir(rootProject.file("data/models"))
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -27,12 +37,7 @@ kotlin {
 
 dependencies {
     api(project(":core:model"))
-    // Area A: add when you start on these
-    // implementation(libs.androidx.camera.camera2)
-    // implementation(libs.androidx.camera.lifecycle)
-    // implementation(libs.androidx.camera.view)
-    // implementation(libs.mlkit.text.recognition)
-    // implementation(libs.opencv)
+    implementation(libs.opencv)
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
 }
