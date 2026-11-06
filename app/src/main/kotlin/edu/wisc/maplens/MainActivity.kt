@@ -3,6 +3,7 @@ package edu.wisc.maplens
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
@@ -449,6 +450,15 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             addView(banner, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(mapView, LinearLayout.LayoutParams(MATCH, 0, 1f))
+            addView(
+                Button(context).apply {
+                    setText(R.string.capture_poster)
+                    setOnClickListener {
+                        startActivity(Intent(this@MainActivity, PosterCaptureActivity::class.java))
+                    }
+                },
+                LinearLayout.LayoutParams(MATCH, WRAP)
+            )
             addView(controls, LinearLayout.LayoutParams(MATCH, WRAP))
         }
     }
