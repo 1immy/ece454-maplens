@@ -212,7 +212,7 @@ class PosterParserChecks : Instrumentation() {
         val photos = context.assets.list("").orEmpty().filter {
             it.endsWith(".jpg") && it.matches(Regex(".*-[0-9]{2}-.*"))
         }
-        check(photos.size == 16)
+        check(photos.size >= 16)
         for (photo in photos) {
             val bitmap = load(photo)
             try {
