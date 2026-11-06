@@ -33,6 +33,14 @@ private object OcrParams {
     const val SAME_WORD_OVERLAP = 0.6
     const val VOTE_CONFIDENCE = 0.75f
     val VOTE_MARGINS = listOf(6.0, 10.0, 14.0)
+    const val MIN_MODEL_BYTES = 1_000_000
+}
+
+/** A clone without `git lfs pull` bundles a small text pointer instead of the model. */
+internal fun requireOcrModel(bytes: ByteArray) {
+    if (bytes.size < OcrParams.MIN_MODEL_BYTES) {
+        throw PosterRetakeException("OCR models missing. Run git lfs pull and rebuild.")
+    }
 }
 
 /** The label at least two margin re-reads agree on. EH3 rooms all start with 3. */
@@ -106,6 +114,7 @@ private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
 
     private fun network(name: String): Net = Mats().use { mats ->
         val bytes = resource(name).use { it.readBytes() }
+        requireOcrModel(bytes)
         Dnn.readNetFromONNX(mats.own(MatOfByte(*bytes)))
     }
 

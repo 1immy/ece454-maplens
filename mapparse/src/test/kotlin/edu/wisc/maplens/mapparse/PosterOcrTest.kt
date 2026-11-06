@@ -2,12 +2,21 @@ package edu.wisc.maplens.mapparse
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.opencv.core.Point
 
 class PosterOcrTest {
+    @Test
+    fun lfsPointerInsteadOfModelSaysHowToFixIt() {
+        val pointer = "version https://git-lfs.github.com/spec/v1\nsize 9929594\n".toByteArray()
+        val failure = assertFailsWith<PosterRetakeException> { requireOcrModel(pointer) }
+        assertTrue("git lfs pull" in failure.message.orEmpty())
+        requireOcrModel(ByteArray(1_000_000))
+    }
+
     @Test
     fun ctcPreservesRepeatedDigitsAndSuffix() {
         val alphabet = listOf("", "3", "5", "6", "A")
