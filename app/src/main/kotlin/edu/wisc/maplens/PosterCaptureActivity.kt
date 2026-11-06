@@ -3,11 +3,11 @@ package edu.wisc.maplens
 import android.Manifest
 import android.app.AlertDialog
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -19,6 +19,7 @@ import android.util.Size
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -123,10 +124,9 @@ class PosterCaptureActivity : ComponentActivity() {
             updateMapButton()
         }
         map.onViewChange = { updateMapButton() }
-        mapButton = Button(this).apply {
-            isAllCaps = false
+        mapButton = styledButton(ButtonStyle.TONAL).apply {
             isSingleLine = true
-            textSize = 14f
+            textSize = Ui.CAPTION
             visibility = View.GONE
             setOnClickListener {
                 val room = map.selectedRoom
@@ -152,37 +152,53 @@ class PosterCaptureActivity : ComponentActivity() {
         }
         val pad = (12 * resources.displayMetrics.density).roundToInt()
         status = TextView(this).apply {
-            textSize = 16f
-            setTextColor(Color.rgb(32, 33, 36))
-            setPadding(0, 0, 0, pad)
+            textSize = Ui.BODY
+            setTextColor(Ui.INK)
+            setLineSpacing(0f, 1.15f)
+            setPadding(0, pad / 2, 0, pad)
         }
-        action = Button(this).apply {
-            setText(R.string.capture_poster)
-            isAllCaps = false
-            setTextColor(Color.WHITE)
-            backgroundTintList = ColorStateList(
-                arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
-                intArrayOf(Color.rgb(154, 160, 166), Color.rgb(26, 86, 150)),
-            )
-        }
-        details = Button(this).apply {
+        // No icon: the label changes with the step (allow camera, capture, retake).
+        action = styledButton(ButtonStyle.PRIMARY, getString(R.string.capture_poster))
+        details = styledButton(ButtonStyle.SECONDARY).apply { visibility = View.GONE }
+        cancel = styledButton(ButtonStyle.SECONDARY, getString(android.R.string.cancel)).apply {
             visibility = View.GONE
-            isAllCaps = false
-        }
-        cancel = Button(this).apply {
-            setText(android.R.string.cancel)
-            visibility = View.GONE
-            isAllCaps = false
             setOnClickListener { resetCapture() }
         }
         val buttons = LinearLayout(this).apply {
-            setPadding(0, pad / 2, 0, 0)
+            setPadding(0, pad, 0, pad)
+            // An 8 dp gap between visible buttons only; hidden ones get no divider.
+            dividerDrawable = GradientDrawable().apply { setSize(dp(8), 0) }
+            showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE
             for (button in listOf(details, cancel, action)) {
                 addView(button, LinearLayout.LayoutParams(0, -2, 1f))
             }
         }
+        val back = ImageButton(this).apply {
+            setImageDrawable(icon(R.drawable.ic_arrow_back, Ui.INK))
+            background = pressable(rounded(Color.TRANSPARENT, radiusDp = 24))
+            contentDescription = getString(R.string.nav_back)
+            // Through the dispatcher, so Back still clears a marked room or the zoom first.
+            setOnClickListener { onBackPressedDispatcher.onBackPressed() }
+        }
+        val topBar = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(back, LinearLayout.LayoutParams(dp(Ui.TOUCH_DP), dp(Ui.TOUCH_DP)))
+            addView(
+                TextView(context).apply {
+                    setText(R.string.home_scan)
+                    textSize = Ui.BODY
+                    setTextColor(Ui.INK_SECONDARY)
+                    markHeading()
+                },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4) },
+            )
+        }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Ui.BACKGROUND)
+            // Window insets only reach here when Android draws edge to edge (15+), so the
+            // margins are set up front and the listener only adds the bars on top.
+            setPadding(pad, pad, pad, 0)
             setOnApplyWindowInsetsListener { view, insets ->
                 @Suppress("DEPRECATION")
                 view.setPadding(
@@ -193,6 +209,7 @@ class PosterCaptureActivity : ComponentActivity() {
                 )
                 insets
             }
+            addView(topBar, LinearLayout.LayoutParams(-1, -2).apply { marginStart = -dp(12) })
             addView(status)
             addView(cameraView, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(photoView, LinearLayout.LayoutParams(-1, 0, 1f))

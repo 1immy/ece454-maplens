@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <application>
     <!--
-      Second launcher icon in debug builds; MainActivity stays the app's own entry.
+      Second launcher icon in debug builds; HomeActivity stays the app's own entry.
       Its own task affinity gives it a separate task, so each icon reopens its own screen
       instead of whichever of the two was last on top (both shared the package's task).
     -->

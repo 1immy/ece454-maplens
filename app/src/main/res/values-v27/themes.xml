@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- Light navigation bar icons exist from API 27; older phones keep the default dark bar. -->
+  <style name="MapLens.Theme" parent="MapLens.Base">
+    <item name="android:navigationBarColor">@color/ml_background</item>
+    <item name="android:windowLightNavigationBar">true</item>
+  </style>
+</resources>

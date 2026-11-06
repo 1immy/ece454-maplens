@@ -1,6 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="app_name">MapLens</string>
+  <string name="home_title">Find your way from the map on the wall</string>
+  <string name="home_intro">Photograph a building\'s evacuation poster. MapLens reads its corridors and room numbers on your phone.</string>
+  <string name="home_offline">Works offline, no GPS</string>
+  <string name="home_how">How it works</string>
+  <string name="home_step_number">Step %1$d</string>
+  <string name="home_step_photo">Photograph the poster</string>
+  <string name="home_step_photo_detail">Fit the whole blue frame in the photo and hold steady.</string>
+  <string name="home_step_check">Check the map</string>
+  <string name="home_step_check_detail">Look over the room numbers MapLens wasn\'t sure about.</string>
+  <string name="home_step_walk">Walk with step guidance</string>
+  <string name="home_step_walk_detail">Turn arrows and a step countdown to your room. For now, try it on the EH3 demo map below.</string>
+  <string name="home_developer">Developer</string>
+  <string name="home_dev_map">EH3 demo map</string>
+  <string name="home_dev_map_detail">Bundled Engineering Hall map: demo walk, live tracking, checkpoints</string>
+  <string name="home_dev_recorder">Sensor recorder</string>
+  <string name="home_dev_recorder_detail">Record walking traces to CSV (debug builds)</string>
+  <string name="home_scan">Scan evacuation poster</string>
+  <string name="home_scan_hint">Usually posted by stairs and elevators</string>
+  <string name="nav_back">Back</string>
+  <string name="nav_title">EH3 demo map</string>
   <string name="loading_map">Loading map…</string>
   <string name="map_failed">Could not load the map</string>
   <string name="pick_destination">Pick a destination</string>
@@ -19,6 +39,7 @@
   <string name="source_peaks">accel peaks</string>
   <string name="mode_demo">Demo</string>
   <string name="mode_live">Live</string>
+  <string name="mode_description">%1$s mode. Tap to switch to %2$s</string>
   <string name="checkpoint">Checkpoint</string>
   <string name="facing">Which way are you facing?</string>
   <string name="facing_again">Back at START? Which way are you facing?</string>
