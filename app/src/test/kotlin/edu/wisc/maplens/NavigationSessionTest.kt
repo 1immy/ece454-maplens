@@ -13,6 +13,7 @@ import edu.wisc.maplens.model.RecoveryAction
 import edu.wisc.maplens.routing.AStarRouter
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -61,6 +62,33 @@ class NavigationSessionTest {
         assertEquals(listOf("S", "D"), session.route!!.nodeIds)
         assertEquals(25.0, session.stepLengthPx)
         assertEquals(Phase.NAVIGATE, session.phase)
+    }
+
+    @Test
+    fun `captured map cannot be verified with a placeholder START`() {
+        val draft = graph.copy(startNodeId = "D")
+        val session = NavigationSession(AStarRouter())
+        session.onMapCaptured(draft)
+        assertFailsWith<IllegalArgumentException> { session.onGraphVerified(draft) }
+        assertEquals(Phase.VERIFY, session.phase)
+        assertFalse(session.graph!!.verified)
+    }
+
+    @Test
+    fun `review identifies unreachable destinations by room number`() {
+        val draft = graph.copy(
+            edges = emptyList(),
+            landmarks = listOf(Landmark("3546", "D", 1f)),
+        )
+        assertTrue(reviewProblems(draft).any { it == "Rooms unreachable from START: 3546." })
+    }
+
+    @Test
+    fun `weak and possible reads are marked for checking`() {
+        assertEquals(RoomCheck.CLEAR, roomCheck(0.99f, possible = false, hasOwnEntrance = true))
+        assertEquals(RoomCheck.NOT_SURE, roomCheck(0.95f, possible = false, hasOwnEntrance = true))
+        assertEquals(RoomCheck.POSSIBLE, roomCheck(0.99f, possible = true, hasOwnEntrance = false))
+        assertEquals(RoomCheck.ENTRANCE, roomCheck(0.99f, possible = false, hasOwnEntrance = false))
     }
 
     private fun low() = ConfidenceState(
