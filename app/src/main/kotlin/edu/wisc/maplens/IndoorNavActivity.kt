@@ -148,7 +148,9 @@ class IndoorNavActivity : ComponentActivity() {
     private val ticker = Handler(Looper.getMainLooper())
     private val stride = TrackingConfig().nominalStrideMeters
     private val router = AStarRouter()
-    private val live by lazy { LiveMotionSource(this, ::onLivePose, onHeading = ::onLiveHeading) }
+    private val live by lazy {
+        LiveMotionSource(this, ::onLivePose, onHeading = ::onLiveHeading, onStats = ::onLiveStats)
+    }
     private val logIo = Executors.newSingleThreadExecutor()
     private var log: SessionLog? = null
     private var logFile: File? = null
@@ -913,6 +915,13 @@ class IndoorNavActivity : ComponentActivity() {
         if (following) map.setHeading(mapRad)
     }
 
+    /** A detected step that didn't move the user: refresh the readout so shaking shows up. */
+    private fun onLiveStats(latest: LiveStats) {
+        if (!following) return
+        stats = latest
+        renderDevLine(lastPose?.stepLengthPx ?: Demo.STEP_LENGTH_PX)
+    }
+
     private fun onLivePose(pose: PoseEstimate, latest: LiveStats) {
         if (!following) return
         stats = latest
@@ -995,21 +1004,27 @@ class IndoorNavActivity : ComponentActivity() {
             stepsLeft,
             DateFormat.getTimeFormat(this).format(arrival),
         )
+        renderDevLine(pose.stepLengthPx)
+    }
+
+    /** The developer readout under the ETA: k, step counts and what the walking gate ignored. */
+    private fun renderDevLine(k: Double) {
         val sensors = stats
         devLine?.text = if (liveMode && sensors != null) {
             getString(
                 R.string.in_dev_live,
-                pose.stepLengthPx,
+                k,
                 sensors.steps,
                 getString(
                     if (sensors.usingPeaks) R.string.source_peaks else R.string.source_detector,
                 ),
                 sensors.skipped,
+                sensors.rejected,
             )
         } else if (liveMode) {
-            getString(R.string.in_dev_live_waiting, pose.stepLengthPx)
+            getString(R.string.in_dev_live_waiting, k)
         } else {
-            getString(R.string.in_dev_demo, pose.stepLengthPx)
+            getString(R.string.in_dev_demo, k)
         }
     }
 

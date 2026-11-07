@@ -32,6 +32,31 @@ data class TrackingConfig(
     val peakMinIntervalNs: Long = 300_000_000,
     /** A sample gap longer than this restarts the peak filters instead of bridging it. */
     val peakMaxGapNs: Long = 500_000_000,
+    /**
+     * Walking gate ([WalkingGate]): a detected step only moves the user if it looks like
+     * walking. Thresholds from four EH3 walks (phone held in front, 339 steps), where walking
+     * stayed within: gyro RMS ≤ 1.45 rad/s, vertical RMS ≥ 1.0 m/s², vertical/horizontal
+     * ≥ 0.71, horizontal RMS ≤ 2.4 m/s². Each bound leaves a margin outside that range.
+     */
+    val gaitGateEnabled: Boolean = true,
+    /** Sensor window before each footfall that the checks look at. */
+    val gaitWindowNs: Long = 800_000_000,
+    /** Turning faster than this (RMS over the window) is waving or shaking, not walking. */
+    val gaitMaxGyroRms: Double = 2.0,
+    /** Walking bobs the phone up and down; less vertical motion than this is not a step. */
+    val gaitMinVerticalRms: Double = 0.6,
+    /** Vertical over horizontal motion: walking is mostly vertical, shaking mostly not. */
+    val gaitMinVerticalShare: Double = 0.55,
+    /** More side-to-side acceleration than this (RMS, m/s²) is shaking. */
+    val gaitMaxHorizontalRms: Double = 4.0,
+    /** Consecutive walking-like steps needed before any of them move the user. */
+    val gaitStartSteps: Int = 4,
+    /** Steps closer or further apart than these aren't one walk while starting. */
+    val gaitMinIntervalNs: Long = 300_000_000,
+    val gaitMaxIntervalNs: Long = 1_200_000_000,
+    /** No step for this long, or this many rejected steps in a row, ends a walk. */
+    val gaitStopGapNs: Long = 2_000_000_000,
+    val gaitStopRejects: Int = 2,
     val particleCount: Int = 300,
     /** Per-particle step-length noise, as a fraction of k. */
     val stepLengthNoise: Double = 0.10,

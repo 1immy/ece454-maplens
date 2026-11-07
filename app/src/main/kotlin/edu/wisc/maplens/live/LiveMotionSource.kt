@@ -17,6 +17,7 @@ import edu.wisc.maplens.tracking.ParticleTracker
 import edu.wisc.maplens.tracking.SensorMotionProcessor
 import edu.wisc.maplens.tracking.Tracker
 import edu.wisc.maplens.tracking.TrackingConfig
+import edu.wisc.maplens.tracking.WalkingGate
 
 /** What the banner and session log show about the live sensors after each step. */
 data class LiveStats(
@@ -26,10 +27,14 @@ data class LiveStats(
     /** When the tracker last re-calibrated k (#12), and to what; null until it has. */
     val calibratedAtNanos: Long? = null,
     val calibratedStepLengthPx: Double? = null,
+    /** Detected steps the walking gate held back as not walking (shaking, waving). */
+    val rejected: Long = 0,
 )
 
 /**
- * Live sensors → [SensorMotionProcessor] (Johnny's #40) → [Tracker] → [PoseEstimate].
+ * Live sensors → [SensorMotionProcessor] (Johnny's #40) → [WalkingGate] → [Tracker] →
+ * [PoseEstimate]. The gate drops detected steps that don't look like walking (shaking the
+ * phone in place), so only real walking moves the user.
  *
  * Sensor callbacks, the processor and the tracker all run on one background thread, so none of
  * them needs locks and nothing touches the UI thread (section 7, threading). Poses are posted to
@@ -46,11 +51,17 @@ class LiveMotionSource(
      * ~30 Hz while the tracker is fed, so a direction cone can turn as the user turns.
      */
     private val onHeading: ((Double) -> Unit)? = null,
+    /**
+     * Optional: stats after a detected step that did not move the user (held while a walk
+     * starts, or rejected as not walking), so a readout can show the gate at work.
+     */
+    private val onStats: ((LiveStats) -> Unit)? = null,
 ) : SensorEventListener {
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(SensorManager::class.java)
     private val periodUs = config.recordingPeriodUs
     private val processor = SensorMotionProcessor(config)
+    private val gate = WalkingGate(config)
     private val main = Handler(Looper.getMainLooper())
     private var thread: HandlerThread? = null
     private var worker: Handler? = null
@@ -78,9 +89,16 @@ class LiveMotionSource(
         val h = Handler(t.looper)
         thread = t
         worker = h
-        h.post { processor.reset() }
+        h.post {
+            processor.reset()
+            gate.reset()
+        }
         sensors.registerListener(this, rotation, periodUs, h)
         sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
+            sensors.registerListener(this, it, periodUs, h)
+        }
+        // The walking gate also watches how fast the phone turns; without one it skips that.
+        sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let {
             sensors.registerListener(this, it, periodUs, h)
         }
         val detector = sensors.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
@@ -116,6 +134,7 @@ class LiveMotionSource(
             if (aligned) {
                 setup(tracker)
                 processor.resetCounts()
+                gate.restart()
                 this.tracker = tracker
             }
             main.post { done(aligned) }
@@ -128,19 +147,31 @@ class LiveMotionSource(
     }
 
     override fun onSensorChanged(event: SensorEvent) {
+        val values = event.values.copyOf()
         val step = when (event.sensor.type) {
             Sensor.TYPE_GAME_ROTATION_VECTOR -> {
-                processor.rotation(event.timestamp, event.values.copyOf(), 0)
+                processor.rotation(event.timestamp, values, 0)
+                gate.rotation(values)
                 postHeading(event.timestamp)
                 null
             }
-            Sensor.TYPE_ACCELEROMETER ->
-                processor.acceleration(event.timestamp, event.values.copyOf())
+            Sensor.TYPE_ACCELEROMETER -> {
+                gate.acceleration(event.timestamp, values)
+                processor.acceleration(event.timestamp, values)
+            }
+            Sensor.TYPE_GYROSCOPE -> {
+                gate.gyroscope(event.timestamp, values)
+                null
+            }
             Sensor.TYPE_STEP_DETECTOR -> processor.detector(event.timestamp)
             else -> null
         } ?: return
         val t = tracker ?: return
-        val pose = t.onMotion(step)
+        // Steps that don't look like walking never reach the tracker; a walk's first few are
+        // held until it is confirmed, then all arrive here at once.
+        val walked = gate.offer(step)
+        var pose: PoseEstimate? = null
+        for (s in walked) pose = t.onMotion(s)
         val particles = t as? ParticleTracker
         val stats = LiveStats(
             steps = processor.steps,
@@ -148,8 +179,14 @@ class LiveMotionSource(
             usingPeaks = processor.usePeaks,
             calibratedAtNanos = particles?.calibratedAtNanos,
             calibratedStepLengthPx = particles?.calibratedStepLengthPx,
+            rejected = gate.rejected,
         )
-        main.post { onPose(pose, stats) }
+        val latest = pose
+        if (latest == null) {
+            onStats?.let { listener -> main.post { listener(stats) } }
+            return
+        }
+        main.post { onPose(latest, stats) }
     }
 
     /** Worker thread only. */
