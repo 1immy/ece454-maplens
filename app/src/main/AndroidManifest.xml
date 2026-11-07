@@ -24,6 +24,13 @@
       android:label="@string/nav_title"
       android:screenOrientation="portrait"
       android:theme="@style/MapLens.Theme.Navigate" />
+    <!-- Developer: maps-style indoor navigation (search, live heading, turn-by-turn). -->
+    <activity
+      android:name=".IndoorNavActivity"
+      android:exported="false"
+      android:label="@string/home_dev_nav"
+      android:screenOrientation="portrait"
+      android:windowSoftInputMode="adjustNothing" />
     <activity
       android:name=".HomeActivity"
       android:exported="true"

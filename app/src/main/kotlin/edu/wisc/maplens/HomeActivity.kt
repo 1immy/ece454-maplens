@@ -55,10 +55,20 @@ class HomeActivity : Activity() {
             }
             addView(sectionTitle(R.string.home_developer), spaced(top = 32))
             addView(
+                devRow(
+                    R.drawable.ic_navigation,
+                    R.string.home_dev_nav,
+                    R.string.home_dev_nav_detail
+                ) {
+                    startActivity(Intent(this@HomeActivity, IndoorNavActivity::class.java))
+                },
+                spaced(top = 12),
+            )
+            addView(
                 devRow(R.drawable.ic_map, R.string.home_dev_map, R.string.home_dev_map_detail) {
                     startActivity(Intent(this@HomeActivity, MainActivity::class.java))
                 },
-                spaced(top = 12),
+                spaced(top = 8),
             )
             recorderIntent()?.let { recorder ->
                 addView(
