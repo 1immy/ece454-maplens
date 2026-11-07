@@ -1078,18 +1078,20 @@ class IndoorNavActivity : ComponentActivity() {
         if (screen == Screen.PREVIEW) renderPreviewSheet()
     }
 
+    /** While navigating, offers the way back to the heading-up view the user just left. */
+    private fun showRecenter() {
+        if (screen != Screen.NAVIGATE || recenter.visibility == View.VISIBLE) return
+        recenter.visibility = View.VISIBLE
+        recenter.alpha = 0f
+        recenter.animate().alpha(1f).setDuration(160).start()
+    }
+
     // ---- Layout ----
 
     private fun buildLayout(): View {
         map = IndoorMapView(this).apply {
             contentDescription = getString(R.string.in_map_description)
-            onUserMoved = {
-                if (screen == Screen.NAVIGATE) {
-                    recenter.visibility = View.VISIBLE
-                    recenter.alpha = 0f
-                    recenter.animate().alpha(1f).setDuration(160).start()
-                }
-            }
+            onUserMoved = { showRecenter() }
             onRotationChanged = { deg ->
                 compassNeedle.rotation = deg
                 val turned = kotlin.math.abs(deg) > 2f
@@ -1274,7 +1276,11 @@ class IndoorNavActivity : ComponentActivity() {
             visibility = View.GONE
             contentDescription = getString(R.string.in_compass)
             isClickable = true
-            setOnClickListener { map.resetNorth() }
+            setOnClickListener {
+                map.resetNorth()
+                // North-up leaves the heading-up 3D view; Re-center is the way back.
+                showRecenter()
+            }
             addView(compassNeedle, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
         }
         val layers = fab(R.drawable.ic_layers, Ui.INK_SECONDARY, R.string.in_layers) {
