@@ -280,4 +280,8 @@
   <string name="home_map_detail">%1$d rooms · saved %2$s</string>
   <string name="home_map_delete_title">Delete %1$s?</string>
   <string name="home_map_delete">Delete</string>
+  <string name="in_voice_mute">Mute voice guidance</string>
+  <string name="in_voice_unmute">Turn on voice guidance</string>
+  <string name="in_voice_on">Voice guidance on</string>
+  <string name="in_voice_off">Voice guidance off. Vibrations stay on</string>
 </resources>
