@@ -23,6 +23,7 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -42,8 +43,11 @@ import edu.wisc.maplens.mapparse.ParseProgress
 import edu.wisc.maplens.mapparse.ParseResult
 import edu.wisc.maplens.mapparse.ParseStage
 import edu.wisc.maplens.mapparse.PosterRetakeException
+import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.routing.AStarRouter
+import java.text.DateFormat
+import java.util.Date
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
@@ -60,6 +64,7 @@ class PosterCaptureActivity : ComponentActivity() {
     private lateinit var action: Button
     private lateinit var details: Button
     private lateinit var cancel: Button
+    private lateinit var save: Button
     private var camera: ProcessCameraProvider? = null
     private var preview: Preview? = null
     private var capture: ImageCapture? = null
@@ -160,6 +165,9 @@ class PosterCaptureActivity : ComponentActivity() {
         // No icon: the label changes with the step (allow camera, capture, retake).
         action = styledButton(ButtonStyle.PRIMARY, getString(R.string.capture_poster))
         details = styledButton(ButtonStyle.SECONDARY).apply { visibility = View.GONE }
+        save = styledButton(ButtonStyle.PRIMARY, getString(R.string.map_save)).apply {
+            visibility = View.GONE
+        }
         cancel = styledButton(ButtonStyle.SECONDARY, getString(android.R.string.cancel)).apply {
             visibility = View.GONE
             setOnClickListener { resetCapture() }
@@ -217,6 +225,7 @@ class PosterCaptureActivity : ComponentActivity() {
             addView(mapBar)
             addView(roomPanel, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(progress)
+            addView(save, LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad })
             addView(buttons)
         }
         setContentView(root)
@@ -435,6 +444,7 @@ class PosterCaptureActivity : ComponentActivity() {
             map.reviewRooms = emptyList()
             map.selectedRoom = null
             reviewBack.isEnabled = false
+            save.visibility = View.GONE
             roomPanel.visibility = View.GONE
             map.start = null
             review = null
@@ -502,6 +512,68 @@ class PosterCaptureActivity : ComponentActivity() {
         action.isEnabled = true
         action.setText(R.string.poster_retake)
         action.setOnClickListener { resetCapture() }
+        // Saving needs a graph NavigationSession accepts: a real START and validate() clean.
+        val verified = verifiedOrNull(result.graph)
+        save.visibility = View.VISIBLE
+        save.isEnabled = verified != null
+        save.text = getString(
+            if (verified != null) R.string.map_save else R.string.map_save_blocked,
+        )
+        val toCheck = rooms.count { it.check != RoomCheck.CLEAR }
+        save.setOnClickListener { verified?.let { confirmSave(it, result.rectified, toCheck) } }
+    }
+
+    /** The graph as a fresh session would verify it, or null when it would refuse it. */
+    private fun verifiedOrNull(draft: FloorGraph): FloorGraph? = runCatching {
+        NavigationSession(AStarRouter()).run {
+            onMapCaptured(draft)
+            onGraphVerified(draft)
+            graph
+        }
+    }.getOrNull()
+
+    private fun confirmSave(graph: FloorGraph, image: Bitmap, toCheck: Int) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.map_save_title)
+            .setMessage(getString(R.string.map_save_message, toCheck))
+            .setPositiveButton(R.string.map_save) { _, _ -> saveAndNavigate(graph, image) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    /** Writes the map off the UI thread, then opens it for navigation. */
+    private fun saveAndNavigate(graph: FloorGraph, image: Bitmap) {
+        save.isEnabled = false
+        action.isEnabled = false
+        val stamp = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+            .format(Date())
+        val name = getString(R.string.map_default_name, stamp)
+        val store = MapAssets.savedMaps(this)
+        worker.execute {
+            val saved = runCatching {
+                store.save(graph, name) { file ->
+                    file.outputStream().use {
+                        check(image.compress(Bitmap.CompressFormat.JPEG, 92, it)) { "JPEG failed" }
+                    }
+                }
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                saved.onSuccess {
+                    startActivity(MainActivity.open(this, it.id))
+                    finish()
+                }.onFailure {
+                    Log.w(TAG, "Saving the map failed", it)
+                    save.isEnabled = true
+                    action.isEnabled = true
+                    Toast.makeText(
+                        this,
+                        getString(R.string.map_save_failed, it.message.orEmpty()),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
     }
 
     /** Always one tap back to the whole map, and never an unexpected zoom. */
