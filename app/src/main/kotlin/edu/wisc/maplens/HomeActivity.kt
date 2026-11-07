@@ -18,8 +18,8 @@ import java.util.Date
 
 /**
  * The app's entry. Scanning a poster is the one primary action, in the thumb zone. Maps saved
- * after a scan are listed under Your maps (#65); the bundled EH3 navigation screen
- * ([MainActivity]) and the debug recorder sit under Developer.
+ * after a scan are listed under Your maps and open in [IndoorNavActivity]; the bundled EH3 map
+ * and the debug recorder sit under Developer.
  */
 class HomeActivity : Activity() {
     // Built on resume so a map saved in the capture screen shows when the user comes back.
@@ -72,12 +72,6 @@ class HomeActivity : Activity() {
                     startActivity(Intent(this@HomeActivity, IndoorNavActivity::class.java))
                 },
                 spaced(top = 12),
-            )
-            addView(
-                devRow(R.drawable.ic_map, R.string.home_dev_map, R.string.home_dev_map_detail) {
-                    startActivity(Intent(this@HomeActivity, MainActivity::class.java))
-                },
-                spaced(top = 8),
             )
             debugIntent(FIXTURE_EDITOR)?.let { editor ->
                 addView(
@@ -237,7 +231,7 @@ class HomeActivity : Activity() {
             .format(Date(map.savedAtMillis))
         val detail = getString(R.string.home_map_detail, map.rooms, date)
         return devRow(R.drawable.ic_map, map.name, detail) {
-            startActivity(MainActivity.open(this, map.id))
+            startActivity(IndoorNavActivity.open(this, map.id))
         }.apply {
             setOnLongClickListener {
                 AlertDialog.Builder(this@HomeActivity)

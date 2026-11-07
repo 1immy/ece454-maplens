@@ -601,7 +601,7 @@ class PosterCaptureActivity : ComponentActivity() {
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 saved.onSuccess {
-                    startActivity(MainActivity.open(this, it.id))
+                    startActivity(IndoorNavActivity.open(this, it.id))
                     finish()
                 }.onFailure {
                     Log.w(TAG, "Saving the map failed", it)

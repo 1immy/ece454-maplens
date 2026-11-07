@@ -1,6 +1,8 @@
 package edu.wisc.maplens
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -78,16 +80,17 @@ import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 /**
- * Indoor navigation on the bundled EH3 map, laid out like a phone maps app: search a room,
- * see it pinned, preview the walking route, then follow turn-by-turn guidance with a heading-up,
- * tilted map that follows a blue position arrow.
+ * The app's navigation screen, laid out like a phone maps app: search a room, see it pinned,
+ * preview the walking route, then follow turn-by-turn guidance with a heading-up, tilted map
+ * that follows a blue position arrow. It opens a saved, verified map ([open] with a map id) or,
+ * without one, the bundled EH3 map (Developer).
  *
- * It runs the same pipeline as [MainActivity] (which stays as it was): a fresh
- * [NavigationSession] per destination is the only writer of route and position, [RouteGuide]
- * turns poses into instructions, **Demo** walks the route with a [FakePoseStream], and **Live**
- * anchors heading at START from the corridor the user faces, then feeds steps and heading
- * through [LiveMotionSource] into [ParticleTracker]. Live also streams the aligned heading
- * between steps, so the arrow turns with the user in real time without GPS or Wi-Fi.
+ * A fresh [NavigationSession] per destination is the only writer of route and position,
+ * [RouteGuide] turns poses into instructions, **Demo** walks the route with a
+ * [FakePoseStream], and **Live** anchors heading at START from the corridor the user faces,
+ * then feeds steps and heading through [LiveMotionSource] into [ParticleTracker]. Live also
+ * streams the aligned heading between steps, so the arrow turns with the user in real time
+ * without GPS or Wi-Fi.
  * Live sessions keep the CSV log and tap-to-mark checkpoints of the G2 gate.
  */
 class IndoorNavActivity : ComponentActivity() {
@@ -139,6 +142,9 @@ class IndoorNavActivity : ComponentActivity() {
     private var playButton: ImageButton? = null
 
     private val loader = Executors.newSingleThreadExecutor()
+
+    /** Name of the saved map on screen, or null for the bundled EH3 map. */
+    private var mapName: String? = null
     private val ticker = Handler(Looper.getMainLooper())
     private val stride = TrackingConfig().nominalStrideMeters
     private val router = AStarRouter()
@@ -209,6 +215,9 @@ class IndoorNavActivity : ComponentActivity() {
                     map.bitmap = image
                     map.setPuck(g.nodes.getValue(g.startNodeId).position)
                     renderBrowseSheet()
+                    if (intent.getBooleanExtra(EXTRA_JUST_SAVED, false)) {
+                        showSnack(getString(R.string.map_saved))
+                    }
                 }.onFailure { showSnack(getString(R.string.map_failed)) }
             }
         }
@@ -216,8 +225,15 @@ class IndoorNavActivity : ComponentActivity() {
 
     /** Graph, image, every searchable place and its walking distance from START. */
     private fun loadMap(): Pair<FloorGraph, android.graphics.Bitmap> {
-        val g = MapAssets.loadGraph(this)
-        val image = MapAssets.loadImage(this)
+        val savedId = intent.getStringExtra(EXTRA_MAP_ID)
+        val (g, image) = if (savedId == null) {
+            MapAssets.loadGraph(this) to MapAssets.loadImage(this)
+        } else {
+            val store = MapAssets.savedMaps(this)
+            val saved = store.get(savedId) ?: error("saved map $savedId is gone")
+            runOnUiThread { mapName = saved.name }
+            store.loadGraph(saved) to MapAssets.loadImage(saved)
+        }
         val all = g.places()
         val distances = all.mapNotNull { p ->
             val route = if (p.label != null) {
@@ -372,11 +388,13 @@ class IndoorNavActivity : ComponentActivity() {
         etaText = null
         setSheet(
             text(Ui.HEADING, bold = true).apply {
-                setText(R.string.in_building)
+                text = mapName ?: getString(R.string.in_building)
                 markHeading()
             },
-            text(Ui.CAPTION, Ui.INK_SECONDARY).apply { setText(R.string.in_floor_line) }
-                .withMargins(top = 4, bottom = 8),
+            text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
+                val line = if (mapName == null) R.string.in_floor_line else R.string.in_at_start
+                text = getString(line)
+            }.withMargins(top = 4, bottom = 8),
         )
     }
 
@@ -584,7 +602,7 @@ class IndoorNavActivity : ComponentActivity() {
                 text = getString(R.string.in_room_title, label)
                 markHeading()
             },
-            text(Ui.CAPTION, Ui.INK_SECONDARY).apply { setText(R.string.in_room_kind) }
+            text(Ui.CAPTION, Ui.INK_SECONDARY).apply { text = roomKind() }
                 .withMargins(top = 2),
             text(Ui.BODY, Ui.INK_SECONDARY).apply { setText(R.string.in_unmapped) }
                 .withMargins(top = 12, bottom = 8),
@@ -1199,7 +1217,7 @@ class IndoorNavActivity : ComponentActivity() {
 
     private fun buildLayout(): View {
         map = IndoorMapView(this).apply {
-            contentDescription = getString(R.string.in_map_description)
+            contentDescription = getString(R.string.in_map_description_generic)
             onUserMoved = { showRecenter() }
             onRotationChanged = { deg ->
                 compassNeedle.rotation = deg
@@ -1759,11 +1777,15 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun placeKind(p: Place): String {
-        if (p.kind == PlaceKind.ROOM) return getString(R.string.in_room_kind)
+        if (p.kind == PlaceKind.ROOM) return roomKind()
         val near = graph?.nearestRoomLabel(p.position)
-        val base = getString(R.string.in_feature_kind)
+        val base = mapName ?: getString(R.string.in_feature_kind)
         return if (near == null) base else getString(R.string.in_near_room, base, near)
     }
+
+    private fun roomKind(): String =
+        mapName?.let { getString(R.string.in_room_kind_saved, it) }
+            ?: getString(R.string.in_room_kind)
 
     private fun kindIcon(kind: PlaceKind) = when (kind) {
         PlaceKind.ROOM -> R.drawable.ic_door
@@ -1805,17 +1827,26 @@ class IndoorNavActivity : ComponentActivity() {
         compoundDrawablePadding = dp(12)
     }
 
-    private companion object {
-        const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
-        const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
-        const val STEP_PERMISSION = 8
-        const val SNACK_MS = 3500L
-        const val THEN_WITHIN_STEPS = 25.0
-        const val TAP_DOOR_DP = 10f
-        const val CORRIDOR_HALF_WIDTH_SHARE = 0.01
+    companion object {
+        /** Id of a [SavedMap] to navigate on; without it the bundled EH3 map opens. */
+        const val EXTRA_MAP_ID = "edu.wisc.maplens.MAP_ID"
 
-        val ETA_GREEN = Color.rgb(24, 128, 56)
-        val BANNER_GREEN = Color.rgb(13, 101, 45)
-        val BANNER_DARK = Color.rgb(9, 74, 33)
+        /** Set when the map was saved just now, to confirm it on arrival. */
+        const val EXTRA_JUST_SAVED = "edu.wisc.maplens.JUST_SAVED"
+
+        fun open(context: Context, mapId: String): Intent =
+            Intent(context, IndoorNavActivity::class.java).putExtra(EXTRA_MAP_ID, mapId)
+
+        private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+        private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+        private const val STEP_PERMISSION = 8
+        private const val SNACK_MS = 3500L
+        private const val THEN_WITHIN_STEPS = 25.0
+        private const val TAP_DOOR_DP = 10f
+        private const val CORRIDOR_HALF_WIDTH_SHARE = 0.01
+
+        private val ETA_GREEN = Color.rgb(24, 128, 56)
+        private val BANNER_GREEN = Color.rgb(13, 101, 45)
+        private val BANNER_DARK = Color.rgb(9, 74, 33)
     }
 }
