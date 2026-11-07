@@ -2,6 +2,7 @@ package edu.wisc.maplens
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -42,6 +43,7 @@ import edu.wisc.maplens.mapparse.ParseProgress
 import edu.wisc.maplens.mapparse.ParseResult
 import edu.wisc.maplens.mapparse.ParseStage
 import edu.wisc.maplens.mapparse.PosterRetakeException
+import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.routing.AStarRouter
 import java.util.concurrent.Executors
@@ -319,6 +321,7 @@ class PosterCaptureActivity : ComponentActivity() {
         }
         progress.show(ParseProgress(ParseStage.STRAIGHTEN))
         progress.visibility = View.VISIBLE
+        cancel.setText(android.R.string.cancel)
         cancel.visibility = View.VISIBLE
         action.visibility = View.GONE
         cameraView.display?.let { photo.targetRotation = it.rotation }
@@ -492,16 +495,52 @@ class PosterCaptureActivity : ComponentActivity() {
         details.setOnClickListener {
             AlertDialog.Builder(this)
                 .setTitle(R.string.poster_review)
-                .setMessage(
-                    (issues + getString(R.string.poster_edit_pending))
-                        .joinToString("\n\n") { "• $it" },
-                )
+                .setMessage(issues.joinToString("\n\n") { "• $it" })
                 .setPositiveButton(android.R.string.ok, null)
                 .show()
         }
+        cancel.setText(R.string.poster_retake)
+        cancel.visibility = View.VISIBLE
         action.isEnabled = true
-        action.setText(R.string.poster_retake)
-        action.setOnClickListener { resetCapture() }
+        action.setText(R.string.poster_edit)
+        action.setOnClickListener { openEditor(result, graph) }
+    }
+
+    /** The editor works on its own copy on disk. This screen's job is done once it opens. */
+    private fun openEditor(result: ParseResult, graph: FloorGraph) {
+        action.isEnabled = false
+        val rooms = result.rooms.map {
+            RoomDraft(
+                it.label,
+                it.bounds.left,
+                it.bounds.top,
+                it.bounds.right,
+                it.bounds.bottom,
+                it.entranceNodeId,
+                it.confidence,
+                it.possible,
+            )
+        }
+        worker.execute {
+            val written = runCatching {
+                MapStore(this).startDraft(MapDraft(graph, rooms)) { file ->
+                    file.outputStream().use {
+                        check(result.rectified.compress(Bitmap.CompressFormat.JPEG, 95, it))
+                    }
+                }
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                written.onSuccess {
+                    startActivity(Intent(this, GraphEditorActivity::class.java))
+                    finish()
+                }.onFailure {
+                    Log.w(TAG, "Draft not written", it)
+                    action.isEnabled = true
+                    status.setText(R.string.poster_draft_failed)
+                }
+            }
+        }
     }
 
     /** Always one tap back to the whole map, and never an unexpected zoom. */
