@@ -22,14 +22,7 @@
       android:exported="false"
       android:screenOrientation="portrait"
       android:windowSoftInputMode="adjustResize" />
-    <!-- Developer: the bundled EH3 map with demo and live tracking, opened from Home. -->
-    <activity
-      android:name=".MainActivity"
-      android:exported="false"
-      android:label="@string/nav_title"
-      android:screenOrientation="portrait"
-      android:theme="@style/MapLens.Theme.Navigate" />
-    <!-- Developer: maps-style indoor navigation (search, live heading, turn-by-turn). -->
+    <!-- Navigation on a saved map, or on the bundled EH3 map from Developer. -->
     <activity
       android:name=".IndoorNavActivity"
       android:exported="false"

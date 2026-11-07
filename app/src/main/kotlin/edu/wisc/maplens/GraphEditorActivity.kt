@@ -839,8 +839,8 @@ class GraphEditorActivity : ComponentActivity() {
                             Intent(this, HomeActivity::class.java).addFlags(
                                 Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK,
                             ),
-                            MainActivity.open(this, map.id)
-                                .putExtra(MainActivity.EXTRA_JUST_SAVED, true),
+                            IndoorNavActivity.open(this, map.id)
+                                .putExtra(IndoorNavActivity.EXTRA_JUST_SAVED, true),
                         ),
                     )
                     finish()

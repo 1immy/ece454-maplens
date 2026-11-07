@@ -37,6 +37,9 @@
   <string name="in_floor_line">Floor 3 · You\'re at START, by the elevators</string>
   <string name="in_room_title">Room %1$s</string>
   <string name="in_room_kind">Room · Engineering Hall, floor 3</string>
+  <string name="in_room_kind_saved">Room · %1$s</string>
+  <string name="in_at_start">You\'re at START, where the poster hangs</string>
+  <string name="in_map_description_generic">Indoor floor map</string>
   <string name="in_exit_title">Exit</string>
   <string name="in_elevator_title">Elevator</string>
   <string name="in_aed_title">AED (defibrillator)</string>
