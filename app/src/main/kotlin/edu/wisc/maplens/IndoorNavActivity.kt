@@ -248,7 +248,7 @@ class IndoorNavActivity : ComponentActivity() {
         }
         // Reading the printed numbers takes a few seconds; taps work from doors until then.
         loader.execute {
-            val boxes = MapRooms.labels(image, doors.keys)
+            val boxes = MapRooms.labels(image, doors.keys, doors)
             // Each room's outline, wall to wall, grown once from its printed number.
             val rooms = RoomBounds.grow(walls, boxes)
             runOnUiThread {
