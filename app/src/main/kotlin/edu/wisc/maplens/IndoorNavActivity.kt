@@ -37,10 +37,12 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import edu.wisc.maplens.guidance.CueAnnouncer
 import edu.wisc.maplens.guidance.FakePoseStream
 import edu.wisc.maplens.guidance.Instruction
 import edu.wisc.maplens.guidance.Maneuver
 import edu.wisc.maplens.guidance.RouteGuide
+import edu.wisc.maplens.guidance.VoiceAndHaptics
 import edu.wisc.maplens.live.FacingOption
 import edu.wisc.maplens.live.LiveMotionSource
 import edu.wisc.maplens.live.LiveStats
@@ -142,6 +144,11 @@ class IndoorNavActivity : ComponentActivity() {
     private var etaDetail: TextView? = null
     private var devLine: TextView? = null
     private var playButton: ImageButton? = null
+    private var voiceButton: ImageButton? = null
+
+    /** Spoken turn cues and vibrations (#20); the announcer keeps them to one per maneuver. */
+    private lateinit var voice: VoiceAndHaptics
+    private val announcer = CueAnnouncer()
 
     private val loader = Executors.newSingleThreadExecutor()
 
@@ -210,6 +217,9 @@ class IndoorNavActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        voice = VoiceAndHaptics(this).apply {
+            voiceOn = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_VOICE, true)
+        }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         @Suppress("DEPRECATION")
         window.statusBarColor = Color.TRANSPARENT
@@ -304,6 +314,7 @@ class IndoorNavActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        voice.stop()
         setWalking(false)
         // Sensors stop with the screen, so live tracking re-anchors at START on return.
         resumeFollowing = following
@@ -313,6 +324,7 @@ class IndoorNavActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        voice.shutdown()
         loader.shutdownNow()
         ticker.removeCallbacksAndMessages(null)
         logIo.execute { log?.close() }
@@ -642,6 +654,7 @@ class IndoorNavActivity : ComponentActivity() {
         }
         session = next
         guide = RouteGuide(checkNotNull(next.graph), checkNotNull(next.route))
+        announcer.reset()
         val path = guide!!.path
         map.route = path.points
         map.routeWalkedPx = 0.0
@@ -830,6 +843,8 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun stopNavigation(toBrowse: Boolean = true) {
+        voice.stop()
+        announcer.reset()
         setWalking(false)
         following = false
         live.pause()
@@ -966,10 +981,13 @@ class IndoorNavActivity : ComponentActivity() {
             map.setPuck(pose.position, durationMs = Demo.STEP_INTERVAL_MS, linear = true)
             map.setHeading(pose.headingRad)
         }
-        if (map.driver == null) map.routeWalkedPx = g.progressPx(pose)
+        val progress = g.progressPx(pose)
+        if (map.driver == null) map.routeWalkedPx = progress
         val instruction = g.instruction(pose)
         renderBanner(g, pose, instruction)
         renderEta(g, pose)
+        val upcoming = g.cues.indexOfFirst { it.distancePx > progress }
+        announcer.next(instruction, upcoming)?.let(voice::announce)
         if (instruction.maneuver == Maneuver.ARRIVE && instruction.stepsUntil == 0 &&
             s.phase != Phase.ARRIVED
         ) {
@@ -1108,10 +1126,19 @@ class IndoorNavActivity : ComponentActivity() {
             }
         }
         playButton = if (liveMode) null else action
+        val sound = roundIcon(
+            R.drawable.ic_volume_up,
+            Ui.ACCENT,
+            Ui.ACCENT_SOFT,
+            R.string.in_voice_mute,
+        ) { toggleVoice() }
+        voiceButton = sound
+        renderVoiceButton()
         val row = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(end)
             addView(middle, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(sound, LinearLayout.LayoutParams(dp(56), dp(56)).apply { marginEnd = dp(8) })
             addView(action)
         }
         val dev = text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
@@ -1122,6 +1149,25 @@ class IndoorNavActivity : ComponentActivity() {
         etaDetail = detail
         devLine = dev
         setSheet(row.withMargins(top = 4), dev.withMargins(top = 8, bottom = 4))
+    }
+
+    private fun toggleVoice() {
+        voice.voiceOn = !voice.voiceOn
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(PREF_VOICE, voice.voiceOn)
+            .apply()
+        renderVoiceButton()
+        showSnack(getString(if (voice.voiceOn) R.string.in_voice_on else R.string.in_voice_off))
+    }
+
+    private fun renderVoiceButton() {
+        val button = voiceButton ?: return
+        val on = voice.voiceOn
+        button.setImageDrawable(
+            icon(if (on) R.drawable.ic_volume_up else R.drawable.ic_volume_off, Ui.ACCENT),
+        )
+        button.contentDescription =
+            getString(if (on) R.string.in_voice_mute else R.string.in_voice_unmute)
     }
 
     private fun arrive(pose: PoseEstimate) {
@@ -1920,6 +1966,8 @@ class IndoorNavActivity : ComponentActivity() {
         private const val SNAP_STEPS = 4.0
         private const val TAP_DOOR_DP = 10f
         private const val CORRIDOR_HALF_WIDTH_SHARE = 0.01
+        private const val PREFS = "indoor_nav"
+        private const val PREF_VOICE = "voice_on"
 
         private val ETA_GREEN = Color.rgb(24, 128, 56)
         private val BANNER_GREEN = Color.rgb(13, 101, 45)
