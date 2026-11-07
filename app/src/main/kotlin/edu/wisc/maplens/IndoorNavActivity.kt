@@ -67,6 +67,7 @@ import edu.wisc.maplens.nav.RoomArea
 import edu.wisc.maplens.nav.RoomBounds
 import edu.wisc.maplens.nav.RoomBox
 import edu.wisc.maplens.nav.RoomFinder
+import edu.wisc.maplens.nav.Trail
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
 import edu.wisc.maplens.routing.AStarRouter
@@ -190,6 +191,7 @@ class IndoorNavActivity : ComponentActivity() {
     private var startedAt = 0L
     private var lastPose: PoseEstimate? = null
     private var puckMotion: PuckMotion? = null
+    private var liveTrail: Trail? = null
     private var stepsExpanded = false
 
     private val tick = object : Runnable {
@@ -839,6 +841,7 @@ class IndoorNavActivity : ComponentActivity() {
         map.setHeading(null)
         map.driver = null
         puckMotion = null
+        liveTrail = null
         graph?.let { map.setPuck(it.nodes.getValue(it.startNodeId).position, durationMs = 500) }
         map.routeWalkedPx = 0.0
         if (lastPose != null) logIo.execute { log?.close().also { log = null } }
@@ -976,32 +979,31 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     /**
-     * Live walking: the dot moves every frame along the route at walking speed ([PuckMotion]);
-     * each tracker pose only corrects it, so the dot neither waits for the next step nor jumps.
-     * Off the route (the tracker puts the user more than [OFF_ROUTE_M] away), it follows the
-     * tracker's position directly instead of being pulled onto a route they left.
+     * Live walking: the dot moves every frame at walking speed ([PuckMotion]) along the trail
+     * of tracker positions ([Trail]), so it follows the user through turns, U-turns and
+     * detours alike. Each tracker pose only corrects the speed, so the dot neither waits for
+     * the next step nor jumps; route progress and guidance still come from the pose itself.
      */
     private fun followLive(g: RouteGuide, pose: PoseEstimate) {
-        val along = g.progressPx(pose)
-        val offRoute = g.path.pointAt(along).distanceTo(pose.position) >
-            OFF_ROUTE_M / stride * pose.stepLengthPx
-        map.setPuck(pose.position, pose.spreadPx, durationMs = if (offRoute) 300L else 0L)
-        if (offRoute) {
-            map.driver = null
-            puckMotion = null
-            return
-        }
+        val trail = liveTrail ?: Trail(pose.position).also { liveTrail = it }
+        val walked = trail.add(pose.position)
+        map.setPuck(pose.position, pose.spreadPx, durationMs = 0L)
         val motion = puckMotion ?: PuckMotion(snapPx = SNAP_STEPS * pose.stepLengthPx).also {
-            it.reset(map.driver?.walkedPx ?: along)
+            it.reset(walked)
             puckMotion = it
         }
         val now = SystemClock.uptimeMillis() / 1000.0
-        motion.onStep(along, now, pose.stepLengthPx, pose.timestampNanos)
+        motion.onStep(walked, now, pose.stepLengthPx, pose.timestampNanos)
         if (map.driver == null) {
             map.driver = object : IndoorMapView.PuckDriver {
-                override fun positionAt(nowSeconds: Double) =
-                    g.path.pointAt(motion.advance(nowSeconds).coerceIn(0.0, g.path.lengthPx))
-                override val walkedPx get() = motion.s
+                private var shown = pose.position
+
+                override fun positionAt(nowSeconds: Double): PixelPoint {
+                    shown = trail.pointAt(motion.advance(nowSeconds))
+                    return shown
+                }
+
+                override val walkedPx get() = g.path.project(shown)
                 override val animating get() = motion.animating
             }
         }
@@ -1130,6 +1132,7 @@ class IndoorNavActivity : ComponentActivity() {
         // Arrived: hand the dot back from the walking model to the tracker's final position.
         map.driver = null
         puckMotion = null
+        liveTrail = null
         map.setPuck(pose.position, durationMs = 400)
         show(Screen.ARRIVED)
         map.navigating = false
@@ -1914,7 +1917,6 @@ class IndoorNavActivity : ComponentActivity() {
         private const val STEP_PERMISSION = 8
         private const val SNACK_MS = 3500L
         private const val THEN_WITHIN_STEPS = 25.0
-        private const val OFF_ROUTE_M = 2.0
         private const val SNAP_STEPS = 4.0
         private const val TAP_DOOR_DP = 10f
         private const val CORRIDOR_HALF_WIDTH_SHARE = 0.01

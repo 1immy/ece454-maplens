@@ -61,4 +61,9 @@ dependencies {
 tasks.withType<Test>().configureEach {
     // Lets replay tests read data/fixtures (recorded traces) without fragile relative paths.
     systemProperty("maplens.fixtures", rootProject.file("data/fixtures").absolutePath)
+    // Optional: a live walk pulled from the phone, replayed by LiveWalkReplayTest.
+    System.getenv("MAPLENS_WALK")?.let { systemProperty("maplens.walk", it) }
+    System.getenv("MAPLENS_WALK_FACING")?.let { systemProperty("maplens.walk.facing", it) }
+    System.getenv("MAPLENS_WALK_ROOM")?.let { systemProperty("maplens.walk.room", it) }
+    testLogging.showStandardStreams = System.getenv("MAPLENS_WALK") != null
 }

@@ -123,6 +123,9 @@ class ParticleTracker(
             if (c.finished) calibrator = null
         }
         for (p in particles) {
+            // A step across the corridor means the particle overshot a corner: put it back on
+            // the branch the user actually took before walking the step.
+            recoverCorner(p, heading)
             // Face whichever way along the current corridor best matches the step.
             val ahead = graph.bearingOnEdge(p.edge.id, p.offsetPx, towardTo = true)
             p.forward = bearingDifference(heading, ahead) <= Math.PI / 2
@@ -179,6 +182,49 @@ class ParticleTracker(
             p.logWeight = 0.0
             advance(p, past * p.stepLengthPx * (1 + config.stepLengthNoise * gaussian()), heading)
         }
+    }
+
+    /**
+     * Corner recovery: when [heading] runs across [p]'s corridor (more than
+     * `cornerMisfitDeg` off both ways along it), the particle most likely went a little past a
+     * junction the user turned at, since step counts and k are never exact. If a node within
+     * `cornerBacktrackSteps` steps either way has an exit within `cornerExitMaxDeg` of the
+     * heading, the particle moves back to that node and onto that exit. Without this, every
+     * particle just past a junction keeps walking straight on, and the estimate later jumps.
+     */
+    private fun recoverCorner(p: Particle, heading: Double) {
+        val along = graph.bearingOnEdge(p.edge.id, p.offsetPx, towardTo = true)
+        val misfit = minOf(
+            bearingDifference(heading, along),
+            bearingDifference(heading, along + Math.PI),
+        )
+        if (misfit <= Math.toRadians(config.cornerMisfitDeg)) return
+        val reach = config.cornerBacktrackSteps * p.stepLengthPx
+        var best: Triple<Edge, String, Double>? = null
+        for ((node, distance) in listOf(
+            p.edge.from to p.offsetPx,
+            p.edge.to to p.edge.lengthPx - p.offsetPx
+        )) {
+            if (distance > reach) continue
+            for ((exit, _) in adjacency[node].orEmpty()) {
+                if (exit.id == p.edge.id) continue
+                val bearing = if (exit.from == node) {
+                    graph.bearingOnEdge(exit.id, 0.0, towardTo = true)
+                } else {
+                    graph.bearingOnEdge(exit.id, exit.lengthPx, towardTo = false)
+                }
+                val error = bearingDifference(heading, bearing)
+                if (error <= Math.toRadians(config.cornerExitMaxDeg) &&
+                    (best == null || error < best.third)
+                ) {
+                    best = Triple(exit, node, error)
+                }
+            }
+        }
+        val (exit, node, _) = best ?: return
+        p.edge = exit
+        p.forward = exit.from == node
+        p.offsetPx = if (p.forward) 0.0 else exit.lengthPx
     }
 
     /** Moves [p] [distance] px along the graph, choosing a branch at each node it reaches. */

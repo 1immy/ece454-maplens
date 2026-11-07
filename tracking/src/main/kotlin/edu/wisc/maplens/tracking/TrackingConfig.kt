@@ -28,6 +28,18 @@ data class TrackingConfig(
     val peakThreshold: Double = 0.75,
     /** The signal must dip below this (m/s²) before the next peak can count (hysteresis). */
     val peakRearmThreshold: Double = -0.15,
+    /** Fused step sources: footfalls closer than this are one footfall seen twice. */
+    val stepFuseGapNs: Long = 300_000_000,
+    /**
+     * ...and footfalls closer than this share of the recent step interval are the second
+     * accelerometer peak of one stride (heel strike, then push-off about half a step later).
+     */
+    val stepFuseCadenceShare: Double = 0.55,
+    /**
+     * Accelerometer peaks fill in only after the detector has been quiet this long: about two
+     * missed steps at a normal pace, so they never double a working detector.
+     */
+    val stepFuseQuietNs: Long = 1_200_000_000,
     /** At most one step per 0.3 s, i.e. about 3.3 steps/s, above a brisk walk. */
     val peakMinIntervalNs: Long = 300_000_000,
     /** A sample gap longer than this restarts the peak filters instead of bridging it. */
@@ -103,6 +115,15 @@ data class TrackingConfig(
     val calibrationReplaceFraction: Double = 0.5,
     /** Weight of a kept particle against a re-placed one right after calibration. */
     val calibrationKeptWeight: Double = 0.1,
+    /**
+     * Corner recovery ([ParticleTracker]): a step this far off both ways along the particle's
+     * corridor means it overshot a junction the user turned at...
+     */
+    val cornerMisfitDeg: Double = 60.0,
+    /** ...so if a junction within this many steps has an exit within this of the heading... */
+    val cornerBacktrackSteps: Double = 2.0,
+    /** ...the particle moves back onto that exit. */
+    val cornerExitMaxDeg: Double = 45.0,
     /** σθ in the heading weight exp(−(θ − β)² / 2σθ²), and for branch choice at junctions. */
     val headingSigmaDeg: Double = 20.0,
     /** Resample when the effective particle count drops below this fraction of N. */

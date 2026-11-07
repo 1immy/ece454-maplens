@@ -120,7 +120,9 @@ class LiveMotionSource(
         val detector = sensors.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
         val detectorOn = detector != null && hasStepPermission &&
             sensors.registerListener(this, detector, SensorManager.SENSOR_DELAY_NORMAL, h)
-        h.post { processor.selectPeaks(!detectorOn) }
+        // Fused when the detector is there: it misses steps for seconds at a time, and
+        // accelerometer peaks (checked by the walking gate like every footfall) fill the gaps.
+        h.post { if (detectorOn) processor.selectFused() else processor.selectPeaks(true) }
         return true
     }
 

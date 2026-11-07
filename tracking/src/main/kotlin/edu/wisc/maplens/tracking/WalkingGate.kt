@@ -1,6 +1,7 @@
 package edu.wisc.maplens.tracking
 
 import edu.wisc.maplens.model.MotionEvent
+import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.sqrt
@@ -110,10 +111,29 @@ class WalkingGate(private val config: TrackingConfig = TrackingConfig()) {
         while (timestampNs - motion.first().timeNs > HISTORY_NS) motion.removeFirst()
     }
 
-    /** Gyroscope sample (rad/s), device axes. */
+    /**
+     * Gyroscope sample (rad/s), device axes. Only rotation about horizontal axes counts: a
+     * walker turning a corner or turning round spins the phone about the vertical, which is
+     * walking, while shaking or flicking the phone tips it about horizontal axes. With no
+     * fresh attitude yet, the whole rotation rate counts.
+     */
     fun gyroscope(timestampNs: Long, values: FloatArray) {
         if (values.size < 3 || values.any { !it.isFinite() }) return
-        val r2 = values.take(3).sumOf { it.toDouble() * it }
+        val gx = values[0].toDouble()
+        val gy = values[1].toDouble()
+        val gz = values[2].toDouble()
+        val q = quaternion
+        val r2 = if (q != null && abs(timestampNs - rotationNs) <= config.gaitFreshnessNs) {
+            val (x, y, z, w) = q
+            // World = R·device; drop the vertical (z) component, keep the tipping rate.
+            val wx = (1 - 2 * (y * y + z * z)) * gx + 2 * (x * y - z * w) * gy +
+                2 * (x * z + y * w) * gz
+            val wy = 2 * (x * y + z * w) * gx + (1 - 2 * (x * x + z * z)) * gy +
+                2 * (y * z - x * w) * gz
+            wx * wx + wy * wy
+        } else {
+            gx * gx + gy * gy + gz * gz
+        }
         if (turn.lastOrNull()?.let { timestampNs <= it.timeNs } == true) return
         turn.addLast(TurnSample(timestampNs, r2))
         while (timestampNs - turn.first().timeNs > HISTORY_NS) turn.removeFirst()
