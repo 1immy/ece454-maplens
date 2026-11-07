@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!--
+    One light palette for the whole app; the full token set lives in Ui.kt.
+    60% neutral background, 30% ink, 10% blue accent; red only marks a destination.
+  -->
+  <color name="ml_background">#F6F7F9</color>
+  <color name="ml_ink">#0F172A</color>
+  <color name="ml_accent">#1A5696</color>
+
+  <style name="MapLens.Base" parent="android:style/Theme.Material.Light.NoActionBar">
+    <item name="android:colorAccent">@color/ml_accent</item>
+    <item name="android:colorPrimary">@color/ml_ink</item>
+    <item name="android:textColorPrimary">@color/ml_ink</item>
+    <item name="android:windowBackground">@color/ml_background</item>
+    <item name="android:statusBarColor">@color/ml_background</item>
+    <item name="android:windowLightStatusBar">true</item>
+  </style>
+
+  <style name="MapLens.Theme" parent="MapLens.Base" />
+
+  <!-- The navigation screen keeps its dark guidance banner under the status bar. -->
+  <style name="MapLens.Theme.Navigate">
+    <item name="android:statusBarColor">@color/ml_ink</item>
+    <item name="android:windowLightStatusBar">false</item>
+  </style>
+</resources>

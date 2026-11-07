@@ -12,13 +12,20 @@
   <application
     android:allowBackup="false"
     android:label="@string/app_name"
-    android:theme="@android:style/Theme.Material.Light.NoActionBar">
+    android:theme="@style/MapLens.Theme">
     <activity
       android:name=".PosterCaptureActivity"
       android:exported="false"
       android:screenOrientation="portrait" />
+    <!-- Developer: the bundled EH3 map with demo and live tracking, opened from Home. -->
     <activity
       android:name=".MainActivity"
+      android:exported="false"
+      android:label="@string/nav_title"
+      android:screenOrientation="portrait"
+      android:theme="@style/MapLens.Theme.Navigate" />
+    <activity
+      android:name=".HomeActivity"
       android:exported="true"
       android:screenOrientation="portrait">
       <intent-filter>

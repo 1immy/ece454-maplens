@@ -3,9 +3,7 @@ package edu.wisc.maplens
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.Intent
 import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -14,6 +12,7 @@ import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -45,7 +44,8 @@ import kotlin.math.roundToInt
 
 /**
  * The navigation screen: the bundled EH3 map, a room picker, the route, and a turn arrow with
- * a step countdown (#9, #10).
+ * a step countdown (#9, #10). Opened from Developer on [HomeActivity] until a photographed and
+ * verified map can be navigated (#16).
  *
  * Two pose sources drive it. **Demo** walks the route with a [FakePoseStream]. **Live** asks
  * which corridor the user faces at START (sets θ0), then feeds real steps and heading through
@@ -177,6 +177,11 @@ class MainActivity : Activity() {
         liveMode = on
         if (on) live.start() else live.stop()
         modeButton.text = getString(if (on) R.string.mode_live else R.string.mode_demo)
+        modeButton.contentDescription = getString(
+            R.string.mode_description,
+            modeButton.text,
+            getString(if (on) R.string.mode_demo else R.string.mode_live),
+        )
         actionButton.text = getString(if (on) R.string.checkpoint else R.string.walk)
         actionButton.isEnabled = false
         val g = graph
@@ -354,6 +359,7 @@ class MainActivity : Activity() {
         val heading = instruction.maneuver
         val straightOn = heading == Maneuver.ARRIVE && instruction.stepsUntil > 0
         arrow.text = ARROWS.getValue(if (straightOn) Maneuver.STRAIGHT else heading)
+        arrow.visibility = View.VISIBLE
         headline.text = instruction.headline()
         detail.text = instruction.detail
         val meters = (stepsLeft * stride).roundToInt()
@@ -390,74 +396,112 @@ class MainActivity : Activity() {
 
     private fun showMessage(title: String, body: String) {
         arrow.text = ""
+        arrow.visibility = View.GONE
         headline.text = title
         detail.text = body
         remaining.text = ""
     }
 
     private fun buildLayout(): View {
-        val pad = (16 * resources.displayMetrics.density).roundToInt()
-        fun text(sizeSp: Float, bold: Boolean = false) = TextView(this).apply {
-            textSize = sizeSp
-            setTextColor(Color.WHITE)
-            if (bold) setTypeface(typeface, Typeface.BOLD)
-        }
-        arrow = text(48f, bold = true).apply {
+        fun light(sizeSp: Float, alpha: Int = 255, bold: Boolean = false) =
+            text(sizeSp, Color.argb(alpha, 255, 255, 255), bold)
+        arrow = light(40f, bold = true).apply {
             gravity = Gravity.CENTER
-            minWidth = pad * 4
+            background = rounded(Color.argb(28, 255, 255, 255), radiusDp = 16)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        headline = text(22f, bold = true)
-        detail = text(16f)
-        remaining = text(14f)
+        headline = light(Ui.HEADING, bold = true).apply {
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        detail = light(Ui.BODY, alpha = 230)
+        remaining = light(Ui.CAPTION, alpha = 200)
         val words = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, 0, 0, 0)
             addView(headline)
-            addView(detail)
-            addView(remaining)
+            addView(detail, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(2) })
+            addView(remaining, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(6) })
+        }
+        modeButton = styledButton(ButtonStyle.DARK, getString(R.string.mode_demo)).apply {
+            minWidth = dp(88)
+            contentDescription = getString(
+                R.string.mode_description,
+                getString(R.string.mode_demo),
+                getString(R.string.mode_live),
+            )
+            setOnClickListener { toggleMode() }
+        }
+        val back = ImageButton(this).apply {
+            setImageDrawable(icon(R.drawable.ic_arrow_back, Color.WHITE))
+            background = pressable(
+                rounded(Color.TRANSPARENT, radiusDp = 24),
+                Color.argb(56, 255, 255, 255),
+            )
+            contentDescription = getString(R.string.nav_back)
+            setOnClickListener { finish() }
+        }
+        val topBar = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(back, LinearLayout.LayoutParams(dp(Ui.TOUCH_DP), dp(Ui.TOUCH_DP)))
+            addView(
+                light(Ui.BODY, alpha = 230, bold = true).apply {
+                    setText(R.string.nav_title)
+                    markHeading()
+                },
+                LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(4) },
+            )
+            addView(modeButton, LinearLayout.LayoutParams(WRAP, WRAP))
+        }
+        val guidance = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(arrow, LinearLayout.LayoutParams(dp(72), dp(72)))
+            addView(
+                words,
+                LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(16) },
+            )
         }
         val banner = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.rgb(24, 44, 42))
-            setPadding(pad, pad * 2, pad, pad)
-            addView(arrow)
-            addView(words)
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Ui.INK)
+            setPadding(dp(8), dp(4), dp(16), dp(20))
+            addView(topBar, LinearLayout.LayoutParams(MATCH, WRAP))
+            addView(
+                guidance,
+                LinearLayout.LayoutParams(MATCH, WRAP).apply {
+                    topMargin = dp(12)
+                    marginStart = dp(8)
+                },
+            )
+            padForSystemBars(bottom = false)
         }
-        mapView = MapView(this)
-        destinationButton = Button(this).apply {
-            text = getString(R.string.choose_destination)
+        mapView = MapView(this).apply { setBackgroundColor(Ui.BACKGROUND) }
+        destinationButton = styledButton(
+            ButtonStyle.SECONDARY,
+            getString(R.string.choose_destination),
+        ).apply {
             isEnabled = false
             setOnClickListener { pickDestination() }
         }
-        actionButton = Button(this).apply {
-            text = getString(R.string.walk)
+        actionButton = styledButton(ButtonStyle.PRIMARY, getString(R.string.walk)).apply {
             isEnabled = false
             setOnClickListener { onAction() }
         }
-        modeButton = Button(this).apply {
-            text = getString(R.string.mode_demo)
-            setOnClickListener { toggleMode() }
-        }
         val controls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(pad / 2, pad / 2, pad / 2, pad)
-            addView(destinationButton, LinearLayout.LayoutParams(0, WRAP, 2f))
-            addView(actionButton, LinearLayout.LayoutParams(0, WRAP, 1.5f))
-            addView(modeButton, LinearLayout.LayoutParams(0, WRAP, 1f))
+            setBackgroundColor(Ui.SURFACE)
+            setPadding(dp(16), dp(12), dp(16), dp(16))
+            addView(destinationButton, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(
+                actionButton,
+                LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) },
+            )
+            padForSystemBars(top = false)
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(banner, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(mapView, LinearLayout.LayoutParams(MATCH, 0, 1f))
             addView(
-                Button(context).apply {
-                    setText(R.string.capture_poster)
-                    setOnClickListener {
-                        startActivity(Intent(this@MainActivity, PosterCaptureActivity::class.java))
-                    }
-                },
-                LinearLayout.LayoutParams(MATCH, WRAP)
+                View(context).apply { setBackgroundColor(Ui.BORDER) },
+                LinearLayout.LayoutParams(MATCH, dp(1)),
             )
             addView(controls, LinearLayout.LayoutParams(MATCH, WRAP))
         }
