@@ -124,7 +124,7 @@ private fun attachStart(
     return result.copy(startNodeId = node.id)
 }
 
-private fun FloorGraph.endpointNear(
+fun FloorGraph.endpointNear(
     edge: Edge,
     point: PixelPoint,
     radius: Double,
@@ -133,10 +133,11 @@ private fun FloorGraph.endpointNear(
     it.position.distanceTo(point) <= radius && accept(it)
 }
 
-private fun FloorGraph.nextNodeId(prefix: String): String =
+fun FloorGraph.nextNodeId(prefix: String): String =
     generateSequence(1) { it + 1 }.map { "$prefix$it" }.first { it !in nodes }
 
-private fun FloorGraph.split(edge: Edge, hit: EdgePosition, node: Node): FloorGraph {
+/** Inserts [node] into [edge] at [hit]. Node ids don't change, so room landmarks stay put. */
+fun FloorGraph.split(edge: Edge, hit: EdgePosition, node: Node): FloorGraph {
     val points = edge.polyline
     var distance = hit.offsetPx
     val drawnLength = pathLength(points)
