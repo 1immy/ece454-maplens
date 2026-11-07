@@ -68,6 +68,42 @@ class RefineTest(unittest.TestCase):
         self.assertEqual(g.nodes[0], (100, 100))
 
 
+def hsv_to_bgr(h, s, v):
+    return tuple(int(c) for c in cv2.cvtColor(np.uint8([[[h, s, v]]]), cv2.COLOR_HSV2BGR)[0, 0])
+
+
+def fringed_walls():
+    """A corridor whose walls pick up route colour, as a photo of a screen does, and a faint
+    painted line beside a wall with no stronger paint near it."""
+    img = np.full((400, 1200, 3), PAPER, np.uint8)
+    fringe = hsv_to_bgr(10, 90, 120)
+    for x in (570, 630, 900):
+        cv2.line(img, (x, 20), (x, 380), WALL, 4)
+    cv2.line(img, (600, 20), (600, 380), ROUTE, 6)
+    for x in (573, 627, 903):
+        cv2.line(img, (x, 40), (x, 360), fringe, 2)
+    return img
+
+
+class WallFringeTest(unittest.TestCase):
+    def test_wall_fringe_beside_paint_is_not_a_route(self):
+        routes = corridors.route_mask(fringed_walls())
+        self.assertGreater(routes[200, 600], 0)
+        self.assertEqual(routes[200, 573], 0)
+        self.assertEqual(routes[200, 627], 0)
+
+    def test_faint_line_with_no_paint_near_it_stays(self):
+        self.assertGreater(corridors.route_mask(fringed_walls())[200, 903], 0)
+
+    def test_fringed_corridor_traces_as_one_line(self):
+        img = fringed_walls()
+        cv2.rectangle(img, (850, 0), (1000, 400), PAPER, -1)
+        graph, _ = corridors.extract_graph(img)
+        self.assertEqual(len(graph.edges), 1)
+        xs = [x for x, _ in graph.edges[0][2]]
+        self.assertLess(max(abs(x - 600) for x in xs), 5)
+
+
 class CorridorTest(unittest.TestCase):
     def test_extracts_the_t_junction(self):
         img, truth = synthetic_poster()

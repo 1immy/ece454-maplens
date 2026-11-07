@@ -48,6 +48,7 @@ class PosterParserChecks : Instrumentation() {
             checkWarmGoldStar()
             checkFaintMarkerCorridor()
             checkExitStubs()
+            checkWallFringe()
             checkUnsupportedDoorDetour()
             checkSeparateDoorways()
             checkFrames()
@@ -140,6 +141,24 @@ class PosterParserChecks : Instrumentation() {
         val recovered = recoverMarkerCorridor(hsv, routes, initial, listOf(marker))
         check(checkNotNull(recovered.nearestEdge(marker)).distancePx < 5.0)
         check(routes.get(250, 300)[0] > 0)
+    }
+
+    /** Same layout as tools/test_corridors.py: fringe beside paint goes, a lone faint line stays. */
+    private fun checkWallFringe() = Mats().use { mats ->
+        val hsv = mats.own(Mat(400, 1200, CvType.CV_8UC3, Scalar(0.0, 0.0, 238.0)))
+        for (x in listOf(570.0, 630.0, 900.0)) {
+            Imgproc.line(hsv, Point(x, 20.0), Point(x, 380.0), Scalar(0.0, 0.0, 40.0), 4)
+        }
+        Imgproc.line(hsv, Point(600.0, 20.0), Point(600.0, 380.0), Scalar(8.0, 200.0, 190.0), 6)
+        for (x in listOf(573.0, 627.0, 903.0)) {
+            Imgproc.line(hsv, Point(x, 40.0), Point(x, 360.0), Scalar(10.0, 90.0, 120.0), 2)
+        }
+        val routes = mats.mat()
+        routeMask(hsv, routes, mats)
+        check(routes.get(200, 600)[0] > 0)
+        check(routes.get(200, 573)[0] == 0.0)
+        check(routes.get(200, 627)[0] == 0.0)
+        check(routes.get(200, 903)[0] > 0)
     }
 
     private fun checkExitStubs() = Mats().use { mats ->
