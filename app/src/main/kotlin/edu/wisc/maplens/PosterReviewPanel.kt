@@ -21,6 +21,16 @@ private val SELECTED_SURFACE = Color.rgb(228, 238, 249)
 private val ON_ACCENT = Color.rgb(250, 251, 252)
 private const val CROP_MARGIN_PX = 24
 
+/** The printed label with some margin, to compare against the number read from it. */
+internal fun labelCrop(photo: Bitmap, bounds: Rect): Bitmap? {
+    val left = (bounds.left - CROP_MARGIN_PX).coerceAtLeast(0)
+    val top = (bounds.top - CROP_MARGIN_PX).coerceAtLeast(0)
+    val right = (bounds.right + CROP_MARGIN_PX).coerceAtMost(photo.width)
+    val bottom = (bounds.bottom + CROP_MARGIN_PX).coerceAtMost(photo.height)
+    if (right <= left || bottom <= top) return null
+    return Bitmap.createBitmap(photo, left, top, right - left, bottom - top)
+}
+
 /**
  * Every number the parser read, beside the photo it was read from, so nobody has to find
  * labels on a small map. Rooms that need a look get their own list.
@@ -126,7 +136,7 @@ internal class PosterReviewPanel(context: Context) : LinearLayout(context) {
             ImageView(context).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                setImageBitmap(labelCrop(room.preview.bounds))
+                image?.let { setImageBitmap(labelCrop(it, room.preview.bounds)) }
             },
             LayoutParams(dp(104), dp(56)).apply { marginEnd = dp(12) },
         )
@@ -200,16 +210,6 @@ internal class PosterReviewPanel(context: Context) : LinearLayout(context) {
         RoomCheck.NOT_SURE -> R.string.poster_check_not_sure
         RoomCheck.ENTRANCE -> R.string.poster_check_entrance
         RoomCheck.CLEAR -> R.string.poster_check_clear
-    }
-
-    private fun labelCrop(bounds: Rect): Bitmap? {
-        val photo = image ?: return null
-        val left = (bounds.left - CROP_MARGIN_PX).coerceAtLeast(0)
-        val top = (bounds.top - CROP_MARGIN_PX).coerceAtLeast(0)
-        val right = (bounds.right + CROP_MARGIN_PX).coerceAtMost(photo.width)
-        val bottom = (bounds.bottom + CROP_MARGIN_PX).coerceAtMost(photo.height)
-        if (right <= left || bottom <= top) return null
-        return Bitmap.createBitmap(photo, left, top, right - left, bottom - top)
     }
 
     private fun rounded(color: Int) = GradientDrawable().apply {

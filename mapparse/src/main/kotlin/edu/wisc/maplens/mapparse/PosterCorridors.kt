@@ -19,7 +19,36 @@ internal fun routeMask(hsv: Mat, mask: Mat, mats: Mats) {
     Core.inRange(hsv, Scalar(0.0, 71.0, 81.0), Scalar(19.0, 255.0, 255.0), mask)
     Core.inRange(hsv, Scalar(166.0, 71.0, 81.0), Scalar(179.0, 255.0, 255.0), red)
     Core.bitwise_or(mask, red, mask)
+    dropWallFringe(hsv, mask, mats)
 }
+
+/**
+ * Photos of a screen fringe walls with route colour, and those streaks trace as extra corridors.
+ * Walls are dark and colourless, unlike paint. A streak on a wall goes only when solid paint runs
+ * beside it, so a faint corridor with nothing stronger nearby survives.
+ */
+private fun dropWallFringe(hsv: Mat, mask: Mat, mats: Mats) {
+    val dark = mats.mat()
+    Core.inRange(hsv, Scalar(0.0, 0.0, 0.0), Scalar(179.0, 69.0, 109.0), dark)
+    val walls = mats.mat()
+    val vertical = mats.mat()
+    Imgproc.morphologyEx(dark, walls, Imgproc.MORPH_OPEN, mats.kernel(WALL_RUN, 1))
+    Imgproc.morphologyEx(dark, vertical, Imgproc.MORPH_OPEN, mats.kernel(1, WALL_RUN))
+    Core.bitwise_or(walls, vertical, walls)
+    Imgproc.dilate(walls, walls, mats.kernel(FRINGE_REACH))
+    val notWalls = mats.mat()
+    Core.bitwise_not(walls, notWalls)
+    val nearPaint = mats.mat()
+    Core.bitwise_and(mask, notWalls, nearPaint)
+    Imgproc.dilate(nearPaint, nearPaint, mats.kernel(PAINT_REACH, shape = Imgproc.MORPH_ELLIPSE))
+    Core.bitwise_and(walls, nearPaint, walls)
+    Core.bitwise_not(walls, walls)
+    Core.bitwise_and(mask, walls, mask)
+}
+
+private const val WALL_RUN = 25
+private const val FRINGE_REACH = 7
+private const val PAINT_REACH = 61
 
 /** Retry visible, faint paint around an isolated star when its corridor is missing. */
 internal fun recoverMarkerCorridor(

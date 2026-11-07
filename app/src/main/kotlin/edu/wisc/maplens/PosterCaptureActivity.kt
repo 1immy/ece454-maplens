@@ -2,6 +2,7 @@ package edu.wisc.maplens
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -165,7 +166,8 @@ class PosterCaptureActivity : ComponentActivity() {
         // No icon: the label changes with the step (allow camera, capture, retake).
         action = styledButton(ButtonStyle.PRIMARY, getString(R.string.capture_poster))
         details = styledButton(ButtonStyle.SECONDARY).apply { visibility = View.GONE }
-        save = styledButton(ButtonStyle.PRIMARY, getString(R.string.map_save)).apply {
+        // Edit map is the main way on. This one is for a scan that needs no correcting.
+        save = styledButton(ButtonStyle.TONAL, getString(R.string.map_save)).apply {
             visibility = View.GONE
         }
         cancel = styledButton(ButtonStyle.SECONDARY, getString(android.R.string.cancel)).apply {
@@ -328,6 +330,7 @@ class PosterCaptureActivity : ComponentActivity() {
         }
         progress.show(ParseProgress(ParseStage.STRAIGHTEN))
         progress.visibility = View.VISIBLE
+        cancel.setText(android.R.string.cancel)
         cancel.visibility = View.VISIBLE
         action.visibility = View.GONE
         cameraView.display?.let { photo.targetRotation = it.rotation }
@@ -502,16 +505,15 @@ class PosterCaptureActivity : ComponentActivity() {
         details.setOnClickListener {
             AlertDialog.Builder(this)
                 .setTitle(R.string.poster_review)
-                .setMessage(
-                    (issues + getString(R.string.poster_edit_pending))
-                        .joinToString("\n\n") { "• $it" },
-                )
+                .setMessage(issues.joinToString("\n\n") { "• $it" })
                 .setPositiveButton(android.R.string.ok, null)
                 .show()
         }
+        cancel.setText(R.string.poster_retake)
+        cancel.visibility = View.VISIBLE
         action.isEnabled = true
-        action.setText(R.string.poster_retake)
-        action.setOnClickListener { resetCapture() }
+        action.setText(R.string.poster_edit)
+        action.setOnClickListener { openEditor(result, graph) }
         // Saving needs a graph NavigationSession accepts: a real START and validate() clean.
         val verified = verifiedOrNull(result.graph)
         save.visibility = View.VISIBLE
@@ -521,6 +523,45 @@ class PosterCaptureActivity : ComponentActivity() {
         )
         val toCheck = rooms.count { it.check != RoomCheck.CLEAR }
         save.setOnClickListener { verified?.let { confirmSave(it, result.rectified, toCheck) } }
+    }
+
+    /** The editor works on its own copy on disk. This screen's job is done once it opens. */
+    private fun openEditor(result: ParseResult, graph: FloorGraph) {
+        action.isEnabled = false
+        save.isEnabled = false
+        val rooms = result.rooms.map {
+            RoomDraft(
+                it.label,
+                it.bounds.left,
+                it.bounds.top,
+                it.bounds.right,
+                it.bounds.bottom,
+                it.entranceNodeId,
+                it.confidence,
+                it.possible,
+            )
+        }
+        worker.execute {
+            val written = runCatching {
+                DraftStore.of(this).start(MapDraft(graph, rooms)) { file ->
+                    file.outputStream().use {
+                        check(result.rectified.compress(Bitmap.CompressFormat.JPEG, 95, it))
+                    }
+                }
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                written.onSuccess {
+                    startActivity(Intent(this, GraphEditorActivity::class.java))
+                    finish()
+                }.onFailure {
+                    Log.w(TAG, "Draft not written", it)
+                    action.isEnabled = true
+                    save.isEnabled = verifiedOrNull(graph) != null
+                    status.setText(R.string.poster_draft_failed)
+                }
+            }
+        }
     }
 
     /** The graph as a fresh session would verify it, or null when it would refuse it. */

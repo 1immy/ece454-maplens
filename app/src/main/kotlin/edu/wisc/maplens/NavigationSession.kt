@@ -4,7 +4,6 @@ import edu.wisc.maplens.model.ConfidenceLevel
 import edu.wisc.maplens.model.ConfidenceState
 import edu.wisc.maplens.model.EvalCondition
 import edu.wisc.maplens.model.FloorGraph
-import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.model.Route
 import edu.wisc.maplens.routing.Router
@@ -38,13 +37,10 @@ class NavigationSession(
         phase = Phase.VERIFY
     }
 
-    /** Saving is blocked until the graph passes its structural checks. */
+    /** Saving is blocked until the graph passes every rule in [mapProblems]. */
     fun onGraphVerified(verified: FloorGraph) {
         check(phase == Phase.VERIFY) { "verify only from VERIFY, was $phase" }
-        require(verified.nodes[verified.startNodeId]?.type == NodeType.START) {
-            "graph not ready: set START before verifying"
-        }
-        val problems = verified.validate()
+        val problems = mapProblems(verified).filter { it.blocksSave }.map { it.message }
         require(problems.isEmpty()) { "graph not ready: $problems" }
         graph = verified.copy(verified = true)
         phase = Phase.CALIBRATE

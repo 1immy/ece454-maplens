@@ -129,7 +129,11 @@ class MainActivity : Activity() {
                     mapView.bitmap = image
                     mapView.start = g.nodes.getValue(g.startNodeId).position
                     destinationButton.isEnabled = true
-                    showMessage(getString(R.string.pick_destination), getString(R.string.at_start))
+                    val saved = intent.getBooleanExtra(EXTRA_JUST_SAVED, false)
+                    showMessage(
+                        getString(if (saved) R.string.map_saved else R.string.pick_destination),
+                        getString(R.string.at_start),
+                    )
                 }.onFailure { showMessage(getString(R.string.map_failed), it.message.orEmpty()) }
             }
         }
@@ -523,6 +527,9 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        /** The map was saved a moment ago, so the screen confirms that first. */
+        const val EXTRA_JUST_SAVED = "edu.wisc.maplens.JUST_SAVED"
+
         /** Id of a [SavedMap] to navigate on; without it the bundled EH3 demo map opens. */
         const val EXTRA_MAP_ID = "edu.wisc.maplens.MAP_ID"
 

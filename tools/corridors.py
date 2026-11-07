@@ -71,10 +71,26 @@ class Params:
 
 # --------------------------------------------------------------------------- mask
 
+WALL_MAX_V = 110     # walls are darker than this...
+WALL_MAX_S = 70      # ...and less colourful than this, which paint is not
+WALL_RUN = 25        # dark runs at least this long are walls, not text
+FRINGE_REACH = 7     # route colour within this window of a wall may be fringe
+PAINT_REACH = 61     # fringe is only dropped with solid paint inside this window
+
 def route_mask(bgr: np.ndarray) -> np.ndarray:
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     h, s, v = cv2.split(hsv)
-    return (((h < 20) | (h > 165)) & (s > 70) & (v > 80)).astype(np.uint8) * 255
+    routes = (((h < 20) | (h > 165)) & (s > 70) & (v > 80)).astype(np.uint8) * 255
+    # Photos of a screen fringe walls with route colour. Walls are dark and colourless, unlike
+    # paint. A streak on a wall is dropped only when solid paint runs beside it, so a faint
+    # corridor with nothing stronger nearby survives.
+    dark = ((v < WALL_MAX_V) & (s < WALL_MAX_S)).astype(np.uint8) * 255
+    walls = (cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((1, WALL_RUN), np.uint8))
+             | cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((WALL_RUN, 1), np.uint8)))
+    walls = cv2.dilate(walls, np.ones((FRINGE_REACH, FRINGE_REACH), np.uint8))
+    paint = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (PAINT_REACH, PAINT_REACH))
+    near_paint = cv2.dilate(routes & ~walls, paint)
+    return routes & ~(walls & near_paint)
 
 
 def hatch_mask(bgr: np.ndarray, p: Params) -> np.ndarray:

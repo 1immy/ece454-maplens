@@ -47,11 +47,20 @@ class HomeActivity : Activity() {
             addView(offlinePill(), spaced(top = 16, wrap = true))
             addView(steps(), spaced(top = 24))
             val saved = MapAssets.savedMaps(this@HomeActivity).list()
-            if (saved.isNotEmpty()) {
+            val unfinished = DraftStore.of(this@HomeActivity).exists
+            if (saved.isNotEmpty() || unfinished) {
                 addView(sectionTitle(R.string.home_maps), spaced(top = 32))
-                saved.forEachIndexed { i, map ->
-                    addView(savedRow(map), spaced(top = if (i == 0) 12 else 8))
-                }
+            }
+            if (unfinished) {
+                addView(
+                    devRow(R.drawable.ic_edit, R.string.home_draft, R.string.home_draft_detail) {
+                        startActivity(Intent(this@HomeActivity, GraphEditorActivity::class.java))
+                    },
+                    spaced(top = 12),
+                )
+            }
+            saved.forEachIndexed { i, map ->
+                addView(savedRow(map), spaced(top = if (i == 0 && !unfinished) 12 else 8))
             }
             addView(sectionTitle(R.string.home_developer), spaced(top = 32))
             addView(
@@ -70,7 +79,17 @@ class HomeActivity : Activity() {
                 },
                 spaced(top = 8),
             )
-            recorderIntent()?.let { recorder ->
+            debugIntent(FIXTURE_EDITOR)?.let { editor ->
+                addView(
+                    devRow(
+                        R.drawable.ic_edit,
+                        R.string.home_dev_edit,
+                        R.string.home_dev_edit_detail,
+                    ) { startActivity(editor) },
+                    spaced(top = 8),
+                )
+            }
+            debugIntent(RECORDER)?.let { recorder ->
                 addView(
                     devRow(
                         R.drawable.ic_walk,
@@ -293,9 +312,9 @@ class HomeActivity : Activity() {
             )
         }
 
-    /** The debug-only recorder, when this build has it (it lives in the debug source set). */
-    private fun recorderIntent(): Intent? {
-        val intent = Intent().setComponent(ComponentName(this, RECORDER))
+    /** A debug-only screen, when this build has it (they live in the debug source set). */
+    private fun debugIntent(name: String): Intent? {
+        val intent = Intent().setComponent(ComponentName(this, name))
         return intent.takeIf { packageManager.resolveActivity(it, 0) != null }
     }
 
@@ -306,5 +325,6 @@ class HomeActivity : Activity() {
         const val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
         const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
         const val RECORDER = "edu.wisc.maplens.debug.RecorderActivity"
+        const val FIXTURE_EDITOR = "edu.wisc.maplens.debug.EditFixtureActivity"
     }
 }
