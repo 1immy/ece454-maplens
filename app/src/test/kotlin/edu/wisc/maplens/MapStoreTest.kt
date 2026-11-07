@@ -2,6 +2,7 @@ package edu.wisc.maplens
 
 import edu.wisc.maplens.model.Edge
 import edu.wisc.maplens.model.FloorGraph
+import edu.wisc.maplens.model.Landmark
 import edu.wisc.maplens.model.Node
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
@@ -11,104 +12,83 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class MapStoreTest {
-    private val folder = Files.createTempDirectory("maps").toFile()
-    private val store = MapStore(folder)
-    private val graph = FloorGraph(
-        "b",
-        "3",
-        listOf(
-            Node("S", PixelPoint(0.0, 0.0), NodeType.START),
-            Node("D", PixelPoint(100.0, 0.0), NodeType.DOOR),
-        ).associateBy { it.id },
-        listOf(
-            Edge("e", "S", "D", listOf(PixelPoint(0.0, 0.0), PixelPoint(100.0, 0.0)), 100.0),
-        ),
-        emptyList(),
-        "S",
-    )
-    private val rooms = listOf(
-        RoomDraft("3546", 1, 2, 3, 4, "D", 0.9f),
-        RoomDraft("3602A", 5, 6, 7, 8, null, 0.7f, possible = true),
-        RoomDraft("3417", 9, 10, 11, 12, "D", 0.99f, checked = true),
-    )
+    private val root: File = Files.createTempDirectory("maps").toFile()
+    private val store = MapStore(root)
 
-    private fun image(text: String): (File) -> Unit = { it.writeText(text) }
+    private val graph = run {
+        val s = Node("S", PixelPoint(0.0, 0.0), NodeType.START)
+        val d = Node("D", PixelPoint(100.0, 0.0), NodeType.DOOR)
+        FloorGraph(
+            buildingId = "engineering-hall",
+            floor = "3",
+            nodes = listOf(s, d).associateBy { it.id },
+            edges = listOf(Edge("e1", "S", "D", listOf(s.position, d.position), 100.0)),
+            landmarks = listOf(Landmark("3546", "D", 0.98f), Landmark("OFFMAP", "D", 1f)),
+            startNodeId = "S",
+            verified = true,
+        )
+    }
 
     @AfterTest
     fun cleanUp() {
-        folder.deleteRecursively()
+        root.deleteRecursively()
+    }
+
+    private fun image(file: File) = file.writeBytes(byteArrayOf(1, 2, 3))
+
+    @Test
+    fun `a saved map round-trips and lists with its metadata`() {
+        val saved = store.save(graph, "EH3 elevators", nowMillis = 1_000L, writeImage = ::image)
+        assertEquals("map-1000", saved.id)
+        assertEquals("EH3 elevators", saved.name)
+        assertEquals(1, saved.rooms)
+        assertEquals(listOf(saved), store.list())
+        assertEquals(graph, store.loadGraph(saved))
+        assertEquals(3L, saved.imageFile.length())
+        assertEquals(saved, store.get("map-1000"))
     }
 
     @Test
-    fun `a draft survives being read back with its rooms`() {
-        store.startDraft(MapDraft(graph, rooms), image("photo"))
-        assertTrue(store.hasDraft)
-        assertEquals(MapDraft(graph, rooms), MapStore(folder).loadDraft())
-        assertEquals("photo", store.draftImage.readText())
+    fun `a new store on the same folder sees earlier maps, newest first`() {
+        store.save(graph, "first", nowMillis = 1_000L, writeImage = ::image)
+        store.save(graph, "second", nowMillis = 2_000L, writeImage = ::image)
+        store.save(graph, "same time", nowMillis = 2_000L, writeImage = ::image)
+        val reopened = MapStore(root).list()
+        assertEquals(3, reopened.size)
+        assertEquals("first", reopened.last().name)
+        assertEquals(setOf("map-2000", "map-2000-1"), reopened.take(2).map { it.id }.toSet())
     }
 
     @Test
-    fun `edits to a draft replace the earlier ones`() {
-        store.startDraft(MapDraft(graph, rooms), image("photo"))
-        store.updateDraft(MapDraft(graph.deleteNode("D"), emptyList()))
-        val loaded = store.loadDraft()
-        assertFalse("D" in loaded.graph.nodes)
-        assertTrue(loaded.rooms.isEmpty())
+    fun `unverified drafts are refused`() {
+        assertFailsWith<IllegalArgumentException> {
+            store.save(graph.copy(verified = false), "draft", writeImage = ::image)
+        }
+        assertTrue(store.list().isEmpty())
     }
 
     @Test
-    fun `a new draft replaces an unfinished one`() {
-        store.startDraft(MapDraft(graph, rooms), image("old"))
-        store.startDraft(MapDraft(graph, emptyList()), image("new"))
-        assertEquals("new", store.draftImage.readText())
-        assertTrue(store.loadDraft().rooms.isEmpty())
+    fun `a failed image write leaves nothing behind`() {
+        assertFailsWith<IllegalStateException> {
+            store.save(graph, "broken", nowMillis = 5L) { error("disk full") }
+        }
+        assertFailsWith<IllegalStateException> {
+            store.save(graph, "empty image", nowMillis = 6L) { it.writeBytes(ByteArray(0)) }
+        }
+        assertTrue(store.list().isEmpty())
+        assertTrue(root.listFiles().orEmpty().isEmpty())
     }
 
     @Test
-    fun `saving keeps the map with its image and clears the draft`() {
-        store.startDraft(MapDraft(graph, rooms), image("photo"))
-        store.saveVerified(graph.copy(verified = true))
-        val after = MapStore(folder)
-        assertTrue(after.hasSaved)
-        assertFalse(after.hasDraft)
-        assertTrue(after.loadSaved().verified)
-        assertEquals("photo", after.savedImage.readText())
-    }
-
-    @Test
-    fun `a second save replaces the first`() {
-        store.startDraft(MapDraft(graph, rooms), image("first"))
-        store.saveVerified(graph.copy(verified = true))
-        store.startDraft(MapDraft(graph, rooms), image("second"))
-        store.saveVerified(graph.copy(floor = "4", verified = true))
-        assertEquals("4", store.loadSaved().floor)
-        assertEquals("second", store.savedImage.readText())
-    }
-
-    @Test
-    fun `an unverified map cannot be saved or loaded`() {
-        store.startDraft(MapDraft(graph, rooms), image("photo"))
-        assertFailsWith<IllegalArgumentException> { store.saveVerified(graph) }
-        assertFalse(store.hasSaved)
-        assertTrue(store.hasDraft)
-
-        store.saveVerified(graph.copy(verified = true))
-        val file = File(File(folder, "saved"), "graph.json")
-        file.writeText(file.readText().replace("\"verified\": true", "\"verified\": false"))
-        assertFailsWith<IllegalStateException> { store.loadSaved() }
-    }
-
-    @Test
-    fun `a crash between the two renames still finds the old map`() {
-        store.startDraft(MapDraft(graph, rooms), image("photo"))
-        store.saveVerified(graph.copy(verified = true))
-        assertTrue(File(folder, "saved").renameTo(File(folder, "saved.old")))
-        assertTrue(store.hasSaved)
-        assertTrue(store.loadSaved().verified)
-        assertEquals("photo", store.savedImage.readText())
+    fun `incomplete folders are skipped and maps can be deleted`() {
+        File(root, "map-9").mkdirs()
+        val saved = store.save(graph, "kept", nowMillis = 10L, writeImage = ::image)
+        assertEquals(listOf("map-10"), store.list().map { it.id })
+        assertTrue(store.delete(saved.id))
+        assertNull(store.get(saved.id))
     }
 }

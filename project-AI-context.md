@@ -109,7 +109,7 @@ Package root: `edu.wisc.maplens` (`.model`, `.routing`, `.tracking`, `.mapparse`
 These are deliberate simplifications so far. Changing them touches `core/model`, so all three owners have to agree (section 7).
 - The report's `FloorGraph` also holds `version`, `imageRef`, `homography`, `k`, `k` uncertainty and heading offset θ0; the code holds geometry + labels only.
 - The report's `Landmark` has normalized label, edge, offset and side; the code has label, node id, OCR confidence.
-- The report plans **Jetpack Compose** UI and a **Room** database for persistence; neither is set up. The UI uses native Views, and a verified map is saved as JSON plus a JPEG (ADR 0008).
+- The report plans **Jetpack Compose** UI and a **Room** database for persistence; neither is set up. The UI uses native Views, and verified maps are saved as JSON plus a JPEG (#67, ADR 0008).
 - The report's node types are junction, door, start, dead end, exit; the code adds `ELEVATOR`, `STAIRS`, `AED`.
 
 ## 6. Core contracts (`core/model`)

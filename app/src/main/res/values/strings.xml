@@ -96,11 +96,6 @@
   <string name="poster_stage_waiting">waiting</string>
   <string name="poster_edit">Edit map</string>
   <string name="poster_draft_failed">Could not open the editor. Check free storage and try again.</string>
-  <string name="saved_map_title">Your saved map</string>
-  <string name="saved_map_failed">Could not load your saved map</string>
-  <string name="home_your_map">Your map</string>
-  <string name="home_saved_map">Saved map</string>
-  <string name="home_saved_map_detail">Pick a room and walk there. Works offline.</string>
   <string name="home_draft">Unfinished map</string>
   <string name="home_draft_detail">Continue checking where you left off</string>
   <string name="home_dev_edit">Edit EH3 map</string>
@@ -187,4 +182,14 @@
   <string name="editor_type_stairs">Stairs</string>
   <string name="editor_type_exit">Exit</string>
   <string name="editor_type_aed">AED</string>
+  <string name="map_save">Save and navigate</string>
+  <string name="map_save_blocked">Can\'t save yet: use Edit map to fix it</string>
+  <string name="map_save_title">Save this map?</string>
+  <string name="map_save_message">Rooms marked to check: %1$d. They are saved as read. To correct them, cancel and choose Edit map.</string>
+  <string name="map_default_name">Poster scan, %1$s</string>
+  <string name="map_save_failed">Could not save the map: %1$s</string>
+  <string name="home_maps">Your maps</string>
+  <string name="home_map_detail">%1$d rooms · saved %2$s</string>
+  <string name="home_map_delete_title">Delete %1$s?</string>
+  <string name="home_map_delete">Delete</string>
 </resources>

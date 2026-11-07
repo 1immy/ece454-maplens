@@ -9,11 +9,12 @@ rules, while `FloorGraph.validate()` only checks references, connectivity and ed
 
 ## Decision
 
-**Saving.** One verified map and one draft in app-private storage, each a `FloorGraphJson` file
-beside its straightened JPEG. `FloorGraphJson` drops `source.image`, so the image sits next to the
-graph. No Room and no new dependency. Saving writes a new folder and swaps it in with two renames,
-and a crash between them still finds the old map. Multiple maps and a picker are left to #20 if a
-second floor comes into scope.
+**Saving.** Verified maps go through `MapStore` from #65 (#67): one folder per map, listed under
+Your maps on Home. The editor adds a `DraftStore` for the one map being checked: its graph, readings
+and straightened JPEG, rewritten after each edit. It sits beside the saved maps, not among them. The
+draft goes only after the save worked, so a failed save loses nothing. No Room and no new dependency.
+The review screen keeps Save and navigate from #67 for a scan that needs no correcting, with Edit map
+as the main way on.
 
 **One gate.** `mapProblems` in `app` holds the rules. The editor reads it to explain what's wrong,
 and `NavigationSession.onGraphVerified` applies it, so a graph can't become verified another way.
@@ -86,8 +87,10 @@ precision and recall are unchanged, and frame decisions still match on all 16 ph
 
 ## Verification
 
-Emulator only (Pixel 6 AVD, API 34, and the same AVD at 360 x 640 dp). Fixture: delete a junction,
-Save blocked with its reasons, relink, add a door, save, restart, route to the new door with the demo
-walk. Photo: the elevator front photo through the emulator's image-file camera, parsed with START
-unset, Save blocked until START was placed, saved, routed. Live tracking on a saved map and
-finger comfort on a real phone are not tested.
+Emulator (Pixel 6 AVD, API 34, and the same AVD at 360 x 640 dp). Fixture: delete a junction, Save
+blocked with its reasons, relink, add a door, save, route to the new door with the demo walk. Photo:
+the elevator front photo through the emulator's image-file camera, parsed with START unset, Save
+blocked until START was placed, saved, force-stopped, reopened from Your maps.
+
+Pixel 7a: scanned a poster shown on a laptop screen and edited the result. A paper poster and live
+tracking on a saved map are not tested.

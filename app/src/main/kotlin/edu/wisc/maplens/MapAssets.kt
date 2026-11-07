@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.FloorGraphJson
+import java.io.File
 
 /**
  * Bundled floor maps: the verified graph and the straightened image it was traced on.
@@ -25,4 +26,11 @@ object MapAssets {
     fun loadImage(context: Context, name: String = EH3_ELEVATORS): Bitmap =
         context.assets.open("$name.jpg").use { BitmapFactory.decodeStream(it) }
             ?: error("$name.jpg could not be decoded (is Git LFS installed? run `git lfs pull`)")
+
+    /** Maps the user scanned and verified, kept in app storage (#65). */
+    fun savedMaps(context: Context): MapStore = MapStore(File(context.filesDir, "maps"))
+
+    fun loadImage(map: SavedMap): Bitmap =
+        BitmapFactory.decodeFile(map.imageFile.path)
+            ?: error("${map.name}: image could not be read")
 }

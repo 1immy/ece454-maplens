@@ -4,10 +4,10 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
+import edu.wisc.maplens.DraftStore
 import edu.wisc.maplens.GraphEditorActivity
 import edu.wisc.maplens.MapAssets
 import edu.wisc.maplens.MapDraft
-import edu.wisc.maplens.MapStore
 import edu.wisc.maplens.roomsFromLabels
 
 /**
@@ -20,7 +20,7 @@ class EditFixtureActivity : Activity() {
         Thread {
             val copied = runCatching {
                 val graph = MapAssets.loadGraph(this).copy(verified = false)
-                MapStore(this).startDraft(MapDraft(graph, graph.roomsFromLabels())) { file ->
+                DraftStore.of(this).start(MapDraft(graph, graph.roomsFromLabels())) { file ->
                     assets.open("${MapAssets.EH3_ELEVATORS}.jpg").use { input ->
                         file.outputStream().use { input.copyTo(it) }
                     }

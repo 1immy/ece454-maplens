@@ -1,114 +1,100 @@
 package edu.wisc.maplens
 
-import android.content.Context
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.FloorGraphJson
+import edu.wisc.maplens.routing.roomDestinations
 import java.io.File
+import java.util.Properties
+
+/** One map saved on the phone: a verified graph and the straightened image it refers to. */
+data class SavedMap(
+    val id: String,
+    val name: String,
+    val savedAtMillis: Long,
+    val rooms: Int,
+    val graphFile: File,
+    val imageFile: File,
+)
 
 /**
- * The map on this phone: one draft being checked and one verified map, each a graph JSON beside
- * its straightened image. Call off the UI thread. See ADR 0008.
+ * Verified maps kept in app storage, so they work offline and survive a restart (#65, #20).
  *
- * shortcut: one verified map, replaced on each save. Upgrade to one folder per map with a picker
- * when more than one floor is in scope.
+ * One folder per map under [root]: `graph.json` (FloorGraphJson), `image.jpg` (the straightened
+ * poster the graph's pixels refer to) and `map.properties` (name, save time, room count). A map
+ * is written to a temporary folder and renamed into place, so a half-written map never lists.
+ *
+ * Plain java.io, no Android, so it unit-tests on a laptop. Call it off the UI thread.
  */
-internal class MapStore(private val root: File) {
-    constructor(context: Context) : this(File(context.filesDir, "maps"))
-
-    private val draft = File(root, "draft")
-    private val saved = File(root, "saved")
-    private val incoming = File(root, "saved.tmp")
-    private val outgoing = File(root, "saved.old")
-
-    val draftImage get() = File(draft, IMAGE)
-
-    /** Saved images survive a crash between the two renames in [saveVerified]. */
-    val savedImage get() = File(if (saved.exists()) saved else outgoing, IMAGE)
-
-    val hasDraft get() = File(draft, GRAPH).exists()
-    val hasSaved get() = File(saved, GRAPH).exists() || File(outgoing, GRAPH).exists()
-
-    /** Starts a new draft, replacing any unfinished one. */
-    fun startDraft(map: MapDraft, writeImage: (File) -> Unit) {
-        draft.deleteRecursively()
-        check(draft.mkdirs()) { "could not create $draft" }
-        writeImage(draftImage)
-        updateDraft(map)
+class MapStore(private val root: File) {
+    /**
+     * Saves [graph], which must be verified (`NavigationSession.onGraphVerified`). [writeImage]
+     * writes the straightened image to the file it is given.
+     */
+    fun save(
+        graph: FloorGraph,
+        name: String,
+        nowMillis: Long = System.currentTimeMillis(),
+        writeImage: (File) -> Unit,
+    ): SavedMap {
+        require(graph.verified) { "only verified graphs can be saved" }
+        root.mkdirs()
+        var id = "map-$nowMillis"
+        var suffix = 1
+        while (File(root, id).exists()) id = "map-$nowMillis-${suffix++}"
+        val staging = File(root, ".$id.tmp")
+        staging.deleteRecursively()
+        check(staging.mkdirs()) { "cannot create $staging" }
+        try {
+            File(staging, GRAPH).writeText(FloorGraphJson.encode(graph))
+            writeImage(File(staging, IMAGE))
+            check(File(staging, IMAGE).length() > 0) { "image was not written" }
+            val meta = Properties().apply {
+                setProperty("name", name)
+                setProperty("savedAtMillis", nowMillis.toString())
+                setProperty("rooms", graph.roomDestinations().size.toString())
+            }
+            File(staging, META).outputStream().use { meta.store(it, "MapLens saved map") }
+            check(staging.renameTo(File(root, id))) { "cannot move $staging into place" }
+        } catch (e: Exception) {
+            staging.deleteRecursively()
+            throw e
+        }
+        return checkNotNull(read(File(root, id)))
     }
 
-    fun updateDraft(map: MapDraft) {
-        File(draft, GRAPH).writeAtomically(FloorGraphJson.encode(map.graph))
-        File(draft, ROOMS).writeAtomically(encodeRooms(map.rooms))
-    }
+    /** Every complete saved map, newest first. */
+    fun list(): List<SavedMap> =
+        root.listFiles { f -> f.isDirectory && !f.name.startsWith(".") }
+            .orEmpty()
+            .mapNotNull(::read)
+            .sortedByDescending { it.savedAtMillis }
 
-    fun loadDraft(): MapDraft {
-        val graph = FloorGraphJson.decode(File(draft, GRAPH).readText())
-        val rooms = File(draft, ROOMS).takeIf { it.exists() }?.readText()?.let(::decodeRooms)
-        return MapDraft(graph, rooms.orEmpty()).withGraph(graph)
-    }
+    fun get(id: String): SavedMap? = File(root, id).takeIf { it.isDirectory }?.let(::read)
 
-    /** Replaces the verified map as one step, then drops the draft it came from. */
-    fun saveVerified(graph: FloorGraph) {
-        require(graph.verified) { "only a verified map can be saved" }
-        incoming.deleteRecursively()
-        check(incoming.mkdirs()) { "could not create $incoming" }
-        draftImage.copyTo(File(incoming, IMAGE))
-        File(incoming, GRAPH).writeText(FloorGraphJson.encode(graph))
-        outgoing.deleteRecursively()
-        if (saved.exists()) check(saved.renameTo(outgoing)) { "could not replace $saved" }
-        check(incoming.renameTo(saved)) { "could not write $saved" }
-        outgoing.deleteRecursively()
-        draft.deleteRecursively()
-    }
+    /** The saved graph, still verified. */
+    fun loadGraph(map: SavedMap): FloorGraph = FloorGraphJson.decode(map.graphFile.readText())
 
-    /** The verified map. A file that isn't marked verified never reaches navigation. */
-    fun loadSaved(): FloorGraph {
-        val file = File(if (saved.exists()) saved else outgoing, GRAPH)
-        val graph = FloorGraphJson.decode(file.readText())
-        check(graph.verified) { "saved map is not verified" }
-        return graph
-    }
+    fun delete(id: String): Boolean = File(root, id).deleteRecursively()
 
-    private fun File.writeAtomically(text: String) {
-        val temporary = File(parentFile, "$name.tmp")
-        temporary.writeText(text)
-        check(temporary.renameTo(this)) { "could not write $this" }
+    private fun read(dir: File): SavedMap? {
+        val graph = File(dir, GRAPH)
+        val image = File(dir, IMAGE)
+        val metaFile = File(dir, META)
+        if (!graph.isFile || !image.isFile || !metaFile.isFile) return null
+        val meta = Properties().apply { metaFile.inputStream().use { load(it) } }
+        return SavedMap(
+            id = dir.name,
+            name = meta.getProperty("name") ?: dir.name,
+            savedAtMillis = meta.getProperty("savedAtMillis")?.toLongOrNull() ?: 0L,
+            rooms = meta.getProperty("rooms")?.toIntOrNull() ?: 0,
+            graphFile = graph,
+            imageFile = image,
+        )
     }
 
     private companion object {
         const val GRAPH = "graph.json"
-        const val IMAGE = "map.jpg"
-        const val ROOMS = "rooms.tsv"
+        const val IMAGE = "image.jpg"
+        const val META = "map.properties"
     }
 }
-
-/** One room per line, tab separated. OCR labels and node ids hold no tabs or line breaks. */
-internal fun encodeRooms(rooms: List<RoomDraft>): String = rooms.joinToString("\n") { room ->
-    listOf(
-        room.label,
-        room.left,
-        room.top,
-        room.right,
-        room.bottom,
-        room.entranceNodeId.orEmpty(),
-        room.confidence,
-        room.possible,
-        room.checked,
-    ).joinToString("\t")
-}
-
-internal fun decodeRooms(text: String): List<RoomDraft> =
-    text.lineSequence().filter { it.isNotEmpty() }.map { line ->
-        val f = line.split('\t')
-        RoomDraft(
-            f[0],
-            f[1].toInt(),
-            f[2].toInt(),
-            f[3].toInt(),
-            f[4].toInt(),
-            f[5].ifEmpty { null },
-            f[6].toFloat(),
-            f[7].toBoolean(),
-            f[8].toBoolean(),
-        )
-    }.toList()

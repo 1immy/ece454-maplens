@@ -1,6 +1,7 @@
 package edu.wisc.maplens
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
 import android.text.TextUtils
@@ -11,14 +12,17 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import java.text.DateFormat
 import java.text.NumberFormat
+import java.util.Date
 
 /**
- * The app's entry. Scanning a poster is the one primary action, in the thumb zone; the bundled
- * EH3 navigation screen ([MainActivity]) and the debug recorder sit under Developer.
+ * The app's entry. Scanning a poster is the one primary action, in the thumb zone. Maps saved
+ * after a scan are listed under Your maps (#65); the bundled EH3 navigation screen
+ * ([MainActivity]) and the debug recorder sit under Developer.
  */
 class HomeActivity : Activity() {
-    /** Built on resume, so a map just saved or left unfinished shows up on return. */
+    // Built on resume so a map saved in the capture screen shows when the user comes back.
     override fun onResume() {
         super.onResume()
         setContentView(buildLayout())
@@ -41,17 +45,24 @@ class HomeActivity : Activity() {
                 spaced(top = 12),
             )
             addView(offlinePill(), spaced(top = 16, wrap = true))
-            yourMap()?.let { addView(it, spaced(top = 24)) }
             addView(steps(), spaced(top = 24))
-            addView(
-                text(Ui.CAPTION, Ui.INK_SECONDARY, bold = true).apply {
-                    setText(R.string.home_developer)
-                    letterSpacing = 0.08f
-                    isAllCaps = true
-                    markHeading()
-                },
-                spaced(top = 32),
-            )
+            val saved = MapAssets.savedMaps(this@HomeActivity).list()
+            val unfinished = DraftStore.of(this@HomeActivity).exists
+            if (saved.isNotEmpty() || unfinished) {
+                addView(sectionTitle(R.string.home_maps), spaced(top = 32))
+            }
+            if (unfinished) {
+                addView(
+                    devRow(R.drawable.ic_edit, R.string.home_draft, R.string.home_draft_detail) {
+                        startActivity(Intent(this@HomeActivity, GraphEditorActivity::class.java))
+                    },
+                    spaced(top = 12),
+                )
+            }
+            saved.forEachIndexed { i, map ->
+                addView(savedRow(map), spaced(top = if (i == 0 && !unfinished) 12 else 8))
+            }
+            addView(sectionTitle(R.string.home_developer), spaced(top = 32))
             addView(
                 devRow(R.drawable.ic_map, R.string.home_dev_map, R.string.home_dev_map_detail) {
                     startActivity(Intent(this@HomeActivity, MainActivity::class.java))
@@ -202,8 +213,41 @@ class HomeActivity : Activity() {
         )
     }
 
-    /** A full-width tappable row: icon tile, title and detail, chevron. */
+    private fun sectionTitle(title: Int): View =
+        text(Ui.CAPTION, Ui.INK_SECONDARY, bold = true).apply {
+            setText(title)
+            letterSpacing = 0.08f
+            isAllCaps = true
+            markHeading()
+        }
+
+    /** A saved map: tap to navigate on it, long-press to delete it. */
+    private fun savedRow(map: SavedMap): View {
+        val date = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+            .format(Date(map.savedAtMillis))
+        val detail = getString(R.string.home_map_detail, map.rooms, date)
+        return devRow(R.drawable.ic_map, map.name, detail) {
+            startActivity(MainActivity.open(this, map.id))
+        }.apply {
+            setOnLongClickListener {
+                AlertDialog.Builder(this@HomeActivity)
+                    .setTitle(getString(R.string.home_map_delete_title, map.name))
+                    .setPositiveButton(R.string.home_map_delete) { _, _ ->
+                        MapAssets.savedMaps(this@HomeActivity).delete(map.id)
+                        setContentView(buildLayout())
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+                true
+            }
+        }
+    }
+
     private fun devRow(iconId: Int, title: Int, detail: Int, onTap: () -> Unit): View =
+        devRow(iconId, getString(title), getString(detail), onTap)
+
+    /** A full-width tappable row: icon tile, title and detail, chevron. */
+    private fun devRow(iconId: Int, title: String, detail: String, onTap: () -> Unit): View =
         LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = dp(72)
@@ -211,7 +255,7 @@ class HomeActivity : Activity() {
             background = pressable(rounded(Ui.SURFACE, stroke = Ui.BORDER))
             isClickable = true
             isFocusable = true
-            contentDescription = "${getString(title)}. ${getString(detail)}"
+            contentDescription = "$title. $detail"
             setOnClickListener { onTap() }
             addView(
                 FrameLayout(context).apply {
@@ -231,10 +275,16 @@ class HomeActivity : Activity() {
                 LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
                     importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                    addView(text(Ui.BODY, bold = true).apply { setText(title) })
+                    addView(
+                        text(Ui.BODY, bold = true).apply {
+                            text = title
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                        },
+                    )
                     addView(
                         text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
-                            setText(detail)
+                            text = detail
                             maxLines = 2
                             ellipsize = TextUtils.TruncateAt.END
                         },
@@ -256,44 +306,6 @@ class HomeActivity : Activity() {
     private fun debugIntent(name: String): Intent? {
         val intent = Intent().setComponent(ComponentName(this, name))
         return intent.takeIf { packageManager.resolveActivity(it, 0) != null }
-    }
-
-    /** The map this phone already holds, finished or not. Null until there is one. */
-    private fun yourMap(): View? {
-        val store = MapStore(this)
-        if (!store.hasSaved && !store.hasDraft) return null
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(
-                text(Ui.BODY, bold = true).apply {
-                    setText(R.string.home_your_map)
-                    markHeading()
-                },
-            )
-            if (store.hasSaved) {
-                addView(
-                    devRow(
-                        R.drawable.ic_map,
-                        R.string.home_saved_map,
-                        R.string.home_saved_map_detail,
-                    ) {
-                        startActivity(
-                            Intent(this@HomeActivity, MainActivity::class.java)
-                                .putExtra(MainActivity.EXTRA_SAVED_MAP, true),
-                        )
-                    },
-                    spaced(top = 8),
-                )
-            }
-            if (store.hasDraft) {
-                addView(
-                    devRow(R.drawable.ic_edit, R.string.home_draft, R.string.home_draft_detail) {
-                        startActivity(Intent(this@HomeActivity, GraphEditorActivity::class.java))
-                    },
-                    spaced(top = 8),
-                )
-            }
-        }
     }
 
     private fun spaced(top: Int, wrap: Boolean = false) =

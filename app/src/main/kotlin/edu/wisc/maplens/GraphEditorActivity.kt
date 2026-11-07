@@ -29,6 +29,8 @@ import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.nearestEdge
 import edu.wisc.maplens.routing.AStarRouter
 import edu.wisc.maplens.routing.roomDestinations
+import java.text.DateFormat
+import java.util.Date
 import java.util.concurrent.Executors
 
 /** Screen tolerance for a finger: half of a 48 dp target on each side. */
@@ -43,7 +45,7 @@ private const val CHOOSE_ZOOM = 2.9f
 private const val LEGEND_SP = 12f
 
 /**
- * "Check the map": fix a draft graph, then save it as verified. Works on the draft in [MapStore],
+ * "Check the map": fix a draft graph, then save it as verified. Works on the draft in [DraftStore],
  * so edits outlast this screen. The panel under the map always holds what can be done next.
  */
 class GraphEditorActivity : ComponentActivity() {
@@ -93,7 +95,7 @@ class GraphEditorActivity : ComponentActivity() {
 
     /** Working through the room list. A room tapped on the map is a one-off fix instead. */
     private var checkingList = true
-    private val store by lazy { MapStore(this) }
+    private val drafts by lazy { DraftStore.of(this) }
     private val worker = Executors.newSingleThreadExecutor()
 
     private val graph: FloorGraph get() = history.current.graph
@@ -110,8 +112,8 @@ class GraphEditorActivity : ComponentActivity() {
         hint.setHint(getString(R.string.loading_map), false)
         worker.execute {
             val loaded = runCatching {
-                val photo = checkNotNull(BitmapFactory.decodeFile(store.draftImage.path))
-                store.loadDraft() to photo
+                val photo = checkNotNull(BitmapFactory.decodeFile(drafts.image.path))
+                drafts.load() to photo
             }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
@@ -274,7 +276,7 @@ class GraphEditorActivity : ComponentActivity() {
     private fun persist() {
         val snapshot = history.current
         worker.execute {
-            runCatching { store.updateDraft(snapshot) }.onFailure {
+            runCatching { drafts.update(snapshot) }.onFailure {
                 Log.w(TAG, "Draft not written", it)
                 runOnUiThread { render(getString(R.string.editor_keep_failed), warn = true) }
             }
@@ -814,27 +816,30 @@ class GraphEditorActivity : ComponentActivity() {
         panelView.addView(pair(keep, save), spaced(top = 8))
     }
 
-    /** The session makes the last check and marks the graph verified, then it reaches the disk. */
+    /** The session makes the last check and marks the graph verified. Then it joins Your maps. */
     private fun save(button: View) {
         button.isEnabled = false
         val checked = graph
+        val stamp = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+            .format(Date())
+        val name = getString(R.string.map_default_name, stamp)
+        val maps = MapAssets.savedMaps(this)
         worker.execute {
             val saved = runCatching {
                 val session = NavigationSession(AStarRouter())
                 session.onMapCaptured(checked)
                 session.onGraphVerified(checked)
-                store.saveVerified(checkNotNull(session.graph))
+                drafts.saveTo(maps, checkNotNull(session.graph), name)
             }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
-                saved.onSuccess {
+                saved.onSuccess { map ->
                     startActivities(
                         arrayOf(
                             Intent(this, HomeActivity::class.java).addFlags(
                                 Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK,
                             ),
-                            Intent(this, MainActivity::class.java)
-                                .putExtra(MainActivity.EXTRA_SAVED_MAP, true)
+                            MainActivity.open(this, map.id)
                                 .putExtra(MainActivity.EXTRA_JUST_SAVED, true),
                         ),
                     )
