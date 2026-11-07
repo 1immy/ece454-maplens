@@ -41,6 +41,11 @@ class LiveMotionSource(
     context: Context,
     private val onPose: (PoseEstimate, LiveStats) -> Unit,
     config: TrackingConfig = TrackingConfig(),
+    /**
+     * Optional: the aligned map heading between steps, posted to the main thread at up to
+     * ~30 Hz while the tracker is fed, so a direction cone can turn as the user turns.
+     */
+    private val onHeading: ((Double) -> Unit)? = null,
 ) : SensorEventListener {
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(SensorManager::class.java)
@@ -126,6 +131,7 @@ class LiveMotionSource(
         val step = when (event.sensor.type) {
             Sensor.TYPE_GAME_ROTATION_VECTOR -> {
                 processor.rotation(event.timestamp, event.values.copyOf(), 0)
+                postHeading(event.timestamp)
                 null
             }
             Sensor.TYPE_ACCELEROMETER ->
@@ -146,5 +152,20 @@ class LiveMotionSource(
         main.post { onPose(pose, stats) }
     }
 
+    /** Worker thread only. */
+    private var lastHeadingNs = 0L
+
+    private fun postHeading(timestampNs: Long) {
+        val listener = onHeading ?: return
+        if (tracker == null || timestampNs - lastHeadingNs < HEADING_PERIOD_NS) return
+        val mapRad = processor.heading?.mapRad ?: return
+        lastHeadingNs = timestampNs
+        main.post { listener(mapRad) }
+    }
+
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    private companion object {
+        const val HEADING_PERIOD_NS = 33_000_000L
+    }
 }
