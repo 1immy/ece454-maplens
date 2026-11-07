@@ -95,4 +95,14 @@
   <string name="poster_stage_done">done</string>
   <string name="poster_stage_active">in progress</string>
   <string name="poster_stage_waiting">waiting</string>
+  <string name="map_save">Save and navigate</string>
+  <string name="map_save_blocked">Can\'t save yet: needs START and a connected map</string>
+  <string name="map_save_title">Save this map?</string>
+  <string name="map_save_message">Rooms marked to check: %1$d. They are saved as read. Correcting them comes with the map editor.</string>
+  <string name="map_default_name">Poster scan, %1$s</string>
+  <string name="map_save_failed">Could not save the map: %1$s</string>
+  <string name="home_maps">Your maps</string>
+  <string name="home_map_detail">%1$d rooms · saved %2$s</string>
+  <string name="home_map_delete_title">Delete %1$s?</string>
+  <string name="home_map_delete">Delete</string>
 </resources>

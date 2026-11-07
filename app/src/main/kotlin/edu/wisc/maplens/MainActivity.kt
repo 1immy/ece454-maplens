@@ -3,12 +3,15 @@ package edu.wisc.maplens
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -65,6 +68,7 @@ class MainActivity : Activity() {
     private lateinit var destinationButton: Button
     private lateinit var actionButton: Button
     private lateinit var modeButton: Button
+    private lateinit var titleView: TextView
 
     private val loader = Executors.newSingleThreadExecutor()
     private val ticker = Handler(Looper.getMainLooper())
@@ -106,12 +110,20 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(buildLayout())
         showMessage(getString(R.string.loading_map), "")
+        val savedId = intent.getStringExtra(EXTRA_MAP_ID)
         loader.execute {
             val loaded = runCatching {
-                MapAssets.loadGraph(this) to MapAssets.loadImage(this)
+                if (savedId == null) {
+                    Triple(MapAssets.loadGraph(this), MapAssets.loadImage(this), null)
+                } else {
+                    val store = MapAssets.savedMaps(this)
+                    val map = store.get(savedId) ?: error("saved map $savedId is gone")
+                    Triple(store.loadGraph(map), MapAssets.loadImage(map), map.name)
+                }
             }
             runOnUiThread {
-                loaded.onSuccess { (g, image) ->
+                loaded.onSuccess { (g, image, name) ->
+                    name?.let { titleView.text = it }
                     graph = g
                     corridors = g.corridorIds()
                     mapView.bitmap = image
@@ -445,7 +457,10 @@ class MainActivity : Activity() {
             addView(
                 light(Ui.BODY, alpha = 230, bold = true).apply {
                     setText(R.string.nav_title)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
                     markHeading()
+                    titleView = this
                 },
                 LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(4) },
             )
@@ -507,12 +522,18 @@ class MainActivity : Activity() {
         }
     }
 
-    private companion object {
-        const val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
-        const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
-        const val STEP_PERMISSION = 7
+    companion object {
+        /** Id of a [SavedMap] to navigate on; without it the bundled EH3 demo map opens. */
+        const val EXTRA_MAP_ID = "edu.wisc.maplens.MAP_ID"
 
-        val ARROWS = mapOf(
+        fun open(context: Context, mapId: String): Intent =
+            Intent(context, MainActivity::class.java).putExtra(EXTRA_MAP_ID, mapId)
+
+        private const val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
+        private const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
+        private const val STEP_PERMISSION = 7
+
+        private val ARROWS = mapOf(
             Maneuver.STRAIGHT to "↑",
             Maneuver.TURN_LEFT to "←",
             Maneuver.TURN_RIGHT to "→",
