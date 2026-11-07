@@ -291,6 +291,8 @@ class IndoorNavActivity : ComponentActivity() {
         locate.visibility = shown(!navLike && next != Screen.FACING)
         if (!navLike || next == Screen.CHECKPOINT) recenter.visibility = View.GONE
         setBannerVisible(next == Screen.NAVIGATE || next == Screen.ARRIVED)
+        // Every way into navigation starts in the heading-up view.
+        if (next == Screen.NAVIGATE) compass.contentDescription = getString(R.string.in_compass)
         if (next == Screen.SEARCH) {
             openSearchPanel()
         } else if (previous == Screen.SEARCH) {
@@ -1078,6 +1080,22 @@ class IndoorNavActivity : ComponentActivity() {
         if (screen == Screen.PREVIEW) renderPreviewSheet()
     }
 
+    /**
+     * Outside navigation the compass turns the map north up. While navigating it toggles
+     * between the tilted heading-up view and a flat north-up view that still follows the user.
+     */
+    private fun toggleCompass() {
+        if (screen != Screen.NAVIGATE) return map.resetNorth()
+        recenter.visibility = View.GONE
+        if (map.follow == IndoorMapView.Follow.HEADING) {
+            map.resetNorth()
+            compass.contentDescription = getString(R.string.in_compass_follow)
+        } else {
+            map.startFollowing(IndoorMapView.Follow.HEADING)
+            compass.contentDescription = getString(R.string.in_compass)
+        }
+    }
+
     /** While navigating, offers the way back to the heading-up view the user just left. */
     private fun showRecenter() {
         if (screen != Screen.NAVIGATE || recenter.visibility == View.VISIBLE) return
@@ -1094,7 +1112,8 @@ class IndoorNavActivity : ComponentActivity() {
             onUserMoved = { showRecenter() }
             onRotationChanged = { deg ->
                 compassNeedle.rotation = deg
-                val turned = kotlin.math.abs(deg) > 2f
+                // While navigating the compass is the 2D / 3D toggle, so it never hides.
+                val turned = kotlin.math.abs(deg) > 2f || screen == Screen.NAVIGATE
                 val want = if (turned) View.VISIBLE else View.GONE
                 if (compass.visibility != want) compass.visibility = want
             }
@@ -1276,11 +1295,7 @@ class IndoorNavActivity : ComponentActivity() {
             visibility = View.GONE
             contentDescription = getString(R.string.in_compass)
             isClickable = true
-            setOnClickListener {
-                map.resetNorth()
-                // North-up leaves the heading-up 3D view; Re-center is the way back.
-                showRecenter()
-            }
+            setOnClickListener { toggleCompass() }
             addView(compassNeedle, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
         }
         val layers = fab(R.drawable.ic_layers, Ui.INK_SECONDARY, R.string.in_layers) {

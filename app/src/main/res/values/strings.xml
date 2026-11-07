@@ -85,6 +85,7 @@
   <string name="in_recenter">Re-center</string>
   <string name="in_my_location">Show my location</string>
   <string name="in_compass">Compass: tap to turn the map north up</string>
+  <string name="in_compass_follow">Compass: tap to turn the map with you</string>
   <string name="in_layers">Switch map style</string>
   <string name="in_layer_poster">Showing the original poster</string>
   <string name="in_layer_plan">Showing the simplified plan</string>
