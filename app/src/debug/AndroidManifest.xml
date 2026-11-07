@@ -2,24 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <application>
     <!--
-      Second launcher icon in debug builds; HomeActivity stays the app's own entry.
-      Its own task affinity gives it a separate task, so each icon reopens its own screen
-      instead of whichever of the two was last on top (both shared the package's task).
+      Debug builds only. Opened from Home → Developer → Sensor recorder; it no longer has its
+      own launcher icon, so the phone shows one MapLens icon.
     -->
     <activity android:name=".debug.RecorderActivity"
       android:label="@string/recorder_launcher_label"
-      android:taskAffinity="${applicationId}.recorder"
-      android:exported="true"
+      android:exported="false"
       android:screenOrientation="fullSensor"
       android:configChanges="orientation|screenSize"
-      android:theme="@style/RecorderTheme">
-      <intent-filter>
-        <action android:name="android.intent.action.MAIN" />
-        <category android:name="android.intent.category.LAUNCHER" />
-      </intent-filter>
-    </activity>
+      android:theme="@style/RecorderTheme" />
     <activity android:name=".debug.OrientScanActivity"
-      android:taskAffinity="${applicationId}.recorder"
       android:exported="false"
       android:screenOrientation="portrait"
       android:windowSoftInputMode="stateAlwaysHidden"
