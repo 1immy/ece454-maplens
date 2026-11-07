@@ -109,7 +109,7 @@ Package root: `edu.wisc.maplens` (`.model`, `.routing`, `.tracking`, `.mapparse`
 These are deliberate simplifications so far. Changing them touches `core/model`, so all three owners have to agree (section 7).
 - The report's `FloorGraph` also holds `version`, `imageRef`, `homography`, `k`, `k` uncertainty and heading offset θ0; the code holds geometry + labels only.
 - The report's `Landmark` has normalized label, edge, offset and side; the code has label, node id, OCR confidence.
-- The report plans **Jetpack Compose** UI and a **Room** database for persistence; neither is set up yet.
+- The report plans **Jetpack Compose** UI and a **Room** database for persistence; neither is set up. The UI uses native Views, and a verified map is saved as JSON plus a JPEG (ADR 0008).
 - The report's node types are junction, door, start, dead end, exit; the code adds `ELEVATOR`, `STAIRS`, `AED`.
 
 ## 6. Core contracts (`core/model`)
@@ -155,7 +155,7 @@ Edge `id`, `polyline` and `lengthPx` are optional on read (filled in). Node type
 3. Corridor mask. The current prototype (`tools/corridors.py`) uses the **orange evacuation-route lines**, which run along almost every corridor; the report's alternative is threshold walls + seal doors + flood-fill rooms.
 4. Thin to centerlines (Zhang–Suen / skeletonize); junctions = ≥3 neighbors, ends = 1; Douglas–Peucker; merge close junctions; prune spurs.
 5. Attach each room number to the nearest edge as a door node; "You Are Here" becomes START.
-6. **Verify:** saving is blocked until the graph is connected, each destination links to a door, labels are unique, and no edges cross without a junction.
+6. **Verify:** saving is blocked until the graph is connected, each destination reaches a door node, no label is empty, and no edges cross without a junction. A label may repeat: a room with several entrances has one door node per entrance (ADR 0008).
 
 Maps are drawn **rotated to the viewer's facing direction**, not north-up (the street name at the top tells the orientation). Evacuation posters show **part** of the floor; directory maps show all of it, but corridors and rooms are both white there (harder).
 
