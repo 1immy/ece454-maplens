@@ -156,6 +156,10 @@ class IndoorNavActivity : ComponentActivity() {
             onHeading = ::onLiveHeading,
             onStats = ::onLiveStats,
             onMoving = ::onLiveMoving,
+            traceDir = getExternalFilesDir("sessions"),
+            onCandidate = { t, verdict, bob ->
+                if (following) logIo.execute { log?.candidate(t, verdict, bob) }
+            },
         )
     }
     private val logIo = Executors.newSingleThreadExecutor()
