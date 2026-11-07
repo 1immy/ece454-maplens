@@ -95,7 +95,7 @@
   <string name="in_layer_plan">Showing the simplified plan</string>
   <string name="in_dev_demo">Demo walk · k %1$.1f px/step</string>
   <string name="in_dev_live_waiting">Live · k %1$.1f px/step · waiting for your first step</string>
-  <string name="in_dev_live">k %1$.1f px/step · %2$d steps (%3$s) · %4$d skipped · %5$d ignored, not walking</string>
+  <string name="in_dev_live">k %1$.1f px/step · %2$d candidates (%3$s) · %4$d no heading · %5$d rejected by motion check</string>
   <string name="in_facing_title">Which way are you facing?</string>
   <string name="in_facing_body">Stand on START, hold the phone flat in front of you, face down a corridor and tap its arrow.</string>
   <string name="in_facing_again">Back at START? Face a corridor and tap its arrow.</string>

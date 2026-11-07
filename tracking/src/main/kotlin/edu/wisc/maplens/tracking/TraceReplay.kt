@@ -45,7 +45,7 @@ object TraceReplay {
                 TraceSensor.GAME_RV.wireName -> {
                     val vector = FloatArray(4) { row[2 + it].toFloat() }
                     processor.rotation(t, vector, screenRotation)
-                    gate.rotation(vector)
+                    gate.rotation(t, vector)
                     val heading = processor.heading
                     if (processor.offsetRad == null && heading != null) {
                         // Reproduces the recorded alignment: offset = map bearing − relative.

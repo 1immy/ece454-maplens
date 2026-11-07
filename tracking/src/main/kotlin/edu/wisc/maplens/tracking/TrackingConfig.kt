@@ -44,19 +44,36 @@ data class TrackingConfig(
     /** Turning faster than this (RMS over the window) is waving or shaking, not walking. */
     val gaitMaxGyroRms: Double = 2.0,
     /** Walking bobs the phone up and down; less vertical motion than this is not a step. */
-    val gaitMinVerticalRms: Double = 0.6,
+    val gaitMinVerticalRms: Double = 0.28,
+    /** Violent up/down motion can look vertical even when the user is standing still. */
+    val gaitMaxVerticalRms: Double = 4.0,
     /** Vertical over horizontal motion: walking is mostly vertical, shaking mostly not. */
     val gaitMinVerticalShare: Double = 0.55,
     /** More side-to-side acceleration than this (RMS, m/s²) is shaking. */
     val gaitMaxHorizontalRms: Double = 4.0,
-    /** Consecutive walking-like steps needed before any of them move the user. */
-    val gaitStartSteps: Int = 4,
-    /** Steps closer or further apart than these aren't one walk while starting. */
+    /** Gentle hand-held gait can have less vertical motion when spin and sway are modest. */
+    val gaitQuietMaxGyroRms: Double = 1.4,
+    val gaitQuietMaxHorizontalRms: Double = 2.0,
+    val gaitQuietMinVerticalShare: Double = 0.40,
+    /** Minimum interval between accepted footfalls. */
     val gaitMinIntervalNs: Long = 300_000_000,
-    val gaitMaxIntervalNs: Long = 1_200_000_000,
-    /** No step for this long, or this many rejected steps in a row, ends a walk. */
-    val gaitStopGapNs: Long = 2_000_000_000,
-    val gaitStopRejects: Int = 2,
+    /** Maximum age of attitude and motion evidence at the corresponding sample or footfall. */
+    val gaitFreshnessNs: Long = 120_000_000,
+    /** Causal vertical smoothing and hysteresis for identifying a rise and fall. */
+    val gaitVerticalSmoothingSeconds: Double = 0.04,
+    val gaitVerticalExcursion: Double = 0.35,
+    /** Use smaller signed excursions for light footfalls below the normal bob level. */
+    val gaitLightVerticalRms: Double = 0.6,
+    val gaitLightVerticalExcursion: Double = 0.15,
+    /** Reject many rapid reversals within the footfall window. */
+    val gaitMaxVerticalReversals: Int = 6,
+    /**
+     * Standing still: vertical RMS below this over [gaitStillWindowNs]. Walking stays above
+     * 1.0 m/s² (EH3 walks) and a held, still phone well below 0.1, so the display can stop the
+     * user within half a second of them stopping.
+     */
+    val gaitStillVerticalRms: Double = 0.25,
+    val gaitStillWindowNs: Long = 450_000_000,
     val particleCount: Int = 300,
     /** Per-particle step-length noise, as a fraction of k. */
     val stepLengthNoise: Double = 0.10,

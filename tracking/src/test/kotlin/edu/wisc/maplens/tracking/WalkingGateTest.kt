@@ -32,12 +32,12 @@ class WalkingGateTest {
         stepEveryNs: Long = stepPeriodNs,
     ): List<MotionEvent.Step> {
         val out = mutableListOf<MotionEvent.Step>()
-        gate.rotation(upright)
         val end = startNs + (seconds * 1e9).toLong()
         var nextStep = startNs + stepEveryNs
         var t = startNs
         while (t <= end) {
             val phase = 2 * PI * shakeHz * (t - startNs) / 1e9
+            gate.rotation(t, upright)
             gate.acceleration(
                 t,
                 floatArrayOf(
@@ -57,13 +57,35 @@ class WalkingGateTest {
     }
 
     @Test
-    fun `walking passes every step once the walk has started`() {
+    fun `the first supported footfall passes without waiting for another step`() {
         val gate = WalkingGate()
-        val steps = run(gate, seconds = 6.0, vertical = 2.0, sideways = 1.0, spin = 0.5)
-        // 10 detector steps in 6 s: the first 4 are held, then released together.
-        assertEquals(10, steps.size)
-        assertTrue(gate.isWalking)
-        assertEquals(0, gate.rejected)
+        val steps = run(gate, seconds = 0.6, vertical = 2.0, sideways = 1.0, spin = 0.5)
+        assertEquals(1_600_000_000L, steps.single().timestampNanos)
+        assertEquals(0L, gate.rejected)
+    }
+
+    @Test
+    fun `light slow footfalls pass when the phone has little rotation and sway`() {
+        val gate = WalkingGate()
+        val steps = run(
+            gate,
+            seconds = 4.0,
+            vertical = 0.50,
+            sideways = 0.38,
+            spin = 0.4,
+            shakeHz = 1.0,
+            stepEveryNs = 1_000_000_000L,
+        )
+        assertEquals(4, steps.size)
+        assertEquals(2_000_000_000L, steps.first().timestampNanos)
+    }
+
+    @Test
+    fun `low vertical motion still rejects mostly sideways hand movement`() {
+        val gate = WalkingGate()
+        val steps = run(gate, seconds = 4.0, vertical = 0.50, sideways = 1.4, spin = 0.4)
+        assertTrue(steps.isEmpty())
+        assertEquals(GaitVerdict.TOO_SIDEWAYS, gate.lastVerdict)
     }
 
     @Test
@@ -84,12 +106,36 @@ class WalkingGateTest {
     }
 
     @Test
-    fun `a couple of bumps never start a walk`() {
+    fun `a single upward bump does not move the user`() {
         val gate = WalkingGate()
-        // Two walking-like steps, then nothing: they stay held and are dropped.
-        val steps = run(gate, seconds = 1.3, vertical = 2.0, sideways = 1.0, spin = 0.5)
+        val t = 1_000_000_000L
+        for (i in 0..30) {
+            val ts = t + i * sampleNs
+            gate.rotation(ts, upright)
+            gate.acceleration(ts, floatArrayOf(0f, 0f, if (i > 25) 13f else 9.81f))
+            gate.gyroscope(ts, floatArrayOf(0f, 0f, 0f))
+        }
+        assertTrue(
+            gate.offer(MotionEvent.Step(t + 30 * sampleNs, 0.0, StepSource.STEP_DETECTOR)).isEmpty()
+        )
+        assertEquals(GaitVerdict.ISOLATED_BUMP, gate.lastVerdict)
+    }
+
+    @Test
+    fun `large vertical shaking is rejected even when the phone barely rotates`() {
+        val gate = WalkingGate()
+        val steps = run(gate, seconds = 6.0, vertical = 9.0, sideways = 0.1, spin = 0.1)
         assertTrue(steps.isEmpty())
-        assertTrue(!gate.isWalking)
+        assertEquals(GaitVerdict.VERTICAL_SHAKE, gate.lastVerdict)
+    }
+
+    @Test
+    fun `fast vertical oscillation is rejected even at walking amplitude`() {
+        val gate = WalkingGate()
+        val steps =
+            run(gate, seconds = 6.0, vertical = 2.0, sideways = 0.1, spin = 0.1, shakeHz = 7.0)
+        assertTrue(steps.isEmpty())
+        assertEquals(GaitVerdict.VERTICAL_SHAKE, gate.lastVerdict)
     }
 
     @Test
@@ -101,19 +147,18 @@ class WalkingGateTest {
     }
 
     @Test
-    fun `a long pause ends the walk and the next one starts again`() {
+    fun `a pause does not delay the first supported footfall on restart`() {
         val gate = WalkingGate()
         run(gate, seconds = 4.0, vertical = 2.0, sideways = 1.0, spin = 0.5)
-        assertTrue(gate.isWalking)
         val resumed = run(
             gate,
-            seconds = 3.0,
+            seconds = 0.6,
             vertical = 2.0,
             sideways = 1.0,
             spin = 0.5,
             startNs = 10_000_000_000L,
         )
-        assertEquals(5, resumed.size, "4 held then released, then 1 more")
+        assertEquals(10_600_000_000L, resumed.single().timestampNanos)
     }
 
     @Test
@@ -125,13 +170,14 @@ class WalkingGateTest {
     }
 
     @Test
-    fun `missing sensors skip their check instead of blocking steps`() {
+    fun `missing or stale motion evidence cannot move the user`() {
         val gate = WalkingGate()
-        // No rotation vector, accelerometer or gyroscope at all: only the start rule applies.
-        val steps = (1..8).flatMap { i ->
-            gate.offer(MotionEvent.Step(i * stepPeriodNs, 0.0, StepSource.STEP_DETECTOR))
-        }
-        assertEquals(8, steps.size)
+        val unsupported = MotionEvent.Step(stepPeriodNs, 0.0, StepSource.STEP_DETECTOR)
+        assertTrue(gate.offer(unsupported).isEmpty())
+        assertEquals(GaitVerdict.INSUFFICIENT_DATA, gate.lastVerdict)
+        run(gate, seconds = 0.6, vertical = 2.0, sideways = 1.0, spin = 0.5)
+        assertTrue(gate.offer(unsupported.copy(timestampNanos = 2_100_000_000L)).isEmpty())
+        assertEquals(GaitVerdict.INSUFFICIENT_DATA, gate.lastVerdict)
     }
 
     @Test
@@ -152,9 +198,19 @@ class WalkingGateTest {
             }
             val offset = Regex("\"headingOffsetRad\":\\s*(-?[0-9.Ee+-]+)")
                 .find(json.readText())!!.groupValues[1].toDouble()
-            val raw = TraceReplay.replay(csv.reader(), offset).steps.size
-            val gated = TraceReplay.replay(csv.reader(), offset, walkingGate = true).steps.size
-            assertTrue(gated >= raw * 0.97, "$name: kept $gated of $raw steps")
+            val raw = csv.reader().use { TraceReplay.replay(it, offset).steps }
+            val gated = csv.reader().use {
+                TraceReplay.replay(
+                    it,
+                    offset,
+                    walkingGate = true
+                ).steps
+            }
+            assertTrue(
+                gated.size >= raw.size * 0.97,
+                "$name: kept ${gated.size} of ${raw.size} steps"
+            )
+            assertEquals(raw.first(), gated.first(), "$name: first supported footfall")
         }
     }
 }

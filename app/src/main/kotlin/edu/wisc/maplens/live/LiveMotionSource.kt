@@ -27,14 +27,13 @@ data class LiveStats(
     /** When the tracker last re-calibrated k (#12), and to what; null until it has. */
     val calibratedAtNanos: Long? = null,
     val calibratedStepLengthPx: Double? = null,
-    /** Detected steps the walking gate held back as not walking (shaking, waving). */
+    /** Step candidates rejected by the walking gate. */
     val rejected: Long = 0,
 )
 
 /**
  * Live sensors → [SensorMotionProcessor] (Johnny's #40) → [WalkingGate] → [Tracker] →
- * [PoseEstimate]. The gate drops detected steps that don't look like walking (shaking the
- * phone in place), so only real walking moves the user.
+ * [PoseEstimate]. The gate checks every footfall against recent motion before advancing.
  *
  * Sensor callbacks, the processor and the tracker all run on one background thread, so none of
  * them needs locks and nothing touches the UI thread (section 7, threading). Poses are posted to
@@ -52,10 +51,14 @@ class LiveMotionSource(
      */
     private val onHeading: ((Double) -> Unit)? = null,
     /**
-     * Optional: stats after a detected step that did not move the user (held while a walk
-     * starts, or rejected as not walking), so a readout can show the gate at work.
+     * Optional: stats after a detected step is rejected by the walking gate.
      */
     private val onStats: ((LiveStats) -> Unit)? = null,
+    /**
+     * Optional: whether the phone still bobs like a walker's, about 10 times a second while
+     * the tracker is fed, so the display can stop the user as soon as they stop.
+     */
+    private val onMoving: ((Boolean) -> Unit)? = null,
 ) : SensorEventListener {
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(SensorManager::class.java)
@@ -97,7 +100,7 @@ class LiveMotionSource(
         sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
             sensors.registerListener(this, it, periodUs, h)
         }
-        // The walking gate also watches how fast the phone turns; without one it skips that.
+        // The walking gate needs rotation rate as evidence for accepting a footfall.
         sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let {
             sensors.registerListener(this, it, periodUs, h)
         }
@@ -151,12 +154,13 @@ class LiveMotionSource(
         val step = when (event.sensor.type) {
             Sensor.TYPE_GAME_ROTATION_VECTOR -> {
                 processor.rotation(event.timestamp, values, 0)
-                gate.rotation(values)
+                gate.rotation(event.timestamp, values)
                 postHeading(event.timestamp)
                 null
             }
             Sensor.TYPE_ACCELEROMETER -> {
                 gate.acceleration(event.timestamp, values)
+                postMoving(event.timestamp)
                 processor.acceleration(event.timestamp, values)
             }
             Sensor.TYPE_GYROSCOPE -> {
@@ -167,11 +171,7 @@ class LiveMotionSource(
             else -> null
         } ?: return
         val t = tracker ?: return
-        // Steps that don't look like walking never reach the tracker; a walk's first few are
-        // held until it is confirmed, then all arrive here at once.
-        val walked = gate.offer(step)
-        var pose: PoseEstimate? = null
-        for (s in walked) pose = t.onMotion(s)
+        val pose = gate.offer(step).singleOrNull()?.let(t::onMotion)
         val particles = t as? ParticleTracker
         val stats = LiveStats(
             steps = processor.steps,
@@ -181,12 +181,22 @@ class LiveMotionSource(
             calibratedStepLengthPx = particles?.calibratedStepLengthPx,
             rejected = gate.rejected,
         )
-        val latest = pose
-        if (latest == null) {
+        if (pose == null) {
             onStats?.let { listener -> main.post { listener(stats) } }
             return
         }
-        main.post { onPose(latest, stats) }
+        main.post { onPose(pose, stats) }
+    }
+
+    /** Worker thread only. */
+    private var lastMovingNs = 0L
+
+    private fun postMoving(timestampNs: Long) {
+        val listener = onMoving ?: return
+        if (tracker == null || timestampNs - lastMovingNs < MOVING_PERIOD_NS) return
+        lastMovingNs = timestampNs
+        val moving = gate.moving(timestampNs)
+        main.post { listener(moving) }
     }
 
     /** Worker thread only. */
@@ -204,5 +214,6 @@ class LiveMotionSource(
 
     private companion object {
         const val HEADING_PERIOD_NS = 33_000_000L
+        const val MOVING_PERIOD_NS = 100_000_000L
     }
 }
