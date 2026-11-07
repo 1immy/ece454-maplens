@@ -61,6 +61,8 @@ import edu.wisc.maplens.nav.PlaceKind
 import edu.wisc.maplens.nav.PlaceMatch
 import edu.wisc.maplens.nav.PlaceSearch
 import edu.wisc.maplens.nav.RoomArea
+import edu.wisc.maplens.nav.RoomBounds
+import edu.wisc.maplens.nav.RoomBox
 import edu.wisc.maplens.nav.RoomFinder
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
@@ -152,6 +154,7 @@ class IndoorNavActivity : ComponentActivity() {
     private var search: PlaceSearch? = null
     private var roomFinder: RoomFinder? = null
     private var labelBoxes: Map<String, LabelBox> = emptyMap()
+    private var roomBoxes: Map<String, RoomBox> = emptyMap()
 
     private var screen = Screen.BROWSE
     private var place: Place? = null
@@ -228,8 +231,9 @@ class IndoorNavActivity : ComponentActivity() {
             room.label!! to room.nodeIds.map { g.nodes.getValue(it).position }
         }
         val corridors = g.edges.flatMap { g.edgePoints(it).zipWithNext() }
+        val walls = MapRooms.walls(image)
         val finder = RoomFinder(
-            MapRooms.walls(image),
+            walls,
             emptyList(),
             doors,
             corridors = corridors,
@@ -245,9 +249,12 @@ class IndoorNavActivity : ComponentActivity() {
         // Reading the printed numbers takes a few seconds; taps work from doors until then.
         loader.execute {
             val boxes = MapRooms.labels(image, doors.keys)
+            // Each room's outline, wall to wall, grown once from its printed number.
+            val rooms = RoomBounds.grow(walls, boxes)
             runOnUiThread {
                 finder.labels = boxes
                 labelBoxes = boxes.associateBy { it.label }
+                roomBoxes = rooms
             }
         }
         return g to image
@@ -379,6 +386,7 @@ class IndoorNavActivity : ComponentActivity() {
         map.pin = null
         map.pinLabel = null
         map.highlight = null
+        map.highlightBox = null
         map.route = emptyList()
         show(Screen.BROWSE)
         renderBrowseSheet()
@@ -485,7 +493,7 @@ class IndoorNavActivity : ComponentActivity() {
         val box = p.label?.let { labelBoxes[it] }
         val at = box?.center ?: p.position
         map.route = emptyList()
-        map.highlight = area ?: box?.let { roomFinder?.areaAround(it.center) }
+        showRoom(p.label, area ?: box?.let { roomFinder?.areaAround(it.center) })
         map.pin = at
         map.pinLabel = p.label ?: placeTitle(p)
         show(Screen.PLACE)
@@ -552,12 +560,22 @@ class IndoorNavActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Tints the room: its wall-to-wall outline when one was found, which covers the whole room
+     * however much print is inside it, else the enclosed area around the tap.
+     */
+    private fun showRoom(label: String?, area: RoomArea?) {
+        val outline = label?.let { roomBoxes[it] }
+        map.highlightBox = outline
+        map.highlight = if (outline == null) area else null
+    }
+
     /** A printed room the traced graph has no door for: name it, but offer no route. */
     private fun openUnmapped(label: String, area: RoomArea?) {
         stopNavigation(toBrowse = false)
         place = null
         map.route = emptyList()
-        map.highlight = area
+        showRoom(label, area)
         map.pin = labelBoxes[label]?.center
         map.pinLabel = label
         show(Screen.PLACE)

@@ -117,6 +117,13 @@ internal class IndoorMapView(context: Context) : View(context) {
     private var highlightTop = 0f
     private var highlightScale = 1f
 
+    /** The selected room's wall-to-wall outline, drawn as a tinted box with an edge line. */
+    var highlightBox: RoomBox? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     /** Map pixels covered by [screenPx] screen pixels at the current zoom. */
     fun mapDistance(screenPx: Float): Double = screenPx / zoom
 
@@ -267,6 +274,8 @@ internal class IndoorMapView(context: Context) : View(context) {
         textAlign = Paint.Align.CENTER
     }
     private val highlightPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val roomFill = fill(HIGHLIGHT)
+    private val roomEdge = stroke(PIN_RED, 2f).apply { strokeJoin = Paint.Join.MITER }
     private val checkpointPaint = fill(Color.rgb(239, 108, 0))
     private val chipPaint = fill(Color.WHITE)
     private val chipArrow = fill(ROUTE_BLUE)
@@ -440,6 +449,7 @@ internal class IndoorMapView(context: Context) : View(context) {
         }
         canvas.restore()
 
+        highlightBox?.let { drawRoomBox(canvas, it) }
         drawRoute(canvas)
         for (truth in checkpoints) {
             val (x, y) = screen(truth.x, truth.y)
@@ -673,6 +683,24 @@ internal class IndoorMapView(context: Context) : View(context) {
         canvas.drawCircle(x, y + density, 11.5f * density, shadow)
         canvas.drawCircle(x, y, 11f * density, puckWhite)
         canvas.drawCircle(x, y, 7.5f * density, puckBlue)
+    }
+
+    /** Corners go through the camera one by one, so the outline follows rotation and tilt. */
+    private fun drawRoomBox(canvas: Canvas, box: RoomBox) {
+        shape.reset()
+        val corners = listOf(
+            box.left to box.top,
+            box.right to box.top,
+            box.right to box.bottom,
+            box.left to box.bottom,
+        )
+        corners.forEachIndexed { i, (x, y) ->
+            val (sx, sy) = screen(x, y)
+            if (i == 0) shape.moveTo(sx, sy) else shape.lineTo(sx, sy)
+        }
+        shape.close()
+        canvas.drawPath(shape, roomFill)
+        canvas.drawPath(shape, roomEdge)
     }
 
     /** The soft cone that shows which way the phone faces. */
