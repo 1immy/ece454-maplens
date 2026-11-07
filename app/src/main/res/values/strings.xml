@@ -44,6 +44,7 @@
   <string name="in_feature_kind">Engineering Hall, floor 3</string>
   <string name="in_walk_summary">%1$d min · %2$d m from START</string>
   <string name="in_result_detail">%1$s · %2$d m</string>
+  <string name="in_unmapped">This room\'s door isn\'t on the walking map yet, so there\'s no route to it.</string>
   <string name="in_unreachable">No route from START</string>
   <string name="in_directions">Directions</string>
   <string name="in_start">Start</string>

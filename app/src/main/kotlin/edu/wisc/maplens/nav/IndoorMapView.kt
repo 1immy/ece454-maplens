@@ -61,7 +61,8 @@ internal class IndoorMapView(context: Context) : View(context) {
             field = value
             if (value != null && !placed) {
                 placed = true
-                post { showAll(animate = false) }
+                openingFit = true
+                post { if (openingFit) fitWhole(animate = false) }
             }
             invalidate()
         }
@@ -103,6 +104,40 @@ internal class IndoorMapView(context: Context) : View(context) {
             field = value
             invalidate()
         }
+
+    /** The room picked on the map, tinted like a selected place. */
+    var highlight: RoomArea? = null
+        set(value) {
+            field = value
+            highlightMask = value?.let(::maskOf)
+            invalidate()
+        }
+    private var highlightMask: Bitmap? = null
+    private var highlightLeft = 0f
+    private var highlightTop = 0f
+    private var highlightScale = 1f
+
+    /** Map pixels covered by [screenPx] screen pixels at the current zoom. */
+    fun mapDistance(screenPx: Float): Double = screenPx / zoom
+
+    /** The area grown back to its walls, as a soft-edged tint bitmap in grid cells. */
+    private fun maskOf(area: RoomArea): Bitmap {
+        val pad = area.pad
+        val w = area.w + 2 * pad
+        val h = area.h + 2 * pad
+        val cells = BooleanArray(w * h)
+        for (y in 0 until area.h) {
+            for (x in 0 until area.w) {
+                cells[(y + pad) * w + x + pad] = area.cells[y * area.w + x]
+            }
+        }
+        val grown = WallGrid.dilate(cells, w, h, pad)
+        val colors = IntArray(w * h) { if (grown[it]) HIGHLIGHT else 0 }
+        highlightLeft = ((area.x0 - pad) * area.scale).toFloat()
+        highlightTop = ((area.y0 - pad) * area.scale).toFloat()
+        highlightScale = area.scale.toFloat()
+        return Bitmap.createBitmap(colors, w, h, Bitmap.Config.ARGB_8888)
+    }
 
     /** Ground-truth taps from checkpoints, drawn as small orange dots. */
     var checkpoints: List<PixelPoint> = emptyList()
@@ -179,6 +214,9 @@ internal class IndoorMapView(context: Context) : View(context) {
     // ---- Animation state ----
 
     private var placed = false
+
+    /** True until the camera is first moved on purpose; until then the floor is re-fitted. */
+    private var openingFit = false
     private var transition: Transition? = null
     private var lastFrame = 0L
     private var pinDropStart = 0L
@@ -228,6 +266,7 @@ internal class IndoorMapView(context: Context) : View(context) {
         typeface = MEDIUM
         textAlign = Paint.Align.CENTER
     }
+    private val highlightPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val checkpointPaint = fill(Color.rgb(239, 108, 0))
     private val chipPaint = fill(Color.WHITE)
     private val chipArrow = fill(ROUTE_BLUE)
@@ -244,15 +283,39 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     // ---- Public camera API ----
 
+    /**
+     * Panels opening or closing must not drag the map along: unless the camera is following
+     * or mid-move, the camera centre shifts with the new anchor so nothing moves on screen.
+     */
     fun setInsets(top: Int, bottom: Int) {
         if (top == insetTop && bottom == insetBottom) return
+        if (openingFit) {
+            // Panels laid out after the first fit: fit again so the floor sits between them.
+            insetTop = top
+            insetBottom = bottom
+            post { if (openingFit) fitWhole(animate = false) }
+            return
+        }
+        val still = follow == Follow.NONE && transition == null && width > 0 && bitmap != null
+        val newAnchorY = top + (height - top - bottom).toFloat().coerceAtLeast(1f) *
+            anchorShare.toFloat()
+        val keep = if (still) toMap(anchorX(), newAnchorY) else null
         insetTop = top
         insetBottom = bottom
+        if (keep != null) {
+            cx = keep.x
+            cy = keep.y
+        }
         invalidate()
     }
 
     /** The whole floor, north (poster) up, flat. */
     fun showAll(animate: Boolean = true) {
+        openingFit = false
+        fitWhole(animate)
+    }
+
+    private fun fitWhole(animate: Boolean) {
         val image = bitmap ?: return
         follow = Follow.NONE
         moveTo(image.width / 2.0, image.height / 2.0, fitZoom(), MAP_UP, 0.0, animate)
@@ -260,6 +323,7 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     /** Frames [points] with a margin, keeping the current rotation unless [northUp]. */
     fun fit(points: List<PixelPoint>, northUp: Boolean = true, animate: Boolean = true) {
+        openingFit = false
         if (points.isEmpty() || width == 0) return
         follow = Follow.NONE
         val minX = points.minOf { it.x }
@@ -277,6 +341,7 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     /** Centers on one point at a street-level zoom; [northUp] also turns the map poster-up. */
     fun focus(point: PixelPoint, northUp: Boolean = false, animate: Boolean = true) {
+        openingFit = false
         follow = Follow.NONE
         val up = if (northUp) MAP_UP else upRad
         val t = if (northUp) 0.0 else tilt
@@ -285,12 +350,14 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     /** Back to poster-up and flat, keeping the centre. */
     fun resetNorth() {
+        openingFit = false
         if (follow == Follow.HEADING) follow = Follow.POSITION
         moveTo(cx, cy, zoom, MAP_UP, 0.0, animate = true)
     }
 
     /** Starts following the puck, easing in from wherever the camera is now. */
     fun startFollowing(mode: Follow) {
+        openingFit = false
         follow = mode
         val z = if (mode == Follow.HEADING) {
             fitZoom() * navZoom
@@ -306,6 +373,7 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     /** Flattens the map over the puck for tapping a position, keeping zoom and rotation. */
     fun flatten() {
+        openingFit = false
         follow = Follow.NONE
         val x = if (hasPuck) puckX else cx
         val y = if (hasPuck) puckY else cy
@@ -365,6 +433,11 @@ internal class IndoorMapView(context: Context) : View(context) {
         canvas.save()
         canvas.concat(matrix)
         canvas.drawBitmap(image, 0f, 0f, imagePaint)
+        highlightMask?.let { mask ->
+            canvas.translate(highlightLeft, highlightTop)
+            canvas.scale(highlightScale, highlightScale)
+            canvas.drawBitmap(mask, 0f, 0f, highlightPaint)
+        }
         canvas.restore()
 
         drawRoute(canvas)
@@ -793,7 +866,11 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) transition = null
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            transition = null
+            // Once the user touches the map, panels opening must not re-fit it any more.
+            openingFit = false
+        }
         scaler.onTouchEvent(event)
         handleTwist(event)
         if (!scaler.isInProgress) gestures.onTouchEvent(event)
@@ -844,6 +921,7 @@ internal class IndoorMapView(context: Context) : View(context) {
     }
 
     private fun userMoved() {
+        openingFit = false
         transition = null
         if (follow != Follow.NONE) {
             follow = Follow.NONE
@@ -873,6 +951,7 @@ internal class IndoorMapView(context: Context) : View(context) {
         val PIN_RED = Color.rgb(234, 67, 53)
         val BACKGROUND = Color.rgb(232, 234, 237)
 
+        private const val HIGHLIGHT = 0x40EA4335
         private const val NAV_ANCHOR = 0.70
         private const val BEAM_HALF_DEG = 34f
         private const val FACING_DISTANCE = 78f

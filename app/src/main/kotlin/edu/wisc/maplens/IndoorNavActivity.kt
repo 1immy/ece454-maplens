@@ -49,14 +49,19 @@ import edu.wisc.maplens.live.facingOptions
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
+import edu.wisc.maplens.model.edgePoints
 import edu.wisc.maplens.nav.CompassView
 import edu.wisc.maplens.nav.IndoorMapView
+import edu.wisc.maplens.nav.LabelBox
 import edu.wisc.maplens.nav.ManeuverView
+import edu.wisc.maplens.nav.MapRooms
 import edu.wisc.maplens.nav.NavMath
 import edu.wisc.maplens.nav.Place
 import edu.wisc.maplens.nav.PlaceKind
 import edu.wisc.maplens.nav.PlaceMatch
 import edu.wisc.maplens.nav.PlaceSearch
+import edu.wisc.maplens.nav.RoomArea
+import edu.wisc.maplens.nav.RoomFinder
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
 import edu.wisc.maplens.routing.AStarRouter
@@ -145,6 +150,8 @@ class IndoorNavActivity : ComponentActivity() {
     private var places: List<Place> = emptyList()
     private var walkPx: Map<String, Double> = emptyMap()
     private var search: PlaceSearch? = null
+    private var roomFinder: RoomFinder? = null
+    private var labelBoxes: Map<String, LabelBox> = emptyMap()
 
     private var screen = Screen.BROWSE
     private var place: Place? = null
@@ -217,10 +224,31 @@ class IndoorNavActivity : ComponentActivity() {
             }
             route?.let { p.key to it.lengthPx }
         }.toMap()
+        val doors = all.filter { it.kind == PlaceKind.ROOM }.associate { room ->
+            room.label!! to room.nodeIds.map { g.nodes.getValue(it).position }
+        }
+        val corridors = g.edges.flatMap { g.edgePoints(it).zipWithNext() }
+        val finder = RoomFinder(
+            MapRooms.walls(image),
+            emptyList(),
+            doors,
+            corridors = corridors,
+            // Graph pixels follow the straightened image, so this scales with any map.
+            corridorHalfWidthPx = image.width * CORRIDOR_HALF_WIDTH_SHARE,
+        )
         runOnUiThread {
             places = all
             walkPx = distances
             search = PlaceSearch(all) { distances[it.key] }
+            roomFinder = finder
+        }
+        // Reading the printed numbers takes a few seconds; taps work from doors until then.
+        loader.execute {
+            val boxes = MapRooms.labels(image, doors.keys)
+            runOnUiThread {
+                finder.labels = boxes
+                labelBoxes = boxes.associateBy { it.label }
+            }
         }
         return g to image
     }
@@ -299,6 +327,12 @@ class IndoorNavActivity : ComponentActivity() {
             closeSearchPanel()
         }
         map.navigating = next == Screen.NAVIGATE || next == Screen.CHECKPOINT
+        // Like a maps app: tap a room to select it. Checkpoints install their own handler.
+        if (next == Screen.BROWSE || next == Screen.PLACE) {
+            map.onMapTap = ::pickRoomAt
+        } else if (next != Screen.CHECKPOINT) {
+            map.onMapTap = null
+        }
         modeChip.text = getString(modeChipText(liveMode))
     }
 
@@ -339,15 +373,16 @@ class IndoorNavActivity : ComponentActivity() {
         )
     }
 
-    private fun clearPlace() {
+    private fun clearPlace(moveCamera: Boolean = true) {
         stopNavigation(toBrowse = false)
         place = null
         map.pin = null
         map.pinLabel = null
+        map.highlight = null
         map.route = emptyList()
         show(Screen.BROWSE)
         renderBrowseSheet()
-        graph?.let { map.focus(it.nodes.getValue(it.startNodeId).position) }
+        if (moveCamera) graph?.let { map.focus(it.nodes.getValue(it.startNodeId).position) }
     }
 
     // ---- Search ----
@@ -443,14 +478,19 @@ class IndoorNavActivity : ComponentActivity() {
 
     // ---- Place ----
 
-    private fun openPlace(p: Place) {
+    /** Selects [p]: pin on its printed number (or door), the room tinted, and its card. */
+    private fun openPlace(p: Place, area: RoomArea? = null, moveCamera: Boolean = true) {
         stopNavigation(toBrowse = false)
         place = p
+        val box = p.label?.let { labelBoxes[it] }
+        val at = box?.center ?: p.position
         map.route = emptyList()
-        map.pin = p.position
+        map.highlight = area ?: box?.let { roomFinder?.areaAround(it.center) }
+        map.pin = at
         map.pinLabel = p.label ?: placeTitle(p)
         show(Screen.PLACE)
-        map.focus(p.position)
+        // A room tapped on the map is already in view: keep the camera still, as maps do.
+        if (moveCamera) map.focus(at)
         val meters = walkPx[p.key]?.let { pxToMeters(it, Demo.STEP_LENGTH_PX) }
         val summary = text(Ui.BODY, Ui.INK_SECONDARY).apply {
             text = meters?.let {
@@ -497,6 +537,39 @@ class IndoorNavActivity : ComponentActivity() {
                     LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) }
                 )
             }.withMargins(top = 16, bottom = 4),
+        )
+    }
+
+    /** A tap on the map: select the room under it, or deselect when there is none. */
+    private fun pickRoomAt(tap: PixelPoint) {
+        val finder = roomFinder ?: return
+        val hit = finder.roomAt(tap, map.mapDistance(dpf(TAP_DOOR_DP)))
+        val target = hit?.let { h -> places.firstOrNull { it.label == h.label } }
+        when {
+            target != null -> openPlace(target, hit.area, moveCamera = false)
+            hit != null -> openUnmapped(hit.label, hit.area)
+            screen == Screen.PLACE -> clearPlace(moveCamera = false)
+        }
+    }
+
+    /** A printed room the traced graph has no door for: name it, but offer no route. */
+    private fun openUnmapped(label: String, area: RoomArea?) {
+        stopNavigation(toBrowse = false)
+        place = null
+        map.route = emptyList()
+        map.highlight = area
+        map.pin = labelBoxes[label]?.center
+        map.pinLabel = label
+        show(Screen.PLACE)
+        setSheet(
+            text(Ui.TITLE, bold = true).apply {
+                text = getString(R.string.in_room_title, label)
+                markHeading()
+            },
+            text(Ui.CAPTION, Ui.INK_SECONDARY).apply { setText(R.string.in_room_kind) }
+                .withMargins(top = 2),
+            text(Ui.BODY, Ui.INK_SECONDARY).apply { setText(R.string.in_unmapped) }
+                .withMargins(top = 12, bottom = 8),
         )
     }
 
@@ -1720,6 +1793,8 @@ class IndoorNavActivity : ComponentActivity() {
         const val STEP_PERMISSION = 8
         const val SNACK_MS = 3500L
         const val THEN_WITHIN_STEPS = 25.0
+        const val TAP_DOOR_DP = 10f
+        const val CORRIDOR_HALF_WIDTH_SHARE = 0.01
 
         val ETA_GREEN = Color.rgb(24, 128, 56)
         val BANNER_GREEN = Color.rgb(13, 101, 45)
