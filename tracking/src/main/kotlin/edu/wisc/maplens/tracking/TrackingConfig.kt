@@ -86,6 +86,15 @@ data class TrackingConfig(
      */
     val gaitStillVerticalRms: Double = 0.25,
     val gaitStillWindowNs: Long = 450_000_000,
+    /**
+     * A walk starts after this many footfalls, each within [gaitRhythmStartGapNs] of the
+     * one before. Swinging a phone held in place passes single footfall checks now and then,
+     * 2-7 s apart, but not three in a row; walkers step every 0.4-0.8 s.
+     */
+    val gaitRhythmFootfalls: Int = 3,
+    val gaitRhythmStartGapNs: Long = 1_300_000_000,
+    /** A walk lasts while each footfall comes within this long of the last one passed. */
+    val gaitRhythmKeepGapNs: Long = 1_500_000_000,
     val particleCount: Int = 300,
     /** Per-particle step-length noise, as a fraction of k. */
     val stepLengthNoise: Double = 0.10,

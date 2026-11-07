@@ -24,6 +24,9 @@ import kotlin.math.min
  * - **No going back while walking:** only once the user has stopped does the dot ease back
  *   the last bit (at most a step) onto where the tracker last put them, over [settleSeconds],
  *   so it rests exactly there instead of a step past it.
+ * - **Smooth start:** a walk is only confirmed after a few footfalls (see `WalkingGate`), so
+ *   the first fix of a walk lands a few steps ahead. The dot walks off that gap at up to
+ *   [startSpeedFactor] times walking speed instead of sliding, unless it is past twice [snapPx].
  * - **Quick stop:** when the phone stops bobbing ([setMoving] false) or no footfall comes for
  *   a while, the speed eases to zero in about [stopSeconds].
  *
@@ -39,6 +42,8 @@ class PuckMotion(
     private val stopSeconds: Double = 0.25,
     /** Fastest the dot may go, as a multiple of walking speed. */
     private val maxSpeedFactor: Double = 1.8,
+    /** Fastest the dot may go while catching up with the start of a walk. */
+    private val startSpeedFactor: Double = 2.5,
     /** Cadence before the first interval is known, steps per second. */
     private val defaultCadence: Double = 1.7,
 ) {
@@ -60,6 +65,9 @@ class PuckMotion(
     private var started = false
     private var sliding = false
 
+    /** Catching up with a walk that started from standing. */
+    private var starting = false
+
     /** Starts at [atPx] along the route, standing still. */
     fun reset(atPx: Double) {
         s = atPx
@@ -71,6 +79,7 @@ class PuckMotion(
         clock = null
         started = false
         sliding = false
+        starting = false
         moving = true
     }
 
@@ -85,6 +94,7 @@ class PuckMotion(
                 cadence += CADENCE_BLEND * (1.0 / interval - cadence)
             }
         }
+        if (!isWalking(now)) starting = true
         lastFootfallNs = footfallNs
         stepPx = stepLengthPx
         target = trackerPx
@@ -110,7 +120,8 @@ class PuckMotion(
         val error = predicted(now) - s
         // Re-anchor or a big correction: slide over briskly rather than crawl or jump, until
         // the gap is down to half a step.
-        if (abs(error) > snapPx) sliding = true
+        if (starting && (!walking || error < SLIDE_DONE * maxOf(stepPx, 1.0))) starting = false
+        if (abs(error) > if (starting) 2 * snapPx else snapPx) sliding = true
         if (sliding && abs(error) < SLIDE_DONE * maxOf(stepPx, 1.0)) sliding = false
         if (sliding) {
             s += error * approach(dt, SNAP_SECONDS)
@@ -123,7 +134,8 @@ class PuckMotion(
             error > 0 -> error / stopSeconds
             else -> error / settleSeconds
         }
-        val cap = maxSpeedFactor * maxOf(walkSpeed, cadence * stepPx)
+        val factor = if (starting) startSpeedFactor else maxSpeedFactor
+        val cap = factor * maxOf(walkSpeed, cadence * stepPx)
         val floor = if (walking) 0.0 else -cap
         val next = wanted.coerceIn(floor, cap)
         speed += (next - speed) * approach(dt, if (next < speed) stopSeconds / 2 else SPEED_SECONDS)

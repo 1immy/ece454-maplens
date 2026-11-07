@@ -194,7 +194,7 @@ class LiveMotionSource(
             else -> null
         } ?: return
         val t = tracker ?: return
-        val pose = gate.offer(step).singleOrNull()?.let(t::onMotion)
+        val pose = gate.offer(step).map(t::onMotion).lastOrNull()
         onCandidate?.let { listener ->
             val verdict = gate.lastVerdict?.name.orEmpty()
             val bob = gate.bob(step.timestampNanos)

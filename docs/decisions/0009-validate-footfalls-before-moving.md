@@ -17,6 +17,15 @@ reversals reject up/down shaking. Stale or insufficient sensor evidence also
 rejects a candidate. The minimum interval between accepted footfalls rejects
 duplicates and implausibly fast bursts.
 
+A single swing or tap of a phone held in place can pass every check, so one
+footfall never moves the user on its own. A walk starts once three footfalls pass
+in a row, each within 1.3 s of the one before; then all three are released
+together, and while the walk lasts each footfall within 1.5 s of the last passes
+at once. A footfall that fails the checks breaks a run that has not started yet.
+This costs about two footfalls (about 1 s) at the start of each walk, never during
+one, and `PuckMotion` walks off the three-step gap at up to 2.5x walking speed
+instead of sliding.
+
 Feed accepted events to the existing corridor particle tracker on the same
 callback. The display does not animate between tracker poses: easing to each
 pose (180 ms, then a cadence-length transition) made the dot stop and start,
@@ -46,6 +55,11 @@ reported 19 candidates. Passing candidates increased from 13 to 17 on
 arrival-order replay. The remaining two were less than 300 ms after an accepted
 candidate. Synthetic tests cover light walking, sideways handling, a single
 bump, fast vertical oscillation, a pause, and missing or stale data.
+
+In a 75 s recording of a phone gently swung while standing, 19 single footfalls
+passed the per-footfall checks, 2-7 s apart; with the rhythm rule none pass.
+A recorded real walk with turns kept 63 of 64 steps, and the stationary shake
+recording still passes none.
 
 The 800 ms window is a lookback. Android's detector delivery and display frames
 still contribute to end-to-end latency. A phone-only motion classifier can miss

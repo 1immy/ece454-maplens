@@ -86,6 +86,14 @@ class LiveWalkReplayTest {
                         }
                         for (s in passed) {
                             accepted++
+                            run {
+                                println(
+                                    "%7.2f  step ok at %.2f".format(
+                                        frameSec,
+                                        (s.timestampNanos - t0) / 1e9
+                                    )
+                                )
+                            }
                             val pose = tracker.onMotion(s)
                             val along = guide.progressPx(pose)
                             lastAlong?.let { prev ->

@@ -16,6 +16,9 @@ enum class GaitVerdict {
     VERTICAL_SHAKE,
     ISOLATED_BUMP,
     TOO_SOON,
+
+    /** Looks like a footfall, held until enough others follow in a walking rhythm. */
+    AWAITING_RHYTHM,
 }
 
 /**
@@ -26,7 +29,15 @@ enum class GaitVerdict {
  * before its footfall:
  * Rotation, world-frame acceleration and a vertical rise/fall must agree with the candidate.
  * It is accepted or rejected immediately from past samples, including the first footfall.
- * Missing motion evidence rejects the candidate. One sensor worker owns this class.
+ * Missing motion evidence rejects the candidate.
+ *
+ * A single swing or tap of a phone held still can pass every check, so one footfall on
+ * its own never moves the user. Walking is a run of footfalls about half a second apart: a
+ * walk starts once [TrackingConfig.gaitRhythmFootfalls] footfalls arrive no more than
+ * [TrackingConfig.gaitRhythmStartGapNs] apart, and then all of them pass at once. While
+ * the walk lasts, each footfall within [TrackingConfig.gaitRhythmKeepGapNs] of the last
+ * passes immediately. A footfall that fails the checks breaks a run not yet started.
+ * One sensor worker owns this class.
  */
 class WalkingGate(private val config: TrackingConfig = TrackingConfig()) {
     private class MotionSample(
@@ -47,6 +58,9 @@ class WalkingGate(private val config: TrackingConfig = TrackingConfig()) {
     private var rotationNs = 0L
     private var lastAcceptedNs: Long? = null
 
+    /** Footfalls that passed the checks while no walk is under way, waiting for a rhythm. */
+    private val held = ArrayList<MotionEvent.Step>()
+
     /** Steps rejected since the last reset, for the session log and readout. */
     var rejected = 0L
         private set
@@ -62,6 +76,7 @@ class WalkingGate(private val config: TrackingConfig = TrackingConfig()) {
     /** New navigation: reset footfall bookkeeping and keep the warm sensor history. */
     fun restart() {
         lastAcceptedNs = null
+        held.clear()
         rejected = 0
         lastVerdict = null
     }
@@ -157,20 +172,47 @@ class WalkingGate(private val config: TrackingConfig = TrackingConfig()) {
         nowNs: Long
     ): Boolean = (bob(nowNs) ?: Double.MAX_VALUE) >= config.gaitStillVerticalRms
 
-    /** Returns this footfall immediately when it has supporting motion evidence. */
+    /**
+     * The footfalls this candidate lets through: itself during a walk, itself and the held
+     * ones when it completes a walking rhythm, or none.
+     */
     fun offer(step: MotionEvent.Step): List<MotionEvent.Step> {
         if (!config.gaitGateEnabled) return listOf(step)
         val t = step.timestampNanos
-        val tooSoon = lastAcceptedNs?.let { t - it < config.gaitMinIntervalNs } == true
+        val previous = held.lastOrNull()?.timestampNanos ?: lastAcceptedNs
+        val tooSoon = previous?.let { t - it < config.gaitMinIntervalNs } == true
         val verdict = if (tooSoon) GaitVerdict.TOO_SOON else check(t)
         if (verdict != null) {
             rejected++
             lastVerdict = verdict
+            // Walkers start with a clean run of footfalls; one that fails breaks the run.
+            if (verdict != GaitVerdict.TOO_SOON) dropHeld()
             return emptyList()
         }
-        lastAcceptedNs = t
+        val walking = lastAcceptedNs?.let { t - it <= config.gaitRhythmKeepGapNs } == true
+        if (walking) return accept(listOf(step))
+        if (held.isNotEmpty() && t - held.last().timestampNanos > config.gaitRhythmStartGapNs) {
+            dropHeld()
+        }
+        held += step
+        if (held.size < config.gaitRhythmFootfalls) {
+            lastVerdict = GaitVerdict.AWAITING_RHYTHM
+            return emptyList()
+        }
+        val run = held.toList()
+        held.clear()
+        return accept(run)
+    }
+
+    private fun dropHeld() {
+        rejected += held.size
+        held.clear()
+    }
+
+    private fun accept(steps: List<MotionEvent.Step>): List<MotionEvent.Step> {
+        lastAcceptedNs = steps.last().timestampNanos
         lastVerdict = GaitVerdict.WALKING
-        return listOf(step)
+        return steps
     }
 
     /** The first check this footfall's window fails, or null if it looks like walking. */

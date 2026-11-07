@@ -57,11 +57,38 @@ class WalkingGateTest {
     }
 
     @Test
-    fun `the first supported footfall passes without waiting for another step`() {
+    fun `a walk starts on its third footfall and keeps the first two`() {
         val gate = WalkingGate()
-        val steps = run(gate, seconds = 0.6, vertical = 2.0, sideways = 1.0, spin = 0.5)
-        assertEquals(1_600_000_000L, steps.single().timestampNanos)
+        assertTrue(run(gate, seconds = 1.2, vertical = 2.0, sideways = 1.0, spin = 0.5).isEmpty())
+        assertEquals(GaitVerdict.AWAITING_RHYTHM, gate.lastVerdict)
+        val steps = run(
+            gate,
+            seconds = 1.2,
+            vertical = 2.0,
+            sideways = 1.0,
+            spin = 0.5,
+            startNs = 2_200_000_000L,
+        )
+        assertEquals(
+            listOf(1_600_000_000L, 2_200_000_000L, 2_800_000_000L, 3_400_000_000L),
+            steps.map { it.timestampNanos },
+        )
         assertEquals(0L, gate.rejected)
+    }
+
+    @Test
+    fun `footfalls seconds apart, like swinging a phone in place, never move the user`() {
+        val gate = WalkingGate()
+        val steps = run(
+            gate,
+            seconds = 12.0,
+            vertical = 2.0,
+            sideways = 1.0,
+            spin = 0.5,
+            stepEveryNs = 2_500_000_000L,
+        )
+        assertTrue(steps.isEmpty(), "isolated footfalls produced ${steps.size} steps")
+        assertTrue(gate.rejected > 0)
     }
 
     @Test
@@ -147,18 +174,21 @@ class WalkingGateTest {
     }
 
     @Test
-    fun `a pause does not delay the first supported footfall on restart`() {
+    fun `after a pause a walk needs a fresh rhythm`() {
         val gate = WalkingGate()
         run(gate, seconds = 4.0, vertical = 2.0, sideways = 1.0, spin = 0.5)
         val resumed = run(
             gate,
-            seconds = 0.6,
+            seconds = 1.8,
             vertical = 2.0,
             sideways = 1.0,
             spin = 0.5,
             startNs = 10_000_000_000L,
         )
-        assertEquals(10_600_000_000L, resumed.single().timestampNanos)
+        assertEquals(
+            listOf(10_600_000_000L, 11_200_000_000L, 11_800_000_000L),
+            resumed.map { it.timestampNanos },
+        )
     }
 
     @Test
