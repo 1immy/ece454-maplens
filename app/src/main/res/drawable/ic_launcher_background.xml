@@ -21,4 +21,8 @@
     android:strokeColor="#FFE7A9A2"
     android:strokeWidth="1.2"
     android:pathData="M61,-6H110V34H61Z" />
+  <!-- Doorway into the destination room. -->
+  <path
+    android:fillColor="#FFFFFFFF"
+    android:pathData="M66,33H78V35.4H66Z" />
 </vector>

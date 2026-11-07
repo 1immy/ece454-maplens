@@ -10,7 +10,11 @@
     android:strokeWidth="5"
     android:strokeLineCap="round"
     android:strokeLineJoin="round"
-    android:pathData="M54,60V40H78" />
+    android:pathData="M54,60V40H72V30" />
+  <path
+    android:fillColor="#FFFFFFFF"
+    android:fillType="evenOdd"
+    android:pathData="M67.6,27a4.4,4.4 0,1 0,8.8 0a4.4,4.4 0,1 0,-8.8 0z M70.1,27a1.9,1.9 0,1 0,3.8 0a1.9,1.9 0,1 0,-3.8 0z" />
   <path
     android:fillColor="#66FFFFFF"
     android:pathData="M54,70L42.24,53.82A20,20 0 0,1 65.76,53.82Z" />

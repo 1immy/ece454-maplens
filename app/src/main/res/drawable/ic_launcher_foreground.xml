@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Launcher foreground: the user's position dot with a heading cone, and the red route it is
-  about to walk, up the corridor and right to the destination room.
+  about to walk, up the corridor, right, and through the doorway into the destination room.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
   android:width="108dp"
@@ -13,7 +13,14 @@
     android:strokeWidth="5"
     android:strokeLineCap="round"
     android:strokeLineJoin="round"
-    android:pathData="M54,64V40H78" />
+    android:pathData="M54,64V40H72V28" />
+  <!-- Destination inside the room. -->
+  <path
+    android:fillColor="#FFC5050C"
+    android:pathData="M67.6,27a4.4,4.4 0,1 0,8.8 0a4.4,4.4 0,1 0,-8.8 0z" />
+  <path
+    android:fillColor="#FFFFFFFF"
+    android:pathData="M70.1,27a1.9,1.9 0,1 0,3.8 0a1.9,1.9 0,1 0,-3.8 0z" />
   <!-- Heading cone: the way the phone faces. -->
   <path
     android:fillColor="#59C5050C"
