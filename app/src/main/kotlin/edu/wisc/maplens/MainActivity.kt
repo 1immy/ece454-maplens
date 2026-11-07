@@ -3,6 +3,7 @@ package edu.wisc.maplens
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -66,6 +67,7 @@ class MainActivity : Activity() {
     private lateinit var actionButton: Button
     private lateinit var modeButton: Button
 
+    private val usesSavedMap get() = intent.getBooleanExtra(EXTRA_SAVED_MAP, false)
     private val loader = Executors.newSingleThreadExecutor()
     private val ticker = Handler(Looper.getMainLooper())
     private val stride = TrackingConfig().nominalStrideMeters
@@ -108,7 +110,14 @@ class MainActivity : Activity() {
         showMessage(getString(R.string.loading_map), "")
         loader.execute {
             val loaded = runCatching {
-                MapAssets.loadGraph(this) to MapAssets.loadImage(this)
+                if (usesSavedMap) {
+                    val store = MapStore(this)
+                    val image = BitmapFactory.decodeFile(store.savedImage.path)
+                        ?: error(getString(R.string.saved_map_failed))
+                    store.loadSaved() to image
+                } else {
+                    MapAssets.loadGraph(this) to MapAssets.loadImage(this)
+                }
             }
             runOnUiThread {
                 loaded.onSuccess { (g, image) ->
@@ -117,7 +126,11 @@ class MainActivity : Activity() {
                     mapView.bitmap = image
                     mapView.start = g.nodes.getValue(g.startNodeId).position
                     destinationButton.isEnabled = true
-                    showMessage(getString(R.string.pick_destination), getString(R.string.at_start))
+                    val saved = intent.getBooleanExtra(EXTRA_JUST_SAVED, false)
+                    showMessage(
+                        getString(if (saved) R.string.map_saved else R.string.pick_destination),
+                        getString(R.string.at_start),
+                    )
                 }.onFailure { showMessage(getString(R.string.map_failed), it.message.orEmpty()) }
             }
         }
@@ -444,7 +457,7 @@ class MainActivity : Activity() {
             addView(back, LinearLayout.LayoutParams(dp(Ui.TOUCH_DP), dp(Ui.TOUCH_DP)))
             addView(
                 light(Ui.BODY, alpha = 230, bold = true).apply {
-                    setText(R.string.nav_title)
+                    setText(if (usesSavedMap) R.string.saved_map_title else R.string.nav_title)
                     markHeading()
                 },
                 LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(4) },
@@ -507,10 +520,15 @@ class MainActivity : Activity() {
         }
     }
 
-    private companion object {
-        const val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
-        const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
-        const val STEP_PERMISSION = 7
+    companion object {
+        /** Open the map saved on this phone instead of the bundled EH3 map. */
+        const val EXTRA_SAVED_MAP = "edu.wisc.maplens.SAVED_MAP"
+
+        /** The map was saved a moment ago, so the screen confirms that first. */
+        const val EXTRA_JUST_SAVED = "edu.wisc.maplens.JUST_SAVED"
+        private const val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
+        private const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
+        private const val STEP_PERMISSION = 7
 
         val ARROWS = mapOf(
             Maneuver.STRAIGHT to "↑",

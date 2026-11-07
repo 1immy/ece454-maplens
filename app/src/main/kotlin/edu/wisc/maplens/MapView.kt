@@ -17,6 +17,7 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 import edu.wisc.maplens.model.FloorGraph
+import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
 import kotlin.math.abs
@@ -33,6 +34,19 @@ internal val REVIEW_CORRIDOR = Color.rgb(151, 45, 150)
 internal val REVIEW_ROOM = Color.rgb(17, 115, 59)
 internal val REVIEW_CHECK = Color.rgb(160, 78, 8)
 internal val REVIEW_START = Color.rgb(46, 125, 50)
+
+/** What the graph editor marks on the review map. Null outside the editor. */
+internal data class EditorMarks(
+    val selectedPoint: String? = null,
+    val selectedCorridor: String? = null,
+    val problems: List<PixelPoint> = emptyList(),
+    /** Place with a fixed cross and move the map under it, so a finger never hides the spot. */
+    val crosshair: Boolean = false,
+    /** Where the cross would land on a corridor. */
+    val snap: PixelPoint? = null,
+    /** Points too close to tap apart, numbered to match the list under the map. */
+    val choices: List<String> = emptyList(),
+)
 
 class MapView(context: Context) : View(context) {
     var bitmap: Bitmap? = null
@@ -64,6 +78,13 @@ class MapView(context: Context) : View(context) {
             invalidate()
         }
 
+    internal var editor: EditorMarks? = null
+        set(value) {
+            val crosshairChanged = field?.crosshair != value?.crosshair
+            field = value
+            if (crosshairChanged) viewChanged() else invalidate()
+        }
+
     /** Route polyline in map pixels; the last point is the destination. */
     var route: List<PixelPoint> = emptyList()
         set(value) {
@@ -90,6 +111,10 @@ class MapView(context: Context) : View(context) {
     /** Whether the view shows less than the whole map. */
     internal val isZoomed: Boolean
         get() = bitmap?.let { toScreen.mapRadius(1f) > wholeMapScale(it) * 1.02f } ?: false
+
+    /** How far in the view is, where 1 shows the whole map. */
+    internal val zoomLevel: Float
+        get() = bitmap?.let { toScreen.mapRadius(1f) / wholeMapScale(it) } ?: 1f
 
     /** Receives the map-pixel position of a single tap, when set. */
     var onMapTap: ((PixelPoint) -> Unit)? = null
@@ -128,6 +153,17 @@ class MapView(context: Context) : View(context) {
     private val roomTextBackground = fill(Color.rgb(245, 249, 245))
     private val reviewBox = RectF()
     private val checkpointPaint = fill(Color.rgb(239, 108, 0))
+    private val pointDot = fill(REVIEW_CORRIDOR)
+    private val pointRing = stroke(Color.WHITE, 1.2f)
+    private val selectedHalo = stroke(Color.WHITE, 8f)
+    private val selectedCorridor = stroke(POSTER_ACCENT, 4f)
+    private val problemRing = stroke(REVIEW_CHECK, 2.5f)
+    private val choiceLine = stroke(POSTER_ACCENT, 1.5f)
+    private val crossHalo = stroke(Color.WHITE, 4f)
+    private val crossLine = stroke(POSTER_TEXT, 1.6f)
+    private val snapLine = stroke(POSTER_ACCENT, 1.5f).apply {
+        pathEffect = DashPathEffect(floatArrayOf(4 * density, 3 * density), 0f)
+    }
 
     private val scaler = ScaleGestureDetector(
         context,
@@ -183,6 +219,15 @@ class MapView(context: Context) : View(context) {
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        val image = bitmap
+        // The editor's panel changes height as you work, and that must not lose your place.
+        if (editor != null && image != null && oldw > 0 && oldh > 0) {
+            val wasWhole = min(oldw.toFloat() / image.width, oldh.toFloat() / image.height)
+            if (toScreen.mapRadius(1f) > wasWhole * 1.02f) {
+                toScreen.postTranslate((w - oldw) / 2f, (h - oldh) / 2f)
+                return viewChanged()
+            }
+        }
         if (route.size >= 2) showRoute() else showAll()
     }
 
@@ -203,6 +248,39 @@ class MapView(context: Context) : View(context) {
             )
         }
         return reviewRooms.minByOrNull(::distance)?.takeIf { distance(it) <= slop }
+    }
+
+    /** Pixels on the map that [dp] of screen covers at this zoom. */
+    internal fun mapPixels(dp: Float): Double = (dp * density / toScreen.mapRadius(1f)).toDouble()
+
+    /** The map point under the middle of the view, where the placing cross sits. */
+    internal fun center(): PixelPoint {
+        val inverse = Matrix()
+        toScreen.invert(inverse)
+        val middle = floatArrayOf(width / 2f, height / 2f)
+        inverse.mapPoints(middle)
+        return PixelPoint(middle[0].toDouble(), middle[1].toDouble())
+    }
+
+    /** Zoom in on these points, up to the same limit as a room. */
+    internal fun focus(points: List<PixelPoint>) {
+        val first = points.firstOrNull() ?: return
+        val area = RectF(first.x.toFloat(), first.y.toFloat(), first.x.toFloat(), first.y.toFloat())
+        for (p in points) area.union(p.x.toFloat(), p.y.toFloat())
+        area.inset(-FOCUS_MARGIN_PX, -FOCUS_MARGIN_PX)
+        fit(area, margin = 0f)
+    }
+
+    /** Puts a map point under the placing cross, close enough to place it with a finger. */
+    internal fun centerOn(point: PixelPoint) {
+        val image = bitmap ?: return
+        val scale = maxOf(toScreen.mapRadius(1f), wholeMapScale(image) * PLACE_ZOOM)
+        toScreen.setScale(scale, scale)
+        toScreen.postTranslate(
+            width / 2f - scale * point.x.toFloat(),
+            height / 2f - scale * point.y.toFloat(),
+        )
+        viewChanged()
     }
 
     /** Fit the whole map in the view. */
@@ -250,9 +328,12 @@ class MapView(context: Context) : View(context) {
             }
             val corners = RectF(0f, 0f, image.width.toFloat(), image.height.toFloat())
             toScreen.mapRect(corners)
+            // The cross stays mid-view, so while placing the map can move half a view past its edge.
+            val spareX = if (editor?.crosshair == true) width / 2f else 0f
+            val spareY = if (editor?.crosshair == true) height / 2f else 0f
             toScreen.postTranslate(
-                edgeShift(corners.left, corners.right, width.toFloat()),
-                edgeShift(corners.top, corners.bottom, height.toFloat()),
+                edgeShift(corners.left - spareX, corners.right + spareX, width.toFloat()),
+                edgeShift(corners.top - spareY, corners.bottom + spareY, height.toFloat()),
             )
         }
         invalidate()
@@ -369,7 +450,113 @@ class MapView(context: Context) : View(context) {
                 canvas.drawText(label, reviewBox.left + 2f * density, baseline, roomText)
             }
         }
+        editor?.let { drawEditor(canvas, graph, it) }
         selectedRoom?.let { drawSelected(canvas, it) }
+    }
+
+    private fun drawEditor(canvas: Canvas, graph: FloorGraph, marks: EditorMarks) {
+        graph.edges.firstOrNull { it.id == marks.selectedCorridor }?.let { edge ->
+            val first = edge.polyline.firstOrNull() ?: return@let
+            routePath.reset()
+            routePath.moveTo(first.x.toFloat(), first.y.toFloat())
+            for (p in edge.polyline.drop(1)) routePath.lineTo(p.x.toFloat(), p.y.toFloat())
+            routePath.transform(toScreen, screenPath)
+            canvas.drawPath(screenPath, selectedHalo)
+            canvas.drawPath(screenPath, selectedCorridor)
+        }
+        // A room with a label box already shows its number. Tags are for the rest.
+        val boxed = reviewRooms.mapNotNull { it.preview.entranceNodeId }.toSet()
+        val labels = graph.landmarks.filter { it.nodeId !in boxed }.groupBy { it.nodeId }
+        val showLabels = zoomLevel >= LABEL_ZOOM
+        // Smaller on the whole map, where label boxes and leader lines share the space.
+        val pointRadius = if (showLabels) 3.5f else 2.4f
+        fun radiusOf(type: NodeType) = (if (type == NodeType.START) 7f else pointRadius) * density
+        // Tags first, so they never hide a dot. Where tags would collide, the later one waits
+        // for more zoom: the panel still names whatever is tapped.
+        val placed = mutableListOf<RectF>()
+        for (node in graph.nodes.values.sortedBy { it.type != NodeType.START }) {
+            val text = if (node.type == NodeType.START) {
+                "START"
+            } else {
+                labels[node.id]?.joinToString { it.label }?.takeIf { showLabels }
+            } ?: continue
+            val (x, y) = screen(node.position)
+            val left = x + radiusOf(node.type) + 2f * density
+            val baseline = y - (roomText.ascent() + roomText.descent()) / 2f
+            val tag = RectF(
+                left - density,
+                baseline + roomText.ascent() - density,
+                left + roomText.measureText(text) + density,
+                baseline + roomText.descent() + density,
+            )
+            if (placed.any { RectF.intersects(it, tag) }) continue
+            placed += tag
+            roomText.color = pointColor(node.type)
+            canvas.drawRect(tag, roomTextBackground)
+            canvas.drawText(text, left, baseline, roomText)
+        }
+        for (node in graph.nodes.values) {
+            val (x, y) = screen(node.position)
+            pointDot.color = pointColor(node.type)
+            canvas.drawCircle(x, y, radiusOf(node.type), pointDot)
+            canvas.drawCircle(x, y, radiusOf(node.type), pointRing)
+        }
+        for (spot in marks.problems) {
+            val (x, y) = screen(spot)
+            canvas.drawCircle(x, y, 12f * density, problemRing)
+        }
+        graph.nodes[marks.selectedPoint]?.let { node ->
+            val (x, y) = screen(node.position)
+            canvas.drawCircle(x, y, 11f * density, selectedHalo)
+            canvas.drawCircle(x, y, 11f * density, selectedRing)
+        }
+        marks.choices.forEachIndexed { i, id ->
+            graph.nodes[id]?.let { drawChoice(canvas, it.position, i, marks.choices.size) }
+        }
+        if (marks.crosshair) drawCross(canvas, marks.snap)
+    }
+
+    /** A numbered badge fanned out from its dot, since the dots themselves may overlap. */
+    private fun drawChoice(canvas: Canvas, at: PixelPoint, index: Int, count: Int) {
+        val (x, y) = screen(at)
+        val angle = -Math.PI / 2 + 2 * Math.PI * index / count
+        val badgeX = x + 36f * density * cos(angle).toFloat()
+        val badgeY = y + 36f * density * sin(angle).toFloat()
+        canvas.drawLine(x, y, badgeX, badgeY, choiceLine)
+        canvas.drawCircle(x, y, 5f * density, selectedRing)
+        canvas.drawCircle(badgeX, badgeY, 12f * density, selectedTag)
+        val number = (index + 1).toString()
+        canvas.drawText(
+            number,
+            badgeX - selectedText.measureText(number) / 2f,
+            badgeY - (selectedText.ascent() + selectedText.descent()) / 2f,
+            selectedText,
+        )
+    }
+
+    private fun pointColor(type: NodeType) = when (type) {
+        NodeType.START -> REVIEW_START
+        NodeType.DOOR -> REVIEW_ROOM
+        NodeType.JUNCTION, NodeType.DEAD_END -> REVIEW_CORRIDOR
+        else -> POSTER_MUTED
+    }
+
+    private fun drawCross(canvas: Canvas, snap: PixelPoint?) {
+        val x = width / 2f
+        val y = height / 2f
+        snap?.let {
+            val (sx, sy) = screen(it)
+            canvas.drawLine(x, y, sx, sy, snapLine)
+            canvas.drawCircle(sx, sy, 5f * density, selectedRing)
+        }
+        val gap = 5f * density
+        val arm = 22f * density
+        for (paint in listOf(crossHalo, crossLine)) {
+            canvas.drawLine(x - arm, y, x - gap, y, paint)
+            canvas.drawLine(x + gap, y, x + arm, y, paint)
+            canvas.drawLine(x, y - arm, x, y - gap, paint)
+            canvas.drawLine(x, y + gap, x, y + arm, paint)
+        }
     }
 
     /** A ring and a large tag, so the room can be found on the whole map. */
@@ -445,5 +632,7 @@ class MapView(context: Context) : View(context) {
     private companion object {
         const val FOCUS_MARGIN_PX = 200f
         const val MAX_REVIEW_ZOOM = 8f
+        const val LABEL_ZOOM = 2.5f
+        const val PLACE_ZOOM = 3f
     }
 }
