@@ -40,10 +40,29 @@ class SensorMotionProcessor(private val config: TrackingConfig = TrackingConfig(
         private set
     var usePeaks = false
         private set
+
+    /**
+     * Both sources feed steps (see [selectFused]): the Android detector, plus accelerometer
+     * peaks whenever the detector has gone quiet, since it misses steps for seconds at a time
+     * (after turns, walking on from a pause).
+     */
+    var fused = false
+        private set
+
+    /** Recent time between emitted steps while [fused] (smoothed), for the merge gap. */
+    private var intervalNs = 650_000_000L
+
+    /** Steps emitted while [fused], after merging the two sources. */
+    var fusedSteps = 0L
+        private set
     val offsetRad get() = estimator.offsetRad
 
     /** Count for the selected source, i.e. the steps the tracker would have received. */
-    val steps get() = if (usePeaks) peakSteps else detectorSteps
+    val steps get() = when {
+        fused -> fusedSteps
+        usePeaks -> peakSteps
+        else -> detectorSteps
+    }
 
     /** Full reset, including heading alignment; used when sensors re-register. */
     fun reset() {
@@ -57,6 +76,8 @@ class SensorMotionProcessor(private val config: TrackingConfig = TrackingConfig(
     fun resetCounts() {
         detectorSteps = 0
         peakSteps = 0
+        fusedSteps = 0
+        intervalNs = 650_000_000L
         skippedSteps = 0
         lastStepNs = 0
         lastDetectorNs = 0
@@ -65,6 +86,19 @@ class SensorMotionProcessor(private val config: TrackingConfig = TrackingConfig(
 
     fun selectPeaks(enabled: Boolean) {
         usePeaks = enabled
+        fused = false
+        resetCounts()
+    }
+
+    /**
+     * Takes footfalls from the step detector, and from accelerometer peaks while the detector has
+     * reported nothing for `stepFuseQuietNs`. One footfall seen by both (within `stepFuseGapNs`,
+     * or a share of the step interval) counts once. Every footfall still has to pass the walking
+     * gate downstream, which is what keeps hand motion out.
+     */
+    fun selectFused() {
+        usePeaks = false
+        fused = true
         resetCounts()
     }
 
@@ -112,6 +146,12 @@ class SensorMotionProcessor(private val config: TrackingConfig = TrackingConfig(
     fun acceleration(timestampNs: Long, values: FloatArray): MotionEvent.Step? {
         val peakNs = peaks.update(timestampNs, values) ?: return null
         peakSteps++
+        if (fused) {
+            // Fused: peaks only fill in while the detector has gone quiet. While it reports,
+            // it is the better count, and a peak would mostly re-count its steps.
+            val quiet = lastDetectorNs == 0L || peakNs - lastDetectorNs > config.stepFuseQuietNs
+            return if (quiet) step(peakNs, StepSource.ACCEL_PEAK) else null
+        }
         return if (usePeaks) step(peakNs, StepSource.ACCEL_PEAK) else null
     }
 
@@ -122,12 +162,27 @@ class SensorMotionProcessor(private val config: TrackingConfig = TrackingConfig(
      */
     private fun step(timestampNs: Long, source: StepSource): MotionEvent.Step? {
         if (timestampNs <= lastStepNs) return null
+        // Fused: the other source already reported this footfall, or this is the second
+        // accelerometer peak of the same stride (heel strike and push-off), half a step on.
+        val since = timestampNs - lastStepNs
+        if (fused && lastStepNs > 0) {
+            val minGap =
+                maxOf(config.stepFuseGapNs, (config.stepFuseCadenceShare * intervalNs).toLong())
+            if (since < minGap) return null
+            if (since in MIN_INTERVAL_NS..MAX_INTERVAL_NS) intervalNs += (since - intervalNs) / 4
+        }
         lastStepNs = timestampNs
         val value = history.lastOrNull { it.timestampNs <= timestampNs }
         if (value?.mapRad == null || timestampNs - value.timestampNs > config.headingFreshnessNs) {
             skippedSteps++
             return null
         }
+        if (fused) fusedSteps++
         return MotionEvent.Step(timestampNs, value.mapRad, source)
+    }
+
+    private companion object {
+        const val MIN_INTERVAL_NS = 300_000_000L
+        const val MAX_INTERVAL_NS = 1_400_000_000L
     }
 }

@@ -93,6 +93,13 @@ class SessionLog(private val out: Writer) {
         kPx = c.estimate.stepLengthPx,
     )
 
+    /**
+     * A detected footfall and the walking gate's [verdict] on it (WALKING moved the user),
+     * with the phone's vertical bob (m/s² RMS) at the time, in the heading column.
+     */
+    fun candidate(timestampNs: Long, verdict: String, bob: Double?) =
+        row(timestampNs, "candidate", verdict, extra = fmt(bob))
+
     /** The tracker re-measured k on the legs out of START (#12); [kPx] is the new k. */
     fun recalibrate(timestampNs: Long, kPx: Double) =
         row(timestampNs, "recalibrate", "", kPx = kPx)

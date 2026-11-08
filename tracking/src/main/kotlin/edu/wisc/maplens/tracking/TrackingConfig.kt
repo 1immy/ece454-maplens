@@ -28,10 +28,73 @@ data class TrackingConfig(
     val peakThreshold: Double = 0.75,
     /** The signal must dip below this (m/s²) before the next peak can count (hysteresis). */
     val peakRearmThreshold: Double = -0.15,
+    /** Fused step sources: footfalls closer than this are one footfall seen twice. */
+    val stepFuseGapNs: Long = 300_000_000,
+    /**
+     * ...and footfalls closer than this share of the recent step interval are the second
+     * accelerometer peak of one stride (heel strike, then push-off about half a step later).
+     */
+    val stepFuseCadenceShare: Double = 0.55,
+    /**
+     * Accelerometer peaks fill in only after the detector has been quiet this long: about two
+     * missed steps at a normal pace, so they never double a working detector.
+     */
+    val stepFuseQuietNs: Long = 1_200_000_000,
     /** At most one step per 0.3 s, i.e. about 3.3 steps/s, above a brisk walk. */
     val peakMinIntervalNs: Long = 300_000_000,
     /** A sample gap longer than this restarts the peak filters instead of bridging it. */
     val peakMaxGapNs: Long = 500_000_000,
+    /**
+     * Walking gate ([WalkingGate]): a detected step only moves the user if it looks like
+     * walking. Thresholds from four EH3 walks (phone held in front, 339 steps), where walking
+     * stayed within: gyro RMS ≤ 1.45 rad/s, vertical RMS ≥ 1.0 m/s², vertical/horizontal
+     * ≥ 0.71, horizontal RMS ≤ 2.4 m/s². Each bound leaves a margin outside that range.
+     */
+    val gaitGateEnabled: Boolean = true,
+    /** Sensor window before each footfall that the checks look at. */
+    val gaitWindowNs: Long = 800_000_000,
+    /** Turning faster than this (RMS over the window) is waving or shaking, not walking. */
+    val gaitMaxGyroRms: Double = 2.0,
+    /** Walking bobs the phone up and down; less vertical motion than this is not a step. */
+    val gaitMinVerticalRms: Double = 0.28,
+    /** Violent up/down motion can look vertical even when the user is standing still. */
+    val gaitMaxVerticalRms: Double = 4.0,
+    /** Vertical over horizontal motion: walking is mostly vertical, shaking mostly not. */
+    val gaitMinVerticalShare: Double = 0.55,
+    /** More side-to-side acceleration than this (RMS, m/s²) is shaking. */
+    val gaitMaxHorizontalRms: Double = 4.0,
+    /** Gentle hand-held gait can have less vertical motion when spin and sway are modest. */
+    val gaitQuietMaxGyroRms: Double = 1.4,
+    val gaitQuietMaxHorizontalRms: Double = 2.0,
+    val gaitQuietMinVerticalShare: Double = 0.40,
+    /** Minimum interval between accepted footfalls. */
+    val gaitMinIntervalNs: Long = 300_000_000,
+    /** Maximum age of attitude and motion evidence at the corresponding sample or footfall. */
+    val gaitFreshnessNs: Long = 120_000_000,
+    /** Causal vertical smoothing and hysteresis for identifying a rise and fall. */
+    val gaitVerticalSmoothingSeconds: Double = 0.04,
+    val gaitVerticalExcursion: Double = 0.35,
+    /** Use smaller signed excursions for light footfalls below the normal bob level. */
+    val gaitLightVerticalRms: Double = 0.6,
+    val gaitLightVerticalExcursion: Double = 0.15,
+    /** Reject many rapid reversals within the footfall window. */
+    val gaitMaxVerticalReversals: Int = 6,
+    /**
+     * Standing still: vertical RMS below this over [gaitStillWindowNs]. Walking stays above
+     * 1.0 m/s² (EH3 walks) and a held, still phone well below 0.1, so the display can stop the
+     * user within half a second of them stopping.
+     */
+    val gaitStillVerticalRms: Double = 0.25,
+    val gaitStillWindowNs: Long = 450_000_000,
+    /**
+     * A walk starts after this many footfalls, each within [gaitRhythmStartGapNs] of the
+     * one before. Swinging a phone held in place passes single footfall checks now and then,
+     * 2-7 s apart, but not three in a row; walkers step every 0.4-0.8 s.
+     */
+    val gaitRhythmFootfalls: Int = 3,
+    val gaitRhythmStartGapNs: Long = 1_300_000_000,
+    /** A walk lasts while each footfall comes within this long of the last one passed. */
+    val gaitRhythmKeepGapNs: Long = 1_500_000_000,
     val particleCount: Int = 300,
     /** Per-particle step-length noise, as a fraction of k. */
     val stepLengthNoise: Double = 0.10,
@@ -61,6 +124,15 @@ data class TrackingConfig(
     val calibrationReplaceFraction: Double = 0.5,
     /** Weight of a kept particle against a re-placed one right after calibration. */
     val calibrationKeptWeight: Double = 0.1,
+    /**
+     * Corner recovery ([ParticleTracker]): a step this far off both ways along the particle's
+     * corridor means it overshot a junction the user turned at...
+     */
+    val cornerMisfitDeg: Double = 60.0,
+    /** ...so if a junction within this many steps has an exit within this of the heading... */
+    val cornerBacktrackSteps: Double = 2.0,
+    /** ...the particle moves back onto that exit. */
+    val cornerExitMaxDeg: Double = 45.0,
     /** σθ in the heading weight exp(−(θ − β)² / 2σθ²), and for branch choice at junctions. */
     val headingSigmaDeg: Double = 20.0,
     /** Resample when the effective particle count drops below this fraction of N. */

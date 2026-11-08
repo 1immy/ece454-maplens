@@ -82,6 +82,7 @@ internal class IndoorMapView(context: Context) : View(context) {
             routeDistances = value.indices.runningFold(0.0) { acc, i ->
                 if (i == 0) acc else acc + value[i - 1].distanceTo(value[i])
             }.drop(1)
+            routeDotSpacing = 0.0
             invalidate()
         }
 
@@ -218,6 +219,23 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     val hasPuck: Boolean get() = puckTo != null
 
+    /**
+     * Moves the puck continuously from outside, every frame, instead of easing between the
+     * positions given to [setPuck] (live walking, see `PuckMotion`). [setPuck] still sets the
+     * accuracy halo and makes the puck visible.
+     */
+    interface PuckDriver {
+        fun positionAt(nowSeconds: Double): PixelPoint
+        val walkedPx: Double
+        val animating: Boolean
+    }
+
+    var driver: PuckDriver? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     // ---- Animation state ----
 
     private var placed = false
@@ -247,6 +265,9 @@ internal class IndoorMapView(context: Context) : View(context) {
     private val tiltMatrix = Matrix()
     private val pt = FloatArray(2)
     private var routeDistances: List<Double> = emptyList()
+    private var routeDotSpacing = 0.0
+    private var mapRouteDots = FloatArray(0)
+    private var screenRouteDots = FloatArray(0)
 
     private val imagePaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG).apply {
         colorFilter = MUTED
@@ -422,7 +443,15 @@ internal class IndoorMapView(context: Context) : View(context) {
     }
 
     /** The direction the user faces, or null to hide the beam. */
-    fun setHeading(rad: Double?) {
+    fun setHeading(rad: Double?, minimumChangeRad: Double = 0.0) {
+        val current = headingTarget
+        if (rad == current || (
+                rad != null && current != null &&
+                    abs(NavMath.wrap(rad - current)) < minimumChangeRad
+                )
+        ) {
+            return
+        }
         headingTarget = rad
         if (rad == null) headingShown = null else if (headingShown == null) headingShown = rad
         invalidate()
@@ -470,10 +499,18 @@ internal class IndoorMapView(context: Context) : View(context) {
         var moving = false
         val snap = !animationsOn()
 
-        // Puck position along its current segment.
+        // A driver (live walking) places the puck itself every frame; otherwise the puck
+        // eases along its current segment.
+        val drive = driver
         val from = puckFrom
         val to = puckTo
-        if (from != null && to != null) {
+        if (drive != null && to != null) {
+            val p = drive.positionAt(now / 1000.0)
+            puckX = p.x
+            puckY = p.y
+            routeWalkedPx = drive.walkedPx
+            if (drive.animating) moving = true
+        } else if (from != null && to != null) {
             val raw = if (puckDuration <= 0) {
                 1f
             } else {
@@ -611,7 +648,6 @@ internal class IndoorMapView(context: Context) : View(context) {
             matrix.postConcat(tiltMatrix)
         }
         matrix.postTranslate(anchorX(), anchorY())
-        matrix.invert(inverse)
     }
 
     private fun screen(x: Double, y: Double): Pair<Float, Float> {
@@ -623,6 +659,7 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     private fun toMap(x: Float, y: Float): PixelPoint {
         buildMatrix()
+        matrix.invert(inverse)
         pt[0] = x
         pt[1] = y
         inverse.mapPoints(pt)
@@ -640,30 +677,43 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     private fun drawRoute(canvas: Canvas) {
         if (route.size < 2) return
-        val total = routeDistances.last()
         // Dots sit at fixed map distances so they don't crawl as the walker moves; the spacing
         // steps by powers of two with zoom so they never crowd or spread too far.
         val wanted = 13 * density / zoom
         val spacing = 2.0.pow((ln(wanted) / ln(2.0)).roundToInt().toDouble())
+        if (spacing != routeDotSpacing) cacheRouteDots(spacing)
+        matrix.mapPoints(screenRouteDots, mapRouteDots)
         val r = 4.2f * density
-        var s = 0.0
-        var segment = 0
-        while (s <= total) {
-            while (segment < route.lastIndex - 1 && routeDistances[segment + 1] < s) segment++
-            val a = route[segment]
-            val b = route[segment + 1]
-            val len = routeDistances[segment + 1] - routeDistances[segment]
-            val t = if (len <= 0) 0.0 else (s - routeDistances[segment]) / len
-            val (x, y) = screen(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+        for (i in screenRouteDots.indices step 2) {
+            val x = screenRouteDots[i]
+            val y = screenRouteDots[i + 1]
             if (x > -r && y > -r && x < width + r && y < height + r) {
-                if (s < routeWalkedPx) {
+                if (i / 2 * spacing < routeWalkedPx) {
                     canvas.drawCircle(x, y, r * 0.75f, dotWalked)
                 } else {
                     canvas.drawCircle(x, y, r + 1.6f * density, dotBorder)
                     canvas.drawCircle(x, y, r, dotBlue)
                 }
             }
-            s += spacing
+        }
+    }
+
+    /** Rebuild only when the route or zoom's spacing bucket changes. */
+    private fun cacheRouteDots(spacing: Double) {
+        val count = (routeDistances.last() / spacing).toInt() + 1
+        mapRouteDots = FloatArray(count * 2)
+        screenRouteDots = FloatArray(count * 2)
+        routeDotSpacing = spacing
+        var segment = 0
+        for (index in 0 until count) {
+            val s = index * spacing
+            while (segment < route.lastIndex - 1 && routeDistances[segment + 1] < s) segment++
+            val a = route[segment]
+            val b = route[segment + 1]
+            val len = routeDistances[segment + 1] - routeDistances[segment]
+            val t = if (len <= 0) 0.0 else (s - routeDistances[segment]) / len
+            mapRouteDots[index * 2] = (a.x + (b.x - a.x) * t).toFloat()
+            mapRouteDots[index * 2 + 1] = (a.y + (b.y - a.y) * t).toFloat()
         }
     }
 

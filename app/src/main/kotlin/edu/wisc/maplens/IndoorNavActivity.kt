@@ -64,10 +64,12 @@ import edu.wisc.maplens.nav.Place
 import edu.wisc.maplens.nav.PlaceKind
 import edu.wisc.maplens.nav.PlaceMatch
 import edu.wisc.maplens.nav.PlaceSearch
+import edu.wisc.maplens.nav.PuckMotion
 import edu.wisc.maplens.nav.RoomArea
 import edu.wisc.maplens.nav.RoomBounds
 import edu.wisc.maplens.nav.RoomBox
 import edu.wisc.maplens.nav.RoomFinder
+import edu.wisc.maplens.nav.Trail
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
 import edu.wisc.maplens.routing.AStarRouter
@@ -155,7 +157,19 @@ class IndoorNavActivity : ComponentActivity() {
     private val ticker = Handler(Looper.getMainLooper())
     private val stride = TrackingConfig().nominalStrideMeters
     private val router = AStarRouter()
-    private val live by lazy { LiveMotionSource(this, ::onLivePose, onHeading = ::onLiveHeading) }
+    private val live by lazy {
+        LiveMotionSource(
+            this,
+            ::onLivePose,
+            onHeading = ::onLiveHeading,
+            onStats = ::onLiveStats,
+            onMoving = ::onLiveMoving,
+            traceDir = getExternalFilesDir("sessions"),
+            onCandidate = { t, verdict, bob ->
+                if (following) logIo.execute { log?.candidate(t, verdict, bob) }
+            },
+        )
+    }
     private val logIo = Executors.newSingleThreadExecutor()
     private var log: SessionLog? = null
     private var logFile: File? = null
@@ -183,6 +197,8 @@ class IndoorNavActivity : ComponentActivity() {
     private var checkpoints = 0
     private var startedAt = 0L
     private var lastPose: PoseEstimate? = null
+    private var puckMotion: PuckMotion? = null
+    private var liveTrail: Trail? = null
     private var stepsExpanded = false
 
     private val tick = object : Runnable {
@@ -838,6 +854,9 @@ class IndoorNavActivity : ComponentActivity() {
         map.onMapTap = null
         map.navigating = false
         map.setHeading(null)
+        map.driver = null
+        puckMotion = null
+        liveTrail = null
         graph?.let { map.setPuck(it.nodes.getValue(it.startNodeId).position, durationMs = 500) }
         map.routeWalkedPx = 0.0
         if (lastPose != null) logIo.execute { log?.close().also { log = null } }
@@ -925,7 +944,14 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun onLiveHeading(mapRad: Double) {
-        if (following) map.setHeading(mapRad)
+        if (following) map.setHeading(mapRad, minimumChangeRad = Math.toRadians(0.5))
+    }
+
+    /** A detected step that didn't move the user: refresh the readout so shaking shows up. */
+    private fun onLiveStats(latest: LiveStats) {
+        if (!following) return
+        stats = latest
+        renderDevLine(lastPose?.stepLengthPx ?: Demo.STEP_LENGTH_PX)
     }
 
     private fun onLivePose(pose: PoseEstimate, latest: LiveStats) {
@@ -950,13 +976,13 @@ class IndoorNavActivity : ComponentActivity() {
         lastPose = pose
         logIo.execute { log?.pose(pose) }
         if (liveMode) {
-            map.setPuck(pose.position, pose.spreadPx, durationMs = 450)
+            followLive(g, pose)
         } else {
             map.setPuck(pose.position, durationMs = Demo.STEP_INTERVAL_MS, linear = true)
             map.setHeading(pose.headingRad)
         }
         val progress = g.progressPx(pose)
-        map.routeWalkedPx = progress
+        if (map.driver == null) map.routeWalkedPx = progress
         val instruction = g.instruction(pose)
         renderBanner(g, pose, instruction)
         renderEta(g, pose)
@@ -968,6 +994,44 @@ class IndoorNavActivity : ComponentActivity() {
             s.onArrived()
             arrive(pose)
         }
+    }
+
+    /**
+     * Live walking: the dot moves every frame at walking speed ([PuckMotion]) along the trail
+     * of tracker positions ([Trail]), so it follows the user through turns, U-turns and
+     * detours alike. Each tracker pose only corrects the speed, so the dot neither waits for
+     * the next step nor jumps; route progress and guidance still come from the pose itself.
+     */
+    private fun followLive(g: RouteGuide, pose: PoseEstimate) {
+        val trail = liveTrail ?: Trail(pose.position).also { liveTrail = it }
+        val walked = trail.add(pose.position)
+        map.setPuck(pose.position, pose.spreadPx, durationMs = 0L)
+        val motion = puckMotion ?: PuckMotion(snapPx = SNAP_STEPS * pose.stepLengthPx).also {
+            it.reset(walked)
+            puckMotion = it
+        }
+        val now = SystemClock.uptimeMillis() / 1000.0
+        motion.onStep(walked, now, pose.stepLengthPx, pose.timestampNanos)
+        if (map.driver == null) {
+            map.driver = object : IndoorMapView.PuckDriver {
+                private var shown = pose.position
+
+                override fun positionAt(nowSeconds: Double): PixelPoint {
+                    shown = trail.pointAt(motion.advance(nowSeconds))
+                    return shown
+                }
+
+                override val walkedPx get() = g.path.project(shown)
+                override val animating get() = motion.animating
+            }
+        }
+    }
+
+    /** The phone stopped or started bobbing: lets the dot stop within half a second. */
+    private fun onLiveMoving(moving: Boolean) {
+        if (!following) return
+        puckMotion?.setMoving(moving)
+        if (map.driver != null) map.invalidate()
     }
 
     private fun renderBanner(g: RouteGuide, pose: PoseEstimate, instruction: Instruction) {
@@ -1013,21 +1077,27 @@ class IndoorNavActivity : ComponentActivity() {
             stepsLeft,
             DateFormat.getTimeFormat(this).format(arrival),
         )
+        renderDevLine(pose.stepLengthPx)
+    }
+
+    /** The developer readout under the ETA: k, step counts and what the walking gate ignored. */
+    private fun renderDevLine(k: Double) {
         val sensors = stats
         devLine?.text = if (liveMode && sensors != null) {
             getString(
                 R.string.in_dev_live,
-                pose.stepLengthPx,
+                k,
                 sensors.steps,
                 getString(
                     if (sensors.usingPeaks) R.string.source_peaks else R.string.source_detector,
                 ),
                 sensors.skipped,
+                sensors.rejected,
             )
         } else if (liveMode) {
-            getString(R.string.in_dev_live_waiting, pose.stepLengthPx)
+            getString(R.string.in_dev_live_waiting, k)
         } else {
-            getString(R.string.in_dev_demo, pose.stepLengthPx)
+            getString(R.string.in_dev_demo, k)
         }
     }
 
@@ -1105,6 +1175,11 @@ class IndoorNavActivity : ComponentActivity() {
         following = false
         live.pause()
         logIo.execute { log?.arrive(pose) }
+        // Arrived: hand the dot back from the walking model to the tracker's final position.
+        map.driver = null
+        puckMotion = null
+        liveTrail = null
+        map.setPuck(pose.position, durationMs = 400)
         show(Screen.ARRIVED)
         map.navigating = false
         map.setHeading(null)
@@ -1888,6 +1963,7 @@ class IndoorNavActivity : ComponentActivity() {
         private const val STEP_PERMISSION = 8
         private const val SNACK_MS = 3500L
         private const val THEN_WITHIN_STEPS = 25.0
+        private const val SNAP_STEPS = 4.0
         private const val TAP_DOOR_DP = 10f
         private const val CORRIDOR_HALF_WIDTH_SHARE = 0.01
         private const val PREFS = "indoor_nav"

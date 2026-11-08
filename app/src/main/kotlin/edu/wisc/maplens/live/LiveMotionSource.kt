@@ -15,8 +15,15 @@ import android.os.SystemClock
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.tracking.ParticleTracker
 import edu.wisc.maplens.tracking.SensorMotionProcessor
+import edu.wisc.maplens.tracking.TraceCsvWriter
+import edu.wisc.maplens.tracking.TraceSensor
 import edu.wisc.maplens.tracking.Tracker
 import edu.wisc.maplens.tracking.TrackingConfig
+import edu.wisc.maplens.tracking.WalkingGate
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /** What the banner and session log show about the live sensors after each step. */
 data class LiveStats(
@@ -26,10 +33,13 @@ data class LiveStats(
     /** When the tracker last re-calibrated k (#12), and to what; null until it has. */
     val calibratedAtNanos: Long? = null,
     val calibratedStepLengthPx: Double? = null,
+    /** Step candidates rejected by the walking gate. */
+    val rejected: Long = 0,
 )
 
 /**
- * Live sensors → [SensorMotionProcessor] (Johnny's #40) → [Tracker] → [PoseEstimate].
+ * Live sensors → [SensorMotionProcessor] (Johnny's #40) → [WalkingGate] → [Tracker] →
+ * [PoseEstimate]. The gate checks every footfall against recent motion before advancing.
  *
  * Sensor callbacks, the processor and the tracker all run on one background thread, so none of
  * them needs locks and nothing touches the UI thread (section 7, threading). Poses are posted to
@@ -46,11 +56,28 @@ class LiveMotionSource(
      * ~30 Hz while the tracker is fed, so a direction cone can turn as the user turns.
      */
     private val onHeading: ((Double) -> Unit)? = null,
+    /**
+     * Optional: stats after a detected step is rejected by the walking gate.
+     */
+    private val onStats: ((LiveStats) -> Unit)? = null,
+    /**
+     * Optional: whether the phone still bobs like a walker's, about 10 times a second while
+     * the tracker is fed, so the display can stop the user as soon as they stop.
+     */
+    private val onMoving: ((Boolean) -> Unit)? = null,
+    /**
+     * Optional: a folder to record each live walk's raw sensors into (`trace-*.csv`, the
+     * recorder's format), so a walk that felt wrong can be replayed exactly offline.
+     */
+    private val traceDir: File? = null,
+    /** Optional: every detected footfall with the walking gate's verdict and the bob then. */
+    private val onCandidate: ((Long, String, Double?) -> Unit)? = null,
 ) : SensorEventListener {
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(SensorManager::class.java)
     private val periodUs = config.recordingPeriodUs
     private val processor = SensorMotionProcessor(config)
+    private val gate = WalkingGate(config)
     private val main = Handler(Looper.getMainLooper())
     private var thread: HandlerThread? = null
     private var worker: Handler? = null
@@ -78,22 +105,34 @@ class LiveMotionSource(
         val h = Handler(t.looper)
         thread = t
         worker = h
-        h.post { processor.reset() }
+        h.post {
+            processor.reset()
+            gate.reset()
+        }
         sensors.registerListener(this, rotation, periodUs, h)
         sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
+            sensors.registerListener(this, it, periodUs, h)
+        }
+        // The walking gate needs rotation rate as evidence for accepting a footfall.
+        sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let {
             sensors.registerListener(this, it, periodUs, h)
         }
         val detector = sensors.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
         val detectorOn = detector != null && hasStepPermission &&
             sensors.registerListener(this, detector, SensorManager.SENSOR_DELAY_NORMAL, h)
-        h.post { processor.selectPeaks(!detectorOn) }
+        // Fused when the detector is there: it misses steps for seconds at a time, and
+        // accelerometer peaks (checked by the walking gate like every footfall) fill the gaps.
+        h.post { if (detectorOn) processor.selectFused() else processor.selectPeaks(true) }
         return true
     }
 
     fun stop() {
         manager?.unregisterListener(this)
         val t = thread ?: return
-        worker?.post { tracker = null }
+        worker?.post {
+            tracker = null
+            closeTrace()
+        }
         t.quitSafely()
         thread = null
         worker = null
@@ -116,6 +155,8 @@ class LiveMotionSource(
             if (aligned) {
                 setup(tracker)
                 processor.resetCounts()
+                gate.restart()
+                openTrace()
                 this.tracker = tracker
             }
             main.post { done(aligned) }
@@ -124,23 +165,41 @@ class LiveMotionSource(
 
     /** Stops feeding the tracker (arrival, new destination) but keeps sensors warm. */
     fun pause() {
-        worker?.post { tracker = null }
+        worker?.post {
+            tracker = null
+            closeTrace()
+        }
     }
 
     override fun onSensorChanged(event: SensorEvent) {
+        val values = event.values.copyOf()
+        record(event.sensor.type, event.timestamp, values)
         val step = when (event.sensor.type) {
             Sensor.TYPE_GAME_ROTATION_VECTOR -> {
-                processor.rotation(event.timestamp, event.values.copyOf(), 0)
+                processor.rotation(event.timestamp, values, 0)
+                gate.rotation(event.timestamp, values)
                 postHeading(event.timestamp)
                 null
             }
-            Sensor.TYPE_ACCELEROMETER ->
-                processor.acceleration(event.timestamp, event.values.copyOf())
+            Sensor.TYPE_ACCELEROMETER -> {
+                gate.acceleration(event.timestamp, values)
+                postMoving(event.timestamp)
+                processor.acceleration(event.timestamp, values)
+            }
+            Sensor.TYPE_GYROSCOPE -> {
+                gate.gyroscope(event.timestamp, values)
+                null
+            }
             Sensor.TYPE_STEP_DETECTOR -> processor.detector(event.timestamp)
             else -> null
         } ?: return
         val t = tracker ?: return
-        val pose = t.onMotion(step)
+        val pose = gate.offer(step).map(t::onMotion).lastOrNull()
+        onCandidate?.let { listener ->
+            val verdict = gate.lastVerdict?.name.orEmpty()
+            val bob = gate.bob(step.timestampNanos)
+            main.post { listener(step.timestampNanos, verdict, bob) }
+        }
         val particles = t as? ParticleTracker
         val stats = LiveStats(
             steps = processor.steps,
@@ -148,8 +207,56 @@ class LiveMotionSource(
             usingPeaks = processor.usePeaks,
             calibratedAtNanos = particles?.calibratedAtNanos,
             calibratedStepLengthPx = particles?.calibratedStepLengthPx,
+            rejected = gate.rejected,
         )
+        if (pose == null) {
+            onStats?.let { listener -> main.post { listener(stats) } }
+            return
+        }
         main.post { onPose(pose, stats) }
+    }
+
+    /** Worker thread only: the walk being recorded, if [traceDir] is set. */
+    private var trace: TraceCsvWriter? = null
+
+    private fun openTrace() {
+        closeTrace()
+        val dir = traceDir ?: return
+        trace = runCatching {
+            dir.mkdirs()
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+            TraceCsvWriter(File(dir, "trace-$stamp.csv").bufferedWriter())
+        }.getOrNull()
+    }
+
+    private fun closeTrace() {
+        runCatching { trace?.close() }
+        trace = null
+    }
+
+    private fun record(type: Int, timestampNs: Long, values: FloatArray) {
+        val out = trace ?: return
+        val sensor = when (type) {
+            Sensor.TYPE_ACCELEROMETER -> TraceSensor.ACCEL
+            Sensor.TYPE_GYROSCOPE -> TraceSensor.GYRO
+            Sensor.TYPE_GAME_ROTATION_VECTOR -> TraceSensor.GAME_RV
+            Sensor.TYPE_STEP_DETECTOR -> TraceSensor.STEP
+            else -> return
+        }
+        val padded = FloatArray(sensor.components) { values.getOrElse(it) { 0f } }
+        // A bad sample must not stop the walk; the trace is diagnostics only.
+        runCatching { out.append(timestampNs, sensor, padded) }
+    }
+
+    /** Worker thread only. */
+    private var lastMovingNs = 0L
+
+    private fun postMoving(timestampNs: Long) {
+        val listener = onMoving ?: return
+        if (tracker == null || timestampNs - lastMovingNs < MOVING_PERIOD_NS) return
+        lastMovingNs = timestampNs
+        val moving = gate.moving(timestampNs)
+        main.post { listener(moving) }
     }
 
     /** Worker thread only. */
@@ -167,5 +274,6 @@ class LiveMotionSource(
 
     private companion object {
         const val HEADING_PERIOD_NS = 33_000_000L
+        const val MOVING_PERIOD_NS = 100_000_000L
     }
 }
