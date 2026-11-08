@@ -1,24 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Themed-icon layer (Android 13+): route, heading cone and position dot in one colour. -->
+<!-- Themed-icon layer (Android 13+): lens ring, route and position dot in one colour. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
   android:width="108dp"
   android:height="108dp"
   android:viewportWidth="108"
   android:viewportHeight="108">
   <path
-    android:strokeColor="#FFFFFFFF"
-    android:strokeWidth="5"
-    android:strokeLineCap="round"
-    android:strokeLineJoin="round"
-    android:pathData="M54,60V40H72V30" />
-  <path
     android:fillColor="#FFFFFFFF"
     android:fillType="evenOdd"
-    android:pathData="M67.6,27a4.4,4.4 0,1 0,8.8 0a4.4,4.4 0,1 0,-8.8 0z M70.1,27a1.9,1.9 0,1 0,3.8 0a1.9,1.9 0,1 0,-3.8 0z" />
-  <path
-    android:fillColor="#66FFFFFF"
-    android:pathData="M54,70L42.24,53.82A20,20 0 0,1 65.76,53.82Z" />
+    android:pathData="M24,54a30,30 0,1 0,60,0a30,30 0,1 0,-60,0z M28.5,54a25.5,25.5 0,1 0,51.0,0a25.5,25.5 0,1 0,-51.0,0z" />
+  <group android:name="inside_lens">
+    <clip-path android:pathData="M28.5,54a25.5,25.5 0,1 0,51.0,0a25.5,25.5 0,1 0,-51.0,0z" />
+    <path
+      android:fillColor="#59FFFFFF"
+      android:pathData="M19,16H38A3,3 0,0 1 41,19V39A3,3 0,0 1 38,42H19A3,3 0,0 1 16,39V19A3,3 0,0 1 19,16Z M19,50H38A3,3 0,0 1 41,53V91A3,3 0,0 1 38,94H19A3,3 0,0 1 16,91V53A3,3 0,0 1 19,50Z M58,16H90A3,3 0,0 1 93,19V39A3,3 0,0 1 90,42H58A3,3 0,0 1 55,39V19A3,3 0,0 1 58,16Z M58,54H90A3,3 0,0 1 93,57V91A3,3 0,0 1 90,94H58A3,3 0,0 1 55,91V57A3,3 0,0 1 58,54Z" />
+    <path
+      android:strokeColor="#FFFFFFFF"
+      android:strokeWidth="5"
+      android:strokeLineCap="round"
+      android:strokeLineJoin="round"
+      android:pathData="M48,63V52Q48,48 52,48H90" />
+  </group>
   <path
     android:fillColor="#FFFFFFFF"
-    android:pathData="M47.5,70a6.5,6.5 0,1 0,13 0a6.5,6.5 0,1 0,-13 0z" />
+    android:pathData="M42,63a6,6 0,1 0,12,0a6,6 0,1 0,-12,0z" />
 </vector>

@@ -1,35 +1,93 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Launcher foreground: the user's position dot with a heading cone, and the red route it is
-  about to walk, up the corridor, right, and through the doorway into the destination room.
+  Launcher foreground ("Lens on the Map"): a lens (r30) held over a floor plan. Inside the
+  glass: rooms, a blue route turning down the corridor, and the position dot with its
+  heading beam. The lens stays inside the 66dp safe zone (r33 from the centre), so no mask
+  shape clips it.
 -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
+<vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt"
   android:width="108dp"
   android:height="108dp"
   android:viewportWidth="108"
   android:viewportHeight="108">
+  <!-- Soft drop shadow (vector drawables have no blur filter). -->
+  <path android:pathData="M21,57a33,33 0,1 0,66,0a33,33 0,1 0,-66,0z">
+    <aapt:attr name="android:fillColor">
+      <gradient
+        android:type="radial"
+        android:centerX="54" android:centerY="57"
+        android:gradientRadius="33">
+          <item android:offset="0.82" android:color="#590A1D4A" />
+          <item android:offset="1" android:color="#000A1D4A" />
+      </gradient>
+    </aapt:attr>
+  </path>
+  <!-- Rim. -->
+  <path android:pathData="M24,54a30,30 0,1 0,60,0a30,30 0,1 0,-60,0z">
+    <aapt:attr name="android:fillColor">
+      <gradient
+        android:type="linear"
+        android:startX="24" android:startY="24"
+        android:endX="84" android:endY="84">
+          <item android:offset="0" android:color="#FFFFFFFF" />
+          <item android:offset="1" android:color="#FFB3C5E0" />
+      </gradient>
+    </aapt:attr>
+  </path>
+  <!-- Glass. -->
+  <path android:pathData="M27.5,54a26.5,26.5 0,1 0,53.0,0a26.5,26.5 0,1 0,-53.0,0z">
+    <aapt:attr name="android:fillColor">
+      <gradient
+        android:type="linear"
+        android:startX="27.5" android:startY="27.5"
+        android:endX="80.5" android:endY="80.5">
+          <item android:offset="0" android:color="#FFF7FAFE" />
+          <item android:offset="1" android:color="#FFE2EAF4" />
+      </gradient>
+    </aapt:attr>
+  </path>
+  <group android:name="inside_lens">
+    <clip-path android:pathData="M27.5,54a26.5,26.5 0,1 0,53.0,0a26.5,26.5 0,1 0,-53.0,0z" />
+    <path
+      android:fillColor="#FFC3CFE0"
+      android:pathData="M19,16H38A3,3 0,0 1 41,19V39A3,3 0,0 1 38,42H19A3,3 0,0 1 16,39V19A3,3 0,0 1 19,16Z M19,50H38A3,3 0,0 1 41,53V91A3,3 0,0 1 38,94H19A3,3 0,0 1 16,91V53A3,3 0,0 1 19,50Z M58,16H90A3,3 0,0 1 93,19V39A3,3 0,0 1 90,42H58A3,3 0,0 1 55,39V19A3,3 0,0 1 58,16Z M58,54H90A3,3 0,0 1 93,57V91A3,3 0,0 1 90,94H58A3,3 0,0 1 55,91V57A3,3 0,0 1 58,54Z" />
+    <path
+      android:strokeColor="#FF1A73E8"
+      android:strokeWidth="4.5"
+      android:strokeLineCap="round"
+      android:strokeLineJoin="round"
+      android:pathData="M48,63V52Q48,48 52,48H90" />
+  </group>
   <path
-    android:strokeColor="#FFC5050C"
-    android:strokeWidth="5"
+    android:strokeColor="#FF9DB2D2"
+    android:strokeWidth="1.2"
+    android:pathData="M27.5,54a26.5,26.5 0,1 0,53.0,0a26.5,26.5 0,1 0,-53.0,0z" />
+  <!-- Heading beam: the way the phone faces. -->
+  <path android:pathData="M48,63L38,46A19,19 0,0 1 58,46Z">
+    <aapt:attr name="android:fillColor">
+      <gradient
+        android:type="linear"
+        android:startX="0" android:startY="63"
+        android:endX="0" android:endY="44">
+          <item android:offset="0" android:color="#991A73E8" />
+          <item android:offset="1" android:color="#001A73E8" />
+      </gradient>
+    </aapt:attr>
+  </path>
+  <!-- Position dot. -->
+  <path
+    android:fillColor="#260A1D4A"
+    android:pathData="M40.4,64.5a7.6,7.6 0,1 0,15.2,0a7.6,7.6 0,1 0,-15.2,0z" />
+  <path
+    android:fillColor="#FFFFFFFF"
+    android:pathData="M41,63a7,7 0,1 0,14,0a7,7 0,1 0,-14,0z" />
+  <path
+    android:fillColor="#FF1A73E8"
+    android:pathData="M43.1,63a4.9,4.9 0,1 0,9.8,0a4.9,4.9 0,1 0,-9.8,0z" />
+  <!-- Glint on the glass. -->
+  <path
+    android:strokeColor="#FFFFFFFF"
+    android:strokeWidth="2.6"
     android:strokeLineCap="round"
-    android:strokeLineJoin="round"
-    android:pathData="M54,64V40H72V28" />
-  <!-- Destination inside the room. -->
-  <path
-    android:fillColor="#FFC5050C"
-    android:pathData="M67.6,27a4.4,4.4 0,1 0,8.8 0a4.4,4.4 0,1 0,-8.8 0z" />
-  <path
-    android:fillColor="#FFFFFFFF"
-    android:pathData="M70.1,27a1.9,1.9 0,1 0,3.8 0a1.9,1.9 0,1 0,-3.8 0z" />
-  <!-- Heading cone: the way the phone faces. -->
-  <path
-    android:fillColor="#59C5050C"
-    android:pathData="M54,70L42.24,53.82A20,20 0 0,1 65.76,53.82Z" />
-  <!-- Position dot with a white ring. -->
-  <path
-    android:fillColor="#FFFFFFFF"
-    android:pathData="M45,70a9,9 0,1 0,18 0a9,9 0,1 0,-18 0z" />
-  <path
-    android:fillColor="#FFC5050C"
-    android:pathData="M47.5,70a6.5,6.5 0,1 0,13 0a6.5,6.5 0,1 0,-13 0z" />
+    android:pathData="M34.5,40.5A24,24 0,0 1 45,31.6" />
 </vector>
