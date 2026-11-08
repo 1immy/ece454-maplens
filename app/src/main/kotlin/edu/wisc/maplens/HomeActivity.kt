@@ -144,13 +144,14 @@ class HomeActivity : Activity() {
     private fun brand(): View = LinearLayout(this).apply {
         gravity = Gravity.CENTER_VERTICAL
         addView(
+            // The launcher icon itself, so the brand mark matches the home-screen icon. The
+            // adaptive icon draws through the device's own mask shape.
             ImageView(context).apply {
-                setImageDrawable(icon(R.drawable.ic_map, Ui.ON_ACCENT, 20))
-                scaleType = ImageView.ScaleType.CENTER
-                background = rounded(Ui.ACCENT, radiusDp = 10)
+                setImageResource(R.mipmap.ic_launcher)
+                scaleType = ImageView.ScaleType.FIT_CENTER
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             },
-            LinearLayout.LayoutParams(dp(36), dp(36)),
+            LinearLayout.LayoutParams(dp(40), dp(40)),
         )
         addView(
             text(Ui.HEADING, bold = true).apply { setText(R.string.app_name) },

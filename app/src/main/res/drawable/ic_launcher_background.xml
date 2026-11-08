@@ -1,28 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Launcher background: a top-down floor plan. Rooms (warm grey) around a white cross of
-  corridors; the destination room is tinted UW–Madison red. Original artwork, no university marks.
+  Launcher background ("Lens on the Map"): a blue gradient with a faint plan grid, so the
+  lens on the foreground layer reads as sitting over a map. Full-bleed 108dp; launchers may
+  shift or scale this layer for motion effects, so nothing important lives here.
 -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
+<vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt"
   android:width="108dp"
   android:height="108dp"
   android:viewportWidth="108"
   android:viewportHeight="108">
+  <path android:pathData="M0,0h108v108h-108z">
+    <aapt:attr name="android:fillColor">
+      <gradient
+        android:type="linear"
+        android:startX="0" android:startY="0"
+        android:endX="108" android:endY="108">
+          <item android:offset="0" android:color="#FF3B8BFA" />
+          <item android:offset="1" android:color="#FF1550B5" />
+      </gradient>
+    </aapt:attr>
+  </path>
   <path
-    android:fillColor="#FFFFFFFF"
-    android:pathData="M0,0h108v108h-108z" />
-  <path
-    android:fillColor="#FFECE6DF"
-    android:strokeColor="#FFCFC6BC"
-    android:strokeWidth="1.2"
-    android:pathData="M-2,-6H47V34H-2Z M-2,46H47V116H-2Z M61,46H110V81H61Z M61,81H110V116H61Z" />
-  <path
-    android:fillColor="#FFF9DCD8"
-    android:strokeColor="#FFE7A9A2"
-    android:strokeWidth="1.2"
-    android:pathData="M61,-6H110V34H61Z" />
-  <!-- Doorway into the destination room. -->
-  <path
-    android:fillColor="#FFFFFFFF"
-    android:pathData="M66,33H78V35.4H66Z" />
+    android:strokeColor="#21FFFFFF"
+    android:strokeWidth="1.6"
+    android:pathData="M0,26H108M0,84H108M24,0V108M86,0V108M58,0V20M58,88V108M0,56H18M90,56H108" />
 </vector>
