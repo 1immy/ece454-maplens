@@ -78,6 +78,15 @@
     <item quantity="other">%1$s · %2$d steps</item>
   </plurals>
   <string name="in_then">Then</string>
+  <!-- Tracking confidence chip under the turn banner (#18). -->
+  <string name="conf_high">Position on track</string>
+  <string name="conf_low">Position uncertain</string>
+  <string name="conf_reason_spread">Your position has spread out along the corridor.</string>
+  <string name="conf_reason_split">You could be in one of two corridors.</string>
+  <string name="conf_reason_heading">Your direction doesn\'t match this corridor.</string>
+  <string name="conf_reason_turn">That turn isn\'t on the map here.</string>
+  <string name="conf_do_scan">Check the room numbers on nearby doors.</string>
+  <string name="conf_do_turn">Keep going. Your next turn will fix it.</string>
   <plurals name="in_eta_line">
     <item quantity="one">%1$d m · %2$d step · %3$s</item>
     <item quantity="other">%1$d m · %2$d steps · %3$s</item>

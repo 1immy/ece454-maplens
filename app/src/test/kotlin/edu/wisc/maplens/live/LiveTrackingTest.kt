@@ -1,5 +1,8 @@
 package edu.wisc.maplens.live
 
+import edu.wisc.maplens.model.ConfidenceCheck
+import edu.wisc.maplens.model.ConfidenceLevel
+import edu.wisc.maplens.model.ConfidenceState
 import edu.wisc.maplens.model.Edge
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.FloorGraphJson
@@ -9,6 +12,7 @@ import edu.wisc.maplens.model.Node
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
+import edu.wisc.maplens.model.RecoveryAction
 import edu.wisc.maplens.model.StepSource
 import edu.wisc.maplens.tracking.ParticleTracker
 import java.io.File
@@ -143,6 +147,28 @@ class LiveTrackingTest {
         val recalibrate = lines[4].split(",")
         assertEquals("6", recalibrate[0])
         assertEquals("21.250", recalibrate[13])
+    }
+
+    @Test
+    fun `session log records confidence changes with failed checks and recovery`() {
+        val out = StringWriter()
+        val log = SessionLog(out)
+        log.confidence(
+            ConfidenceState(
+                7L,
+                ConfidenceLevel.LOW,
+                setOf(ConfidenceCheck.SPREAD, ConfidenceCheck.GROUP_SPLIT),
+                RecoveryAction.SCAN_SIGN,
+            ),
+        )
+        log.confidence(ConfidenceState(8L, ConfidenceLevel.HIGH, emptySet(), null))
+        val rows = out.toString().trim().lines().drop(1).map { it.split(",") }
+        val columns = SessionLog.HEADER.split(",").size
+        assertTrue(rows.all { it.size == columns })
+        assertEquals(listOf("7", "confidence", "LOW:GROUP_SPLIT|SPREAD"), rows[0].take(3))
+        assertEquals("SCAN_SIGN", rows[0][6])
+        assertEquals(listOf("8", "confidence", "HIGH"), rows[1].take(3))
+        assertEquals("", rows[1][6])
     }
 
     /** On the traced EH3 graph, every START corridor gets a readable description. */
