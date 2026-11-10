@@ -83,21 +83,42 @@ class RoutePath(graph: FloorGraph, val route: Route) {
     fun edgeAt(s: Double): String? = segmentAt(s).takeIf { it >= 0 }?.let { segmentEdges[it] }
 
     /** Distance along the path of the point on it closest to [p]; ties go to the earlier one. */
-    fun project(p: PixelPoint): Double {
-        var bestS = 0.0
+    fun project(p: PixelPoint): Double = closest(p).alongPx
+
+    /**
+     * The point on the path closest to [p], searching only between [fromPx] and [toPx] along
+     * it. Tracking progress in a window around the last known place keeps it from jumping to
+     * another part of the route that happens to pass close by (a corridor walked twice, or a
+     * parallel one). Ties go to the earlier point.
+     */
+    fun closest(
+        p: PixelPoint,
+        fromPx: Double = 0.0,
+        toPx: Double = Double.POSITIVE_INFINITY,
+    ): Projection {
+        if (points.size == 1) return Projection(0.0, p.distanceTo(points.first()))
+        val lo = fromPx.coerceIn(0.0, lengthPx)
+        val hi = toPx.coerceIn(lo, lengthPx)
+        var bestS = lo
         var bestD = Double.POSITIVE_INFINITY
         for (i in 0 until points.lastIndex) {
+            if (distances[i + 1] < lo || distances[i] > hi) continue
             val a = points[i]
             val b = points[i + 1]
             val length = distances[i + 1] - distances[i]
             val dot = (p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)
-            val t = (dot / (length * length)).coerceIn(0.0, 1.0)
+            val along = distances[i] + (dot / (length * length)).coerceIn(0.0, 1.0) * length
+            val s = along.coerceIn(lo, hi)
+            val t = (s - distances[i]) / length
             val d = hypot(p.x - (a.x + t * (b.x - a.x)), p.y - (a.y + t * (b.y - a.y)))
             if (d < bestD - 1e-9) {
                 bestD = d
-                bestS = distances[i] + t * length
+                bestS = s
             }
         }
-        return bestS
+        return Projection(bestS, bestD)
     }
 }
+
+/** A point on a [RoutePath]: [alongPx] from its start, [distancePx] from the point projected. */
+data class Projection(val alongPx: Double, val distancePx: Double)

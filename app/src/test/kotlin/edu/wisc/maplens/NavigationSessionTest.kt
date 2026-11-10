@@ -10,6 +10,7 @@ import edu.wisc.maplens.model.Node
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.RecoveryAction
+import edu.wisc.maplens.model.Route
 import edu.wisc.maplens.routing.AStarRouter
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -48,6 +49,21 @@ class NavigationSessionTest {
 
         session.onArrived()
         assertEquals(Phase.ARRIVED, session.phase)
+    }
+
+    @Test
+    fun `a reroute replaces the route only while navigating`() {
+        val session = NavigationSession(AStarRouter())
+        val detour = Route(listOf("D", "S"), listOf("e1"), 100.0)
+        assertFailsWith<IllegalStateException> { session.onRerouted(detour) }
+        session.onMapCaptured(graph)
+        session.onGraphVerified(graph)
+        assertTrue(session.onCalibrated(25.0, "D"))
+        session.onRerouted(detour)
+        assertEquals(detour, session.route)
+        assertEquals(Phase.NAVIGATE, session.phase)
+        session.onArrived()
+        assertFailsWith<IllegalStateException> { session.onRerouted(detour) }
     }
 
     @Test
