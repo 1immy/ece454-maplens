@@ -169,6 +169,17 @@ internal class IndoorMapView(context: Context) : View(context) {
             invalidate()
         }
 
+    /**
+     * Tracking confidence is LOW: the accuracy halo turns amber and the puck grey, so the dot
+     * reads as a best guess rather than a fix.
+     */
+    var uncertain = false
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+
     var onMapTap: ((PixelPoint) -> Unit)? = null
     var onUserMoved: (() -> Unit)? = null
 
@@ -280,6 +291,9 @@ internal class IndoorMapView(context: Context) : View(context) {
     private val puckBlue = fill(PUCK_BLUE)
     private val accuracyFill = fill(Color.argb(38, 26, 115, 232))
     private val accuracyRing = stroke(Color.argb(90, 26, 115, 232), 1f)
+    private val uncertainFill = fill(Color.argb(46, 227, 116, 0))
+    private val uncertainRing = stroke(Color.argb(140, 227, 116, 0), 1.5f)
+    private val puckGrey = fill(PUCK_UNCERTAIN)
     private val beamPaint = fill(Color.WHITE)
     private val arrowStroke = stroke(Color.WHITE, 2.5f)
     private val pinRed = fill(PIN_RED)
@@ -721,9 +735,10 @@ internal class IndoorMapView(context: Context) : View(context) {
         val (x, y) = screen(puckX, puckY)
         val acc = (accuracyShown * zoom).toFloat()
         if (acc > 14 * density) {
-            canvas.drawCircle(x, y, acc, accuracyFill)
-            canvas.drawCircle(x, y, acc, accuracyRing)
+            canvas.drawCircle(x, y, acc, if (uncertain) uncertainFill else accuracyFill)
+            canvas.drawCircle(x, y, acc, if (uncertain) uncertainRing else accuracyRing)
         }
+        val body = if (uncertain) puckGrey else puckBlue
         val heading = headingShown
         if (navigating && heading != null) {
             drawChevron(canvas, x, y, screenAngle(puckX, puckY, heading))
@@ -732,7 +747,7 @@ internal class IndoorMapView(context: Context) : View(context) {
         if (heading != null) drawBeam(canvas, x, y, screenAngle(puckX, puckY, heading))
         canvas.drawCircle(x, y + density, 11.5f * density, shadow)
         canvas.drawCircle(x, y, 11f * density, puckWhite)
-        canvas.drawCircle(x, y, 7.5f * density, puckBlue)
+        canvas.drawCircle(x, y, 7.5f * density, body)
     }
 
     /** Corners go through the camera one by one, so the outline follows rotation and tilt. */
@@ -796,7 +811,7 @@ internal class IndoorMapView(context: Context) : View(context) {
         canvas.drawPath(shape, shadow)
         canvas.translate(0f, -1.5f * u)
         canvas.drawPath(shape, arrowStroke)
-        canvas.drawPath(shape, puckBlue)
+        canvas.drawPath(shape, if (uncertain) puckGrey else puckBlue)
         canvas.restore()
     }
 
@@ -1026,6 +1041,7 @@ internal class IndoorMapView(context: Context) : View(context) {
 
         val ROUTE_BLUE = Color.rgb(26, 115, 232)
         val PUCK_BLUE = Color.rgb(26, 115, 232)
+        val PUCK_UNCERTAIN = Color.rgb(128, 134, 139)
         val PIN_RED = Color.rgb(234, 67, 53)
         val BACKGROUND = Color.rgb(232, 234, 237)
 

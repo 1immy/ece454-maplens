@@ -1,5 +1,6 @@
 package edu.wisc.maplens.live
 
+import edu.wisc.maplens.model.ConfidenceState
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
@@ -103,6 +104,18 @@ class SessionLog(private val out: Writer) {
     /** The tracker re-measured k on the legs out of START (#12); [kPx] is the new k. */
     fun recalibrate(timestampNs: Long, kPx: Double) =
         row(timestampNs, "recalibrate", "", kPx = kPx)
+
+    /**
+     * Confidence changed (#18): level and failed checks in the label (`LOW:SPREAD|GROUP_SPLIT`),
+     * the suggested recovery in the heading column.
+     */
+    fun confidence(state: ConfidenceState) = row(
+        state.timestampNanos,
+        "confidence",
+        state.level.name + state.failedChecks.map { it.name }.sorted()
+            .joinToString("|", prefix = ":").takeIf { state.failedChecks.isNotEmpty() }.orEmpty(),
+        extra = state.suggestedRecovery?.name.orEmpty(),
+    )
 
     fun arrive(pose: PoseEstimate) =
         row(pose.timestampNanos, "arrive", "", pose, kPx = pose.stepLengthPx)

@@ -50,9 +50,13 @@ import edu.wisc.maplens.live.SessionLog
 import edu.wisc.maplens.live.checkpoint
 import edu.wisc.maplens.live.corridorIds
 import edu.wisc.maplens.live.facingOptions
+import edu.wisc.maplens.model.ConfidenceCheck
+import edu.wisc.maplens.model.ConfidenceLevel
+import edu.wisc.maplens.model.ConfidenceState
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
+import edu.wisc.maplens.model.RecoveryAction
 import edu.wisc.maplens.model.edgePoints
 import edu.wisc.maplens.nav.CompassView
 import edu.wisc.maplens.nav.IndoorMapView
@@ -74,6 +78,7 @@ import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
 import edu.wisc.maplens.routing.AStarRouter
 import edu.wisc.maplens.routing.routeToLabel
+import edu.wisc.maplens.tracking.FourCheckConfidenceMonitor
 import edu.wisc.maplens.tracking.ParticleTracker
 import edu.wisc.maplens.tracking.TrackingConfig
 import java.io.File
@@ -125,6 +130,10 @@ class IndoorNavActivity : ComponentActivity() {
     private lateinit var thenStrip: LinearLayout
     private lateinit var thenIcon: ManeuverView
     private lateinit var hintCard: LinearLayout
+    private lateinit var confidenceChip: LinearLayout
+    private lateinit var confidenceDot: View
+    private lateinit var confidenceTitle: TextView
+    private lateinit var confidenceDetail: TextView
     private lateinit var hintTitle: TextView
     private lateinit var hintBody: TextView
     private lateinit var compass: FrameLayout
@@ -200,6 +209,12 @@ class IndoorNavActivity : ComponentActivity() {
     private var puckMotion: PuckMotion? = null
     private var liveTrail: Trail? = null
     private var stepsExpanded = false
+
+    /** Live walks only: the four checks after every pose (#18), and what the chip shows. */
+    private var monitor: FourCheckConfidenceMonitor? = null
+    private var lastConfidence: ConfidenceState? = null
+    private var shownLow = false
+    private var highStreak = 0
 
     private val tick = object : Runnable {
         override fun run() {
@@ -370,6 +385,7 @@ class IndoorNavActivity : ComponentActivity() {
         locate.visibility = shown(!navLike && next != Screen.FACING)
         if (!navLike || next == Screen.CHECKPOINT) recenter.visibility = View.GONE
         setBannerVisible(next == Screen.NAVIGATE || next == Screen.ARRIVED)
+        confidenceChip.visibility = shown(next == Screen.NAVIGATE && monitor != null)
         // Every way into navigation starts in the heading-up view.
         if (next == Screen.NAVIGATE) compass.contentDescription = getString(R.string.in_compass)
         if (next == Screen.SEARCH) {
@@ -857,6 +873,10 @@ class IndoorNavActivity : ComponentActivity() {
         map.driver = null
         puckMotion = null
         liveTrail = null
+        monitor = null
+        lastConfidence = null
+        map.uncertain = false
+        confidenceChip.visibility = View.GONE
         graph?.let { map.setPuck(it.nodes.getValue(it.startNodeId).position, durationMs = 500) }
         map.routeWalkedPx = 0.0
         if (lastPose != null) logIo.execute { log?.close().also { log = null } }
@@ -923,6 +943,10 @@ class IndoorNavActivity : ComponentActivity() {
                 return@begin
             }
             following = true
+            monitor = FourCheckConfidenceMonitor()
+            lastConfidence = null
+            highStreak = 0
+            renderConfidence(low = false, state = null)
             openLog("live", p.label ?: p.key, facing.bearingRad)
             startedAt = SystemClock.elapsedRealtime()
             show(Screen.NAVIGATE)
@@ -975,6 +999,13 @@ class IndoorNavActivity : ComponentActivity() {
         s.onPose(pose)
         lastPose = pose
         logIo.execute { log?.pose(pose) }
+        val m = monitor
+        val g0 = graph
+        if (m != null && g0 != null) {
+            val state = m.evaluate(g0, pose)
+            s.onConfidence(state)
+            onConfidence(state)
+        }
         if (liveMode) {
             followLive(g, pose)
         } else {
@@ -1032,6 +1063,61 @@ class IndoorNavActivity : ComponentActivity() {
         if (!following) return
         puckMotion?.setMoving(moving)
         if (map.driver != null) map.invalidate()
+    }
+
+    /**
+     * A new [ConfidenceState]: logged when it changes, and shown on the chip and the puck.
+     * LOW shows at once; going back to HIGH waits for [HIGH_HOLD_STEPS] HIGH steps in a row,
+     * so a cloud hovering at a threshold doesn't make the chip flicker.
+     */
+    private fun onConfidence(state: ConfidenceState) {
+        val previous = lastConfidence
+        lastConfidence = state
+        if (previous == null || previous.level != state.level ||
+            previous.failedChecks != state.failedChecks ||
+            previous.suggestedRecovery != state.suggestedRecovery
+        ) {
+            logIo.execute { log?.confidence(state) }
+        }
+        val low = state.level == ConfidenceLevel.LOW
+        highStreak = if (low) 0 else highStreak + 1
+        val showLow = low || (shownLow && highStreak < HIGH_HOLD_STEPS)
+        renderConfidence(showLow, if (low) state else null)
+    }
+
+    /** The chip under the banner: a calm one-liner when on track, reason and next step if not. */
+    private fun renderConfidence(low: Boolean, state: ConfidenceState?) {
+        shownLow = low
+        map.uncertain = low
+        confidenceChip.background = rounded(
+            if (low) CONF_LOW_SOFT else Ui.SURFACE,
+            radiusDp = 18,
+            stroke = if (low) CONF_LOW_EDGE else null,
+        )
+        (confidenceDot.background as GradientDrawable).setColor(if (low) CONF_LOW else ETA_GREEN)
+        confidenceTitle.setText(if (low) R.string.conf_low else R.string.conf_high)
+        confidenceTitle.setTextColor(if (low) CONF_LOW_INK else Ui.INK)
+        // While easing back to HIGH (state null) the last reason stays, so the text doesn't jump.
+        if (low && state != null) {
+            val reason = when {
+                ConfidenceCheck.TURN_FIT in state.failedChecks -> R.string.conf_reason_turn
+                ConfidenceCheck.HEADING_FIT in state.failedChecks -> R.string.conf_reason_heading
+                ConfidenceCheck.GROUP_SPLIT in state.failedChecks -> R.string.conf_reason_split
+                else -> R.string.conf_reason_spread
+            }
+            val action = if (state.suggestedRecovery == RecoveryAction.SCAN_SIGN) {
+                R.string.conf_do_scan
+            } else {
+                R.string.conf_do_turn
+            }
+            confidenceDetail.text = getString(reason) + " " + getString(action)
+        }
+        confidenceDetail.visibility = shown(low)
+        confidenceChip.contentDescription = if (low) {
+            "${confidenceTitle.text}. ${confidenceDetail.text}"
+        } else {
+            confidenceTitle.text
+        }
     }
 
     private fun renderBanner(g: RouteGuide, pose: PoseEstimate, instruction: Instruction) {
@@ -1506,6 +1592,32 @@ class IndoorNavActivity : ComponentActivity() {
             )
         }
 
+        confidenceDot = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(ETA_GREEN)
+            }
+        }
+        confidenceTitle = text(Ui.CAPTION, bold = true)
+        confidenceDetail = text(Ui.CAPTION, CONF_LOW_INK).apply { visibility = View.GONE }
+        confidenceChip = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            elevation = dpf(4f)
+            setPadding(dp(14), dp(8), dp(16), dp(8))
+            minimumHeight = dp(36)
+            visibility = View.GONE
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            addView(confidenceDot, square(10))
+            addView(
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(confidenceTitle)
+                    addView(confidenceDetail)
+                },
+                LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(10) },
+            )
+        }
+
         hintTitle = text(Ui.HEADING, bold = true)
         hintBody = text(Ui.CAPTION, Ui.INK_SECONDARY)
         hintCard = LinearLayout(this).apply {
@@ -1551,6 +1663,10 @@ class IndoorNavActivity : ComponentActivity() {
             addView(chips)
             addView(routeCard)
             addView(banner)
+            addView(
+                confidenceChip,
+                LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(8) },
+            )
             addView(hintCard)
             addView(sideButtons, wide().apply { topMargin = dp(12) })
             padForSystemBars(bottom = false)
@@ -1972,5 +2088,14 @@ class IndoorNavActivity : ComponentActivity() {
         private val ETA_GREEN = Color.rgb(24, 128, 56)
         private val BANNER_GREEN = Color.rgb(13, 101, 45)
         private val BANNER_DARK = Color.rgb(9, 74, 33)
+
+        /** LOW confidence: amber dot, dark amber text on a soft amber chip. */
+        private val CONF_LOW = Color.rgb(227, 116, 0)
+        private val CONF_LOW_INK = Color.rgb(122, 62, 0)
+        private val CONF_LOW_SOFT = Color.rgb(254, 243, 224)
+        private val CONF_LOW_EDGE = Color.rgb(249, 203, 140)
+
+        /** HIGH steps in a row before the chip goes back from uncertain to on track. */
+        private const val HIGH_HOLD_STEPS = 3
     }
 }
