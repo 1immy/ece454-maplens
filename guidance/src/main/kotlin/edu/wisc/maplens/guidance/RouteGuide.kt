@@ -67,11 +67,21 @@ class RouteGuide(
 
     /** Steps left to the destination at the pose's current k. */
     fun remainingSteps(pose: PoseEstimate): Int =
-        ceil((path.lengthPx - progressPx(pose)) / pose.stepLengthPx).toInt()
+        remainingSteps(progressPx(pose), pose.stepLengthPx)
 
-    fun instruction(pose: PoseEstimate): Instruction {
-        val s = progressPx(pose)
-        val k = pose.stepLengthPx
+    /** Steps left from [progressPx] along the route, at step length [k]. */
+    fun remainingSteps(progressPx: Double, k: Double): Int =
+        ceil((path.lengthPx - progressPx) / k).toInt()
+
+    fun instruction(pose: PoseEstimate): Instruction =
+        instruction(progressPx(pose), pose.stepLengthPx)
+
+    /**
+     * The next instruction from [s] px along the route at step length [k]. Use it with a
+     * tracked progress ([RouteProgress]) so the countdown can't jump to another stretch of
+     * the route that passes close by.
+     */
+    fun instruction(s: Double, k: Double): Instruction {
         if (path.lengthPx - s <= params.arriveWithinSteps * k) {
             return Instruction(Maneuver.ARRIVE, 0, arrivalDetail())
         }

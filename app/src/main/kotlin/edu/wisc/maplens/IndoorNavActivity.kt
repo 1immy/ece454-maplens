@@ -30,6 +30,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -37,11 +38,16 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import edu.wisc.maplens.guidance.Announcement
 import edu.wisc.maplens.guidance.CueAnnouncer
-import edu.wisc.maplens.guidance.FakePoseStream
+import edu.wisc.maplens.guidance.Haptic
 import edu.wisc.maplens.guidance.Instruction
 import edu.wisc.maplens.guidance.Maneuver
+import edu.wisc.maplens.guidance.RerouteParams
+import edu.wisc.maplens.guidance.RerouteReason
 import edu.wisc.maplens.guidance.RouteGuide
+import edu.wisc.maplens.guidance.RouteProgress
+import edu.wisc.maplens.guidance.RouteStatus
 import edu.wisc.maplens.guidance.VoiceAndHaptics
 import edu.wisc.maplens.live.FacingOption
 import edu.wisc.maplens.live.LiveMotionSource
@@ -59,6 +65,8 @@ import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.model.RecoveryAction
 import edu.wisc.maplens.model.edgePoints
 import edu.wisc.maplens.nav.CompassView
+import edu.wisc.maplens.nav.DemoScenario
+import edu.wisc.maplens.nav.DemoWalker
 import edu.wisc.maplens.nav.IndoorMapView
 import edu.wisc.maplens.nav.LabelBox
 import edu.wisc.maplens.nav.ManeuverView
@@ -76,7 +84,9 @@ import edu.wisc.maplens.nav.RoomFinder
 import edu.wisc.maplens.nav.Trail
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
+import edu.wisc.maplens.nav.rerouteTo
 import edu.wisc.maplens.routing.AStarRouter
+import edu.wisc.maplens.routing.Reroute
 import edu.wisc.maplens.routing.routeToLabel
 import edu.wisc.maplens.tracking.FourCheckConfidenceMonitor
 import edu.wisc.maplens.tracking.ParticleTracker
@@ -96,7 +106,7 @@ import kotlin.math.roundToInt
  *
  * A fresh [NavigationSession] per destination is the only writer of route and position,
  * [RouteGuide] turns poses into instructions, **Demo** walks the route with a
- * [FakePoseStream], and **Live** anchors heading at START from the corridor the user faces,
+ * [DemoWalker] (on the route, or a wrong turn or wrong way to show rerouting), and **Live** anchors heading at START from the corridor the user faces,
  * then feeds steps and heading through [LiveMotionSource] into [ParticleTracker]. Live also
  * streams the aligned heading between steps, so the arrow turns with the user in real time
  * without GPS or Wi-Fi.
@@ -123,7 +133,9 @@ class IndoorNavActivity : ComponentActivity() {
     private lateinit var routeCard: LinearLayout
     private lateinit var routeTo: TextView
     private lateinit var banner: LinearLayout
+    private lateinit var bannerCard: LinearLayout
     private lateinit var bannerIcon: ManeuverView
+    private lateinit var bannerSpinner: ProgressBar
     private lateinit var bannerDistance: TextView
     private lateinit var bannerTitle: TextView
     private lateinit var bannerDetail: TextView
@@ -196,7 +208,17 @@ class IndoorNavActivity : ComponentActivity() {
     private var place: Place? = null
     private var session: NavigationSession? = null
     private var guide: RouteGuide? = null
-    private var walk: FakePoseStream? = null
+    private var walk: DemoWalker? = null
+    private var demoScenario = DemoScenario.FOLLOW
+
+    /** Where the walker is along the active route, and whether they left it (#80). */
+    private var progress: RouteProgress? = null
+    private val rerouteParams = RerouteParams()
+
+    /** A new route is being shown: the banner says "Rerouting…" until it is applied. */
+    private var rerouting = false
+    private var pendingReroute: Runnable? = null
+    private var turnAroundSaid = false
     private var walking = false
     private var liveMode = false
     private var following = false
@@ -219,8 +241,12 @@ class IndoorNavActivity : ComponentActivity() {
     private val tick = object : Runnable {
         override fun run() {
             val stream = walk ?: return
-            onPose(stream.step())
-            if (walking && !stream.finished) ticker.postDelayed(this, Demo.STEP_INTERVAL_MS)
+            val path = guide?.path ?: return
+            onPose(stream.step(path))
+            val active = guide?.path ?: return
+            if (walking && !stream.finished(active)) {
+                ticker.postDelayed(this, Demo.STEP_INTERVAL_MS)
+            }
         }
     }
 
@@ -670,6 +696,7 @@ class IndoorNavActivity : ComponentActivity() {
         }
         session = next
         guide = RouteGuide(checkNotNull(next.graph), checkNotNull(next.route))
+        progress = RouteProgress(guide!!.path, rerouteParams)
         announcer.reset()
         val path = guide!!.path
         map.route = path.points
@@ -719,6 +746,26 @@ class IndoorNavActivity : ComponentActivity() {
                 LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) },
             )
         }
+        // Demo only: which walk to play, so rerouting can be shown without leaving the desk.
+        val scenarios = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = shown(!liveMode)
+            addView(
+                LinearLayout(context).apply {
+                    DemoScenario.entries.forEachIndexed { i, scenario ->
+                        addView(
+                            modeToggle(scenarioLabel(scenario), scenario == demoScenario) {
+                                demoScenario = scenario
+                                renderPreviewSheet()
+                            },
+                            LinearLayout.LayoutParams(WRAP, WRAP).apply {
+                                if (i > 0) marginStart = dp(8)
+                            },
+                        )
+                    }
+                },
+            )
+        }
         val stepsList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = if (stepsExpanded) View.VISIBLE else View.GONE
@@ -762,6 +809,11 @@ class IndoorNavActivity : ComponentActivity() {
                 contentDescription = "${placeTitle(p)}. $text"
             }.withMargins(top = 2),
             modes.withMargins(top = 16),
+            text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
+                setText(R.string.demo_scenario_title)
+                visibility = shown(!liveMode)
+            }.withMargins(top = 12),
+            scenarios.withMargins(top = 6),
             stepsHeader.withMargins(top = 8),
             scroll.apply {
                 layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
@@ -836,14 +888,19 @@ class IndoorNavActivity : ComponentActivity() {
         checkpoints = 0
         map.checkpoints = emptyList()
         lastPose = null
+        progress = RouteProgress(g.path, rerouteParams)
+        turnAroundSaid = false
+        setRerouting(null)
         if (liveMode) {
             walk = null
             askFacing(again = false)
             return
         }
-        val stream = FakePoseStream(g.path, Demo.STEP_LENGTH_PX)
+        val graph0 = graph ?: return
+        val stream = DemoWalker(graph0, g.path, demoScenario, Demo.STEP_LENGTH_PX)
         walk = stream
-        openLog("demo", p.label ?: p.key, g.path.bearingAt(0.0))
+        val mode = "demo-" + demoScenario.name.lowercase().replace('_', '-')
+        openLog(mode, p.label ?: p.key, g.path.bearingAt(0.0))
         startedAt = SystemClock.elapsedRealtime()
         show(Screen.NAVIGATE)
         renderNavigateSheet()
@@ -861,6 +918,9 @@ class IndoorNavActivity : ComponentActivity() {
     private fun stopNavigation(toBrowse: Boolean = true) {
         voice.stop()
         announcer.reset()
+        pendingReroute?.let(ticker::removeCallbacks)
+        pendingReroute = null
+        setRerouting(null)
         setWalking(false)
         following = false
         live.pause()
@@ -1007,17 +1067,47 @@ class IndoorNavActivity : ComponentActivity() {
             onConfidence(state)
         }
         if (liveMode) {
-            followLive(g, pose)
+            followLive(pose)
         } else {
             map.setPuck(pose.position, durationMs = Demo.STEP_INTERVAL_MS, linear = true)
             map.setHeading(pose.headingRad)
         }
-        val progress = g.progressPx(pose)
-        if (map.driver == null) map.routeWalkedPx = progress
-        val instruction = g.instruction(pose)
-        renderBanner(g, pose, instruction)
-        renderEta(g, pose)
-        val upcoming = g.cues.indexOfFirst { it.distancePx > progress }
+        val tracked = progress ?: return
+        val status = tracked.update(pose)
+        if (map.driver == null) map.routeWalkedPx = status.progressPx
+        // While "Rerouting…" shows, the old route's instructions would be wrong: hold them.
+        if (rerouting) return
+        val reason = status.reroute
+        // Never reroute from a position we aren't sure of: wait for confidence to come back.
+        if (reason != null && !shownLow && reroute(reason, pose, status)) return
+        // Off the line but not yet confirmed: keep the last instruction, like a maps app,
+        // rather than skipping ahead to a turn the walker hasn't reached.
+        if (status.offRoute) return
+        guideFrom(g, pose, status)
+    }
+
+    /** Banner, ETA, voice and arrival for one pose at [status] along route [g]. */
+    private fun guideFrom(g: RouteGuide, pose: PoseEstimate, status: RouteStatus) {
+        val s = session ?: return
+        val k = pose.stepLengthPx
+        val at = status.progressPx
+        val instruction = if (status.facingBack) {
+            Instruction(Maneuver.U_TURN, 0, getString(R.string.in_turn_around_detail))
+        } else {
+            g.instruction(at, k)
+        }
+        renderBanner(g, at, k, instruction, turnAround = status.facingBack)
+        renderEta(g, at, k)
+        if (status.facingBack) {
+            // Once per spell of facing the wrong way, like a maps app's "Make a U-turn".
+            if (!turnAroundSaid) {
+                turnAroundSaid = true
+                voice.announce(Announcement(getString(R.string.in_turn_around), Haptic.TURN))
+            }
+            return
+        }
+        turnAroundSaid = false
+        val upcoming = g.cues.indexOfFirst { it.distancePx > at }
         announcer.next(instruction, upcoming)?.let(voice::announce)
         if (instruction.maneuver == Maneuver.ARRIVE && instruction.stepsUntil == 0 &&
             s.phase != Phase.ARRIVED
@@ -1028,12 +1118,101 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     /**
+     * Off route or walking the wrong way: work out a new route from where the walker is,
+     * show "Rerouting…" for a moment so the change is never silent, then swap it in. The dot
+     * keeps following the tracker throughout; only the route line and the guidance change.
+     * Returns false if there is no way from here (the old route stays, with a message).
+     */
+    private fun reroute(reason: RerouteReason, pose: PoseEstimate, status: RouteStatus): Boolean {
+        val g = graph ?: return false
+        val p = place ?: return false
+        val next = router.rerouteTo(g, p, pose, rerouteParams)
+        if (next == null) {
+            showSnack(getString(R.string.no_route, placeTitle(p)))
+            // Ask again only after a cooldown, not on every step.
+            guide?.let {
+                progress = RouteProgress(
+                    it.path,
+                    rerouteParams,
+                    startPx = status.progressPx,
+                    cooldownSteps = REROUTE_RETRY_STEPS,
+                )
+            }
+            return false
+        }
+        logIo.execute { log?.reroute(pose, reason.name, next.route.lengthPx) }
+        voice.stop()
+        voice.announce(Announcement(getString(R.string.in_rerouting_voice), null))
+        setRerouting(reason)
+        val apply = Runnable { applyReroute(next) }
+        pendingReroute = apply
+        ticker.postDelayed(apply, REROUTE_SHOW_MS)
+        return true
+    }
+
+    /** Swaps in [next]: session first (the single writer of the route), then map and banner. */
+    private fun applyReroute(next: Reroute) {
+        pendingReroute = null
+        val s = session ?: return
+        val g = graph ?: return
+        val pose = lastPose ?: return
+        s.onRerouted(next.route)
+        val newGuide = RouteGuide(g, next.route)
+        guide = newGuide
+        val start = newGuide.path.project(pose.position)
+        val tracked = RouteProgress(
+            newGuide.path,
+            rerouteParams,
+            startPx = start,
+            cooldownSteps = rerouteParams.cooldownSteps,
+            startFacingBack = next.turnAround,
+        )
+        progress = tracked
+        announcer.reset()
+        turnAroundSaid = false
+        map.route = newGuide.path.points
+        map.routeWalkedPx = start
+        map.pin = newGuide.path.points.last()
+        setRerouting(null)
+        val meters = pxToMeters(newGuide.path.lengthPx - start, pose.stepLengthPx)
+        showSnack(getString(R.string.in_new_route, NavMath.roundedMeters(meters)))
+        guideFrom(
+            newGuide,
+            pose,
+            RouteStatus(
+                start,
+                0.0,
+                offRoute = false,
+                facingBack = tracked.facingBack,
+                reroute = null
+            ),
+        )
+    }
+
+    /** Shows the grey "Rerouting…" banner for [reason], or the normal green one for null. */
+    private fun setRerouting(reason: RerouteReason?) {
+        rerouting = reason != null
+        val tone = if (reason != null) BANNER_GREY else BANNER_GREEN
+        bannerCard.background = rounded(tone, radiusDp = 20)
+        bannerSpinner.visibility = shown(reason != null)
+        bannerIcon.visibility = shown(reason == null)
+        if (reason == null) return
+        bannerTitle.setText(R.string.in_rerouting)
+        bannerDetail.setText(
+            if (reason == RerouteReason.OFF_ROUTE) R.string.in_off_route else R.string.in_wrong_way,
+        )
+        bannerDistance.visibility = View.GONE
+        thenStrip.visibility = View.GONE
+        banner.contentDescription = "${bannerTitle.text}. ${bannerDetail.text}"
+    }
+
+    /**
      * Live walking: the dot moves every frame at walking speed ([PuckMotion]) along the trail
      * of tracker positions ([Trail]), so it follows the user through turns, U-turns and
      * detours alike. Each tracker pose only corrects the speed, so the dot neither waits for
      * the next step nor jumps; route progress and guidance still come from the pose itself.
      */
-    private fun followLive(g: RouteGuide, pose: PoseEstimate) {
+    private fun followLive(pose: PoseEstimate) {
         val trail = liveTrail ?: Trail(pose.position).also { liveTrail = it }
         val walked = trail.add(pose.position)
         map.setPuck(pose.position, pose.spreadPx, durationMs = 0L)
@@ -1052,7 +1231,9 @@ class IndoorNavActivity : ComponentActivity() {
                     return shown
                 }
 
-                override val walkedPx get() = g.path.project(shown)
+                // Read the active route each frame: a reroute replaces it mid-walk.
+                override val walkedPx: Double
+                    get() = progress?.displayPx(shown, lastPose?.stepLengthPx ?: 1.0) ?: 0.0
                 override val animating get() = motion.animating
             }
         }
@@ -1110,7 +1291,8 @@ class IndoorNavActivity : ComponentActivity() {
             } else {
                 R.string.conf_do_turn
             }
-            confidenceDetail.text = getString(reason) + " " + getString(action)
+            confidenceDetail.text =
+                getString(R.string.conf_detail, getString(reason), getString(action))
         }
         confidenceDetail.visibility = shown(low)
         confidenceChip.contentDescription = if (low) {
@@ -1120,15 +1302,23 @@ class IndoorNavActivity : ComponentActivity() {
         }
     }
 
-    private fun renderBanner(g: RouteGuide, pose: PoseEstimate, instruction: Instruction) {
-        val k = pose.stepLengthPx
+    private fun renderBanner(
+        g: RouteGuide,
+        s: Double,
+        k: Double,
+        instruction: Instruction,
+        turnAround: Boolean = false,
+    ) {
         val arrived = instruction.maneuver == Maneuver.ARRIVE && instruction.stepsUntil == 0
         bannerIcon.maneuver = instruction.maneuver
         bannerTitle.text = maneuverText(instruction.maneuver, instruction.stepsUntil)
         val meters = NavMath.roundedMeters(instruction.stepsUntil * stride)
-        bannerDistance.text = if (arrived) "" else getString(R.string.in_step_distance, meters)
-        bannerDistance.visibility = if (arrived) View.GONE else View.VISIBLE
-        bannerDetail.text = if (arrived) {
+        val noDistance = arrived || turnAround
+        bannerDistance.text = if (noDistance) "" else getString(R.string.in_step_distance, meters)
+        bannerDistance.visibility = if (noDistance) View.GONE else View.VISIBLE
+        bannerDetail.text = if (turnAround) {
+            instruction.detail
+        } else if (arrived) {
             place?.let { placeTitle(it) }
         } else {
             val n = instruction.stepsUntil
@@ -1136,7 +1326,6 @@ class IndoorNavActivity : ComponentActivity() {
         }
         banner.contentDescription = "${bannerTitle.text}, ${bannerDetail.text}"
         // "Then" preview of the maneuver after this one, when it comes soon after.
-        val s = g.progressPx(pose)
         val index = g.cues.indexOfFirst { it.distancePx > s }
         val upcoming = g.cues.getOrNull(index)
         val after = g.cues.getOrNull(index + 1)
@@ -1145,13 +1334,13 @@ class IndoorNavActivity : ComponentActivity() {
         } else {
             null
         }
-        val soon = gap != null && gap / k < THEN_WITHIN_STEPS
+        val soon = gap != null && gap / k < THEN_WITHIN_STEPS && !turnAround
         thenStrip.visibility = if (soon && !arrived) View.VISIBLE else View.GONE
         if (soon) thenIcon.maneuver = after!!.maneuver
     }
 
-    private fun renderEta(g: RouteGuide, pose: PoseEstimate) {
-        val stepsLeft = g.remainingSteps(pose).coerceAtLeast(0)
+    private fun renderEta(g: RouteGuide, s: Double, k: Double) {
+        val stepsLeft = g.remainingSteps(s, k).coerceAtLeast(0)
         val meters = stepsLeft * stride
         val minutes = NavMath.walkingMinutes(meters)
         val arrival = Date(System.currentTimeMillis() + minutes * 60_000L)
@@ -1163,7 +1352,7 @@ class IndoorNavActivity : ComponentActivity() {
             stepsLeft,
             DateFormat.getTimeFormat(this).format(arrival),
         )
-        renderDevLine(pose.stepLengthPx)
+        renderDevLine(k)
     }
 
     /** The developer readout under the ETA: k, step counts and what the walking gate ignored. */
@@ -1183,7 +1372,7 @@ class IndoorNavActivity : ComponentActivity() {
         } else if (liveMode) {
             getString(R.string.in_dev_live_waiting, k)
         } else {
-            getString(R.string.in_dev_demo, k)
+            getString(R.string.in_dev_demo, getString(scenarioLabel(demoScenario)), k)
         }
     }
 
@@ -1310,7 +1499,8 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun setWalking(on: Boolean) {
-        walking = on && walk?.finished == false
+        val active = guide?.path
+        walking = on && active != null && walk?.finished(active) == false
         ticker.removeCallbacks(tick)
         if (walking) ticker.post(tick)
         playButton?.let { button ->
@@ -1540,6 +1730,12 @@ class IndoorNavActivity : ComponentActivity() {
 
         // Turn-by-turn banner.
         bannerIcon = ManeuverView(this)
+        bannerSpinner = ProgressBar(this).apply {
+            isIndeterminate = true
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
         bannerDistance = text(Ui.BODY, Color.WHITE, bold = true).apply { gravity = Gravity.CENTER }
         bannerTitle = text(Ui.TITLE, Color.WHITE, bold = true).apply {
             maxLines = 2
@@ -1560,6 +1756,7 @@ class IndoorNavActivity : ComponentActivity() {
             visibility = View.GONE
             addView(
                 LinearLayout(context).apply {
+                    bannerCard = this
                     gravity = Gravity.CENTER_VERTICAL
                     background = rounded(BANNER_GREEN, radiusDp = 20)
                     elevation = dpf(6f)
@@ -1569,6 +1766,7 @@ class IndoorNavActivity : ComponentActivity() {
                             orientation = LinearLayout.VERTICAL
                             gravity = Gravity.CENTER_HORIZONTAL
                             addView(bannerIcon, LinearLayout.LayoutParams(dp(56), dp(56)))
+                            addView(bannerSpinner, LinearLayout.LayoutParams(dp(40), dp(40)))
                             addView(bannerDistance)
                         },
                         LinearLayout.LayoutParams(dp(72), WRAP),
@@ -2046,6 +2244,12 @@ class IndoorNavActivity : ComponentActivity() {
 
     private fun pxToMeters(px: Double, k: Double) = px / k * stride
 
+    private fun scenarioLabel(scenario: DemoScenario) = when (scenario) {
+        DemoScenario.FOLLOW -> R.string.demo_follow
+        DemoScenario.WRONG_TURN -> R.string.demo_wrong_turn
+        DemoScenario.WRONG_WAY -> R.string.demo_wrong_way
+    }
+
     private fun openNearest(kind: PlaceKind) {
         search?.nearest(kind)?.let(::openPlace)
     }
@@ -2088,6 +2292,15 @@ class IndoorNavActivity : ComponentActivity() {
         private val ETA_GREEN = Color.rgb(24, 128, 56)
         private val BANNER_GREEN = Color.rgb(13, 101, 45)
         private val BANNER_DARK = Color.rgb(9, 74, 33)
+
+        /** "Rerouting…": neutral dark grey, so it reads as a pause, not an instruction. */
+        private val BANNER_GREY = Color.rgb(60, 64, 67)
+
+        /** How long "Rerouting…" shows before the new route is swapped in. */
+        private const val REROUTE_SHOW_MS = 900L
+
+        /** With no way from here, wait this many steps before trying again. */
+        private const val REROUTE_RETRY_STEPS = 8
 
         /** LOW confidence: amber dot, dark amber text on a soft amber chip. */
         private val CONF_LOW = Color.rgb(227, 116, 0)

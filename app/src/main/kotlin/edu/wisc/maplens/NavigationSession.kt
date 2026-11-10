@@ -70,6 +70,17 @@ class NavigationSession(
         pose = update
     }
 
+    /**
+     * The walker left the route and a new one was found from where they are (#80). Only while
+     * navigating (or recovering); the destination is the same, so the phase doesn't change.
+     */
+    fun onRerouted(next: Route) {
+        check(phase == Phase.NAVIGATE || phase == Phase.RECOVER) {
+            "reroute only while navigating, was $phase"
+        }
+        route = next
+    }
+
     fun onConfidence(state: ConfidenceState) {
         if (condition != EvalCondition.CONFIDENCE_TRIGGERED) return
         phase = when {

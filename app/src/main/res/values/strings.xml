@@ -78,6 +78,17 @@
     <item quantity="other">%1$s · %2$d steps</item>
   </plurals>
   <string name="in_then">Then</string>
+  <!-- Off route and rerouting (#80). -->
+  <string name="in_rerouting">Rerouting…</string>
+  <string name="in_rerouting_voice">Rerouting</string>
+  <string name="in_off_route">You\'re off the route</string>
+  <string name="in_wrong_way">You\'re heading away from your destination</string>
+  <string name="in_turn_around_detail">then follow the blue dots</string>
+  <string name="in_new_route">New route · %1$d m</string>
+  <string name="demo_scenario_title">Scenario</string>
+  <string name="demo_follow">Follow route</string>
+  <string name="demo_wrong_turn">Wrong turn</string>
+  <string name="demo_wrong_way">Wrong way</string>
   <!-- Tracking confidence chip under the turn banner (#18). -->
   <string name="conf_high">Position on track</string>
   <string name="conf_low">Position uncertain</string>
@@ -87,6 +98,7 @@
   <string name="conf_reason_turn">That turn isn\'t on the map here.</string>
   <string name="conf_do_scan">Check the room numbers on nearby doors.</string>
   <string name="conf_do_turn">Keep going. Your next turn will fix it.</string>
+  <string name="conf_detail">%1$s %2$s</string>
   <plurals name="in_eta_line">
     <item quantity="one">%1$d m · %2$d step · %3$s</item>
     <item quantity="other">%1$d m · %2$d steps · %3$s</item>
@@ -102,7 +114,7 @@
   <string name="in_layers">Switch map style</string>
   <string name="in_layer_poster">Showing the original poster</string>
   <string name="in_layer_plan">Showing the simplified plan</string>
-  <string name="in_dev_demo">Demo walk · k %1$.1f px/step</string>
+  <string name="in_dev_demo">Demo · %1$s · k %2$.1f px/step</string>
   <string name="in_dev_live_waiting">Live · k %1$.1f px/step · waiting for your first step</string>
   <string name="in_dev_live">k %1$.1f px/step · %2$d candidates (%3$s) · %4$d no heading · %5$d rejected by motion check</string>
   <string name="in_facing_title">Which way are you facing?</string>

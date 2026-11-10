@@ -117,6 +117,19 @@ class SessionLog(private val out: Writer) {
         extra = state.suggestedRecovery?.name.orEmpty(),
     )
 
+    /**
+     * A new route from [pose] because of [reason] (`OFF_ROUTE`, `WRONG_WAY`, #80); the new
+     * route's length in px is in the error_px column.
+     */
+    fun reroute(pose: PoseEstimate, reason: String, routeLengthPx: Double) = row(
+        pose.timestampNanos,
+        "reroute",
+        reason,
+        pose,
+        errorPx = routeLengthPx,
+        kPx = pose.stepLengthPx,
+    )
+
     fun arrive(pose: PoseEstimate) =
         row(pose.timestampNanos, "arrive", "", pose, kPx = pose.stepLengthPx)
 

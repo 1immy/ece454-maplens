@@ -162,6 +162,7 @@ class LiveTrackingTest {
             ),
         )
         log.confidence(ConfidenceState(8L, ConfidenceLevel.HIGH, emptySet(), null))
+        log.reroute(pose(25.0, 0.0, "S-D1"), "OFF_ROUTE", 412.5)
         val rows = out.toString().trim().lines().drop(1).map { it.split(",") }
         val columns = SessionLog.HEADER.split(",").size
         assertTrue(rows.all { it.size == columns })
@@ -169,6 +170,9 @@ class LiveTrackingTest {
         assertEquals("SCAN_SIGN", rows[0][6])
         assertEquals(listOf("8", "confidence", "HIGH"), rows[1].take(3))
         assertEquals("", rows[1][6])
+        assertEquals(listOf("reroute", "OFF_ROUTE"), rows[2].subList(1, 3))
+        assertEquals("S-D1", rows[2][5])
+        assertEquals("412.500", rows[2][10])
     }
 
     /** On the traced EH3 graph, every START corridor gets a readable description. */
