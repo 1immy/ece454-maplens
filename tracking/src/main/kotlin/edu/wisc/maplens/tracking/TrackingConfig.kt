@@ -148,6 +148,22 @@ data class TrackingConfig(
     /** LOW if heading is this far off every corridor for [headingWindowSteps]. */
     val maxHeadingErrorDeg: Double = 30.0,
     val headingWindowSteps: Int = 10,
+    /**
+     * Within this many steps of a node, every corridor at the node counts for the heading fit,
+     * so the step right after a corner isn't a misfit.
+     */
+    val nodeSnapSteps: Double = 1.0,
+    /** Turn fit: a heading change of more than this within [turnWindowSteps] is a turn... */
+    val turnMinDeg: Double = 45.0,
+    val turnWindowSteps: Int = 3,
+    /** Steps the new heading must hold before it counts as a turn; one wobble isn't one. */
+    val turnConfirmSteps: Int = 2,
+    /**
+     * ...that fits if a corridor leaving a node within max(2σ, [turnSearchSteps] · k) of the
+     * estimate, or the estimate's own corridor, is within this of the new heading.
+     */
+    val turnBranchMaxDeg: Double = 45.0,
+    val turnSearchSteps: Double = 5.0,
     /** Minimum steps between scan prompts. */
     val scanCooldownSteps: Int = 20,
     /** Sign accepted only within max(sigmaMultiplier * sigma, minMeters) of the cloud. */
