@@ -21,8 +21,8 @@ private const val MIN_SHARPNESS = 11.0
 private const val UNCLEAR_PHOTO_WARNING =
     "The photo is small or blurred, so room numbers may be misread. Move closer and retake."
 
-// Directory posters yield under 200 px of stray orange. Evacuation posters yield over 4500 px.
-private const val MIN_ROUTE_LENGTH = 1000.0
+// Every poster with a floor plan yields over 2000 px of corridor.
+private const val MIN_CORRIDOR_LENGTH = 1000.0
 
 /** Run on a worker. All post-warp stages use pixels of the returned 2000 px image. */
 class OfflineMapParser(
@@ -64,14 +64,14 @@ class OfflineMapParser(
         val routes = mats.mat()
         routeMask(hsv, routes, mats)
         val stars = detectStars(hsv)
-        val extracted = PosterCorridors().extract(routes, stars)
-        val corridors = recoverMarkerCorridor(hsv, routes, extracted, stars)
-        if (corridors.edges.sumOf { it.lengthPx } < MIN_ROUTE_LENGTH) {
+        val extracted = PosterCorridors().extract(routes, stars, flat)
+        val corridors = recoverMarkerCorridor(hsv, routes, extracted, stars, flat)
+        if (corridors.edges.sumOf { it.lengthPx } < MIN_CORRIDOR_LENGTH) {
             throw PosterRetakeException(
-                "No evacuation route lines found. Use the evacuation poster and avoid glare.",
+                "No corridors found. Fill the frame with the floor plan and avoid glare.",
             )
         }
-        val warnings = mutableListOf("Check for missing corridors without orange evacuation lines.")
+        val warnings = mutableListOf("Check the corridors against the poster before saving.")
         val readings = try {
             recognizePoster(flat, onProgress)
         } catch (_: CvException) {
