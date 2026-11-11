@@ -2,10 +2,14 @@ package edu.wisc.maplens.nav
 
 import edu.wisc.maplens.model.Edge
 import edu.wisc.maplens.model.FloorGraph
+import edu.wisc.maplens.model.FloorGraphJson
 import edu.wisc.maplens.model.Landmark
 import edu.wisc.maplens.model.Node
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
+import edu.wisc.maplens.routing.AStarRouter
+import edu.wisc.maplens.routing.routeToLabel
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -98,6 +102,35 @@ class PlaceSearchTest {
     fun `nearest picks the closest place of a kind`() {
         assertEquals("exit:X", search.nearest(PlaceKind.EXIT)?.key)
         assertNull(search.nearest(PlaceKind.AED))
+    }
+
+    @Test
+    fun `shortcuts are offered only for features the map can reach`() {
+        assertEquals(setOf(PlaceKind.EXIT, PlaceKind.ELEVATOR), search.available())
+        // An unreachable exit is no shortcut.
+        val noExit = PlaceSearch(places) { if (it.kind == PlaceKind.EXIT) null else 1.0 }
+        assertEquals(setOf(PlaceKind.ELEVATOR), noExit.available())
+        // Rooms only, as a scanned poster gives today: no shortcuts at all.
+        val rooms = PlaceSearch(places.filter { it.kind == PlaceKind.ROOM }) { 1.0 }
+        assertTrue(rooms.available().isEmpty())
+    }
+
+    @Test
+    fun `every shortcut leads somewhere on the bundled EH3 map`() {
+        val file = listOf("../data/fixtures/maps", "data/fixtures/maps")
+            .map { File(it, "eh-3-elevators-evac.graph.json") }
+            .firstOrNull { it.exists() } ?: return
+        val eh3 = FloorGraphJson.decode(file.readText())
+        val router = AStarRouter()
+        val start = eh3.startNodeId
+        val eh3Search = PlaceSearch(eh3.places()) { p ->
+            val route = p.label?.let { router.routeToLabel(eh3, start, it) }
+                ?: router.route(eh3, start, p.nodeIds.first())
+            route?.lengthPx
+        }
+        val features = listOf(PlaceKind.EXIT, PlaceKind.ELEVATOR, PlaceKind.AED)
+        assertEquals(features.toSet(), eh3Search.available())
+        for (kind in features) assertEquals(kind, eh3Search.nearest(kind)?.kind)
     }
 
     @Test

@@ -130,6 +130,9 @@ class IndoorNavActivity : ComponentActivity() {
     private lateinit var searchBar: LinearLayout
     private lateinit var modeChip: TextView
     private lateinit var chips: HorizontalScrollView
+
+    /** Exit, elevator and AED shortcuts; each shows only when the map has one to walk to. */
+    private val featureChips = mutableMapOf<PlaceKind, View>()
     private lateinit var routeCard: LinearLayout
     private lateinit var routeTo: TextView
     private lateinit var banner: LinearLayout
@@ -326,8 +329,12 @@ class IndoorNavActivity : ComponentActivity() {
         runOnUiThread {
             places = all
             walkPx = distances
-            search = PlaceSearch(all) { distances[it.key] }
+            val found = PlaceSearch(all) { distances[it.key] }
+            search = found
             roomFinder = finder
+            val kinds = found.available()
+            featureChips.forEach { (kind, view) -> view.visibility = shown(kind in kinds) }
+            chips.visibility = shown(screen == Screen.BROWSE && kinds.isNotEmpty())
         }
         // Reading the printed numbers takes a few seconds; taps work from doors until then.
         loader.execute {
@@ -405,7 +412,9 @@ class IndoorNavActivity : ComponentActivity() {
         screen = next
         val navLike = next == Screen.NAVIGATE || next == Screen.CHECKPOINT || next == Screen.ARRIVED
         searchBar.visibility = shown(next == Screen.BROWSE || next == Screen.PLACE)
-        chips.visibility = shown(next == Screen.BROWSE)
+        chips.visibility = shown(
+            next == Screen.BROWSE && featureChips.values.any { it.visibility == View.VISIBLE },
+        )
         routeCard.visibility = shown(next == Screen.PREVIEW)
         hintCard.visibility = shown(next == Screen.FACING || next == Screen.CHECKPOINT)
         locate.visibility = shown(!navLike && next != Screen.FACING)
@@ -1662,21 +1671,20 @@ class IndoorNavActivity : ComponentActivity() {
             setPadding(0, dp(10), 0, dp(6))
             addView(
                 LinearLayout(context).apply {
-                    addView(
-                        chip(R.drawable.ic_exit, R.string.in_nearest_exit) {
-                            search?.nearest(PlaceKind.EXIT)?.let(::openPlace)
-                        }
-                    )
-                    addView(
-                        chip(R.drawable.ic_elevator, R.string.in_elevator) {
-                            search?.nearest(PlaceKind.ELEVATOR)?.let(::openPlace)
-                        },
-                        LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) },
-                    )
-                    addView(
-                        chip(R.drawable.ic_heart, R.string.in_aed) { openNearest(PlaceKind.AED) },
-                        LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) },
-                    )
+                    listOf(
+                        Triple(PlaceKind.EXIT, R.drawable.ic_exit, R.string.in_nearest_exit),
+                        Triple(PlaceKind.ELEVATOR, R.drawable.ic_elevator, R.string.in_elevator),
+                        Triple(PlaceKind.AED, R.drawable.ic_heart, R.string.in_aed),
+                    ).forEach { (kind, iconId, label) ->
+                        val view = chip(iconId, label) { openNearest(kind) }
+                        // Hidden until the map loads and shows it has one of these.
+                        view.visibility = View.GONE
+                        featureChips[kind] = view
+                        addView(
+                            view,
+                            LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(8) },
+                        )
+                    }
                 },
             )
         }

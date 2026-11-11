@@ -96,6 +96,13 @@ class PlaceSearch(
     fun nearest(kind: PlaceKind): Place? =
         places.filter { it.kind == kind && walkPx(it) != null }.minByOrNull { walkPx(it)!! }
 
+    /**
+     * Feature kinds with at least one reachable place, so a shortcut is only offered when it
+     * leads somewhere. A scanned poster has none yet: the parser marks no exits, elevators or AEDs.
+     */
+    fun available(): Set<PlaceKind> =
+        places.filter { it.kind != PlaceKind.ROOM && walkPx(it) != null }.map { it.kind }.toSet()
+
     companion object {
         private val KEYWORDS = mapOf(
             PlaceKind.ROOM to emptyList(),
