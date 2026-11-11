@@ -3,6 +3,7 @@ package edu.wisc.maplens
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -81,6 +82,10 @@ import edu.wisc.maplens.nav.RoomArea
 import edu.wisc.maplens.nav.RoomBounds
 import edu.wisc.maplens.nav.RoomBox
 import edu.wisc.maplens.nav.RoomFinder
+import edu.wisc.maplens.nav.SignDetection
+import edu.wisc.maplens.nav.SignReader
+import edu.wisc.maplens.nav.SignScanView
+import edu.wisc.maplens.nav.SignVoter
 import edu.wisc.maplens.nav.Trail
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
@@ -90,6 +95,8 @@ import edu.wisc.maplens.routing.Reroute
 import edu.wisc.maplens.routing.routeToLabel
 import edu.wisc.maplens.tracking.FourCheckConfidenceMonitor
 import edu.wisc.maplens.tracking.ParticleTracker
+import edu.wisc.maplens.tracking.SignOutcome
+import edu.wisc.maplens.tracking.SignResult
 import edu.wisc.maplens.tracking.TrackingConfig
 import java.io.File
 import java.text.SimpleDateFormat
@@ -149,6 +156,7 @@ class IndoorNavActivity : ComponentActivity() {
     private lateinit var confidenceDot: View
     private lateinit var confidenceTitle: TextView
     private lateinit var confidenceDetail: TextView
+    private lateinit var confidenceAction: TextView
     private lateinit var hintTitle: TextView
     private lateinit var hintBody: TextView
     private lateinit var compass: FrameLayout
@@ -240,6 +248,12 @@ class IndoorNavActivity : ComponentActivity() {
     private var lastConfidence: ConfidenceState? = null
     private var shownLow = false
     private var highStreak = 0
+
+    /** The live map heading, for the sign scan's bearings (#19). */
+    private var liveHeadingRad: Double? = null
+
+    /** The "Find a room sign" camera, while it is open. */
+    private var signScan: SignScanView? = null
 
     private val tick = object : Runnable {
         override fun run() {
@@ -387,6 +401,14 @@ class IndoorNavActivity : ComponentActivity() {
     ) {
         @Suppress("DEPRECATION")
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                openSignScan()
+            } else {
+                showSnack(getString(R.string.sign_scan_camera_needed))
+            }
+            return
+        }
         if (requestCode != STEP_PERMISSION) return
         if (!live.hasStepPermission) showSnack(getString(R.string.using_peaks))
         setLiveMode(true)
@@ -396,6 +418,7 @@ class IndoorNavActivity : ComponentActivity() {
 
     private val backHandler = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
+            if (signScan != null) return closeSignScan()
             when (screen) {
                 Screen.BROWSE -> finish()
                 Screen.SEARCH, Screen.PLACE, Screen.ARRIVED -> clearPlace()
@@ -929,6 +952,7 @@ class IndoorNavActivity : ComponentActivity() {
         announcer.reset()
         pendingReroute?.let(ticker::removeCallbacks)
         pendingReroute = null
+        closeSignScan()
         setRerouting(null)
         setWalking(false)
         following = false
@@ -1037,6 +1061,7 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun onLiveHeading(mapRad: Double) {
+        liveHeadingRad = mapRad
         if (following) map.setHeading(mapRad, minimumChangeRad = Math.toRadians(0.5))
     }
 
@@ -1304,11 +1329,100 @@ class IndoorNavActivity : ComponentActivity() {
                 getString(R.string.conf_detail, getString(reason), getString(action))
         }
         confidenceDetail.visibility = shown(low)
-        confidenceChip.contentDescription = if (low) {
+        confidenceAction.visibility = shown(low)
+        val described = if (low) {
             "${confidenceTitle.text}. ${confidenceDetail.text}"
         } else {
             confidenceTitle.text
         }
+        confidenceChip.contentDescription = "$described. ${getString(R.string.conf_tap_to_scan)}"
+    }
+
+    // ---- Room-sign scan (#19) ----
+
+    /**
+     * Opens "Find a room sign" over the map: the camera reads room numbers, and a steady one
+     * goes to the tracker, which re-anchors if the door is near where it thinks the user is.
+     * Live walks only (a demo walk has no real position to fix).
+     */
+    private fun openSignScan() {
+        if (signScan != null) return
+        val g = graph ?: return
+        if (monitor == null) {
+            showSnack(getString(R.string.sign_scan_live_only))
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION)
+            return
+        }
+        val reader = SignReader(g, TrackingConfig().signTextHeightMeters)
+        val view = SignScanView(
+            this,
+            this,
+            reader,
+            heading = { liveHeadingRad },
+            onStable = ::submitSign,
+            onClose = ::closeSignScan,
+        )
+        signScan = view
+        root.addView(view, FrameLayout.LayoutParams(MATCH, MATCH))
+        view.alpha = 0f
+        view.animate().alpha(1f).setDuration(180).start()
+        view.requestApplyInsets()
+        view.start()
+    }
+
+    private fun closeSignScan() {
+        val view = signScan ?: return
+        signScan = null
+        view.stop()
+        view.animate().alpha(0f).setDuration(150).withEndAction { root.removeView(view) }.start()
+    }
+
+    /** A room read steadily: hand it to the tracker on the live worker. */
+    private fun submitSign(reads: List<SignDetection>) {
+        val k = lastPose?.stepLengthPx ?: Demo.STEP_LENGTH_PX
+        val sighting = SignVoter.sighting(reads, SystemClock.elapsedRealtimeNanos(), k / stride)
+        val label = reads.first().label
+        val meters = reads.mapNotNull { it.distanceMeters }.sorted().let {
+            it.getOrNull(
+                it.size / 2
+            )
+        }
+        live.sign(sighting) { result, pose -> onSignResult(label, meters, result, pose) }
+    }
+
+    /** Never a silent change: an accepted sign moves the dot with a message; a rejected one says why. */
+    private fun onSignResult(
+        label: String,
+        meters: Double?,
+        result: SignResult?,
+        pose: PoseEstimate?
+    ) {
+        val view = signScan
+        if (result == null) {
+            closeSignScan()
+            return
+        }
+        val at = pose?.timestampNanos ?: SystemClock.elapsedRealtimeNanos()
+        logIo.execute { log?.sign(at, label, result, pose) }
+        if (!result.accepted) {
+            view?.showResult(label, accepted = false, tooFar = result.reason == SignOutcome.TOO_FAR)
+            return
+        }
+        view?.showResult(label, accepted = true, tooFar = false)
+        ticker.postDelayed({ closeSignScan() }, SIGN_FOUND_MS)
+        // The cloud was just re-anchored: confidence starts afresh from here.
+        monitor?.reset()
+        showSnack(
+            if (meters != null) {
+                getString(R.string.sign_scan_anchored, label, meters)
+            } else {
+                getString(R.string.sign_scan_anchored_near, label)
+            },
+        )
+        if (pose != null) onPose(pose)
     }
 
     private fun renderBanner(
@@ -1455,6 +1569,7 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun arrive(pose: PoseEstimate) {
+        closeSignScan()
         setWalking(false)
         following = false
         live.pause()
@@ -1806,8 +1921,19 @@ class IndoorNavActivity : ComponentActivity() {
         }
         confidenceTitle = text(Ui.CAPTION, bold = true)
         confidenceDetail = text(Ui.CAPTION, CONF_LOW_INK).apply { visibility = View.GONE }
+        confidenceAction = text(Ui.CAPTION, Ui.ON_ACCENT, bold = true).apply {
+            setText(R.string.conf_scan_action)
+            gravity = Gravity.CENTER
+            minHeight = dp(32)
+            setPadding(dp(14), 0, dp(14), 0)
+            background = rounded(Ui.ACCENT, radiusDp = 16)
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
         confidenceChip = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            setOnClickListener { openSignScan() }
             elevation = dpf(4f)
             setPadding(dp(14), dp(8), dp(16), dp(8))
             minimumHeight = dp(36)
@@ -1821,6 +1947,10 @@ class IndoorNavActivity : ComponentActivity() {
                     addView(confidenceDetail)
                 },
                 LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(10) },
+            )
+            addView(
+                confidenceAction,
+                LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(12) },
             )
         }
 
@@ -2289,6 +2419,10 @@ class IndoorNavActivity : ComponentActivity() {
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
         private const val STEP_PERMISSION = 8
+        private const val CAMERA_PERMISSION = 9
+
+        /** "Found room 3418" stays this long before the camera closes. */
+        private const val SIGN_FOUND_MS = 900L
         private const val SNACK_MS = 3500L
         private const val THEN_WITHIN_STEPS = 25.0
         private const val SNAP_STEPS = 4.0

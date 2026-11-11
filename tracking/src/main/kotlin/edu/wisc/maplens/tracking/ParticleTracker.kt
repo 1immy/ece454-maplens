@@ -11,9 +11,13 @@ import edu.wisc.maplens.model.bearingOnEdge
 import edu.wisc.maplens.model.corridorsAt
 import edu.wisc.maplens.model.nearestEdge
 import edu.wisc.maplens.model.pointOnEdge
+import java.util.PriorityQueue
+import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
+import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.random.Random
 
@@ -44,8 +48,21 @@ import kotlin.random.Random
  * ended on. The rest stays where it was, so a turn placed on the wrong branch can still lose
  * to the particles that disagree with it.
  *
- * Sign re-anchoring ([onSign]) is #19 and not implemented yet. Not thread safe: one
- * navigation worker owns it. Pass a seeded [random] for reproducible tests.
+ * **Re-anchoring (#19).** A room sign the camera read ([onSighting]) is matched to its door.
+ * It is accepted only if particles holding `signGateMinWeight` of the weight already lie
+ * within `max(3σ, scanAcceptMinMeters)` of that door, so a misread or a sign seen down a long
+ * corridor can't teleport the user. The cloud is then re-weighted around where the camera
+ * puts the walker (the door, pulled back along the camera's bearing by the distance read off
+ * the characters), `signReinjectFraction` of it is re-placed there, and it is resampled.
+ *
+ * **Step length from landmarks.** Every accepted sign and every confirmed turn at a junction
+ * is an anchor. Between two anchors the map gives the distance and the step detector the
+ * steps, so k is refined (`k ← landmarkBlendOld·k + (1 − landmarkBlendOld)·k_obs`) and every
+ * particle's k is re-drawn around it. Without GPS or Wi-Fi this is what keeps drift down on
+ * long walks: each turn and each sign re-measures the stride.
+ *
+ * Not thread safe: one navigation worker owns it. Pass a seeded [random] for reproducible
+ * tests.
  */
 class ParticleTracker(
     private val config: TrackingConfig = TrackingConfig(),
@@ -80,6 +97,22 @@ class ParticleTracker(
     /** Latest estimate; valid after [start]. */
     val pose: PoseEstimate get() = last
 
+    /** What happened to the last sign offered to [onSighting]; null before any. */
+    var lastSign: SignResult? = null
+        private set
+
+    /** Steps taken since [start]. */
+    private var steps = 0
+
+    /** Last landmark (sign door or turn junction) and the step it was passed at. */
+    private var anchorNodeId: String? = null
+    private var anchorStep = 0
+
+    /** Turn detection for landmark anchors: the current straight leg's direction. */
+    private var legX = 0.0
+    private var legY = 0.0
+    private var offLegSteps = 0
+
     override fun start(
         graph: FloorGraph,
         startNodeId: String,
@@ -104,6 +137,14 @@ class ParticleTracker(
         }
         calibratedStepLengthPx = null
         calibratedAtNanos = null
+        lastSign = null
+        steps = 0
+        // START is the first landmark: the first sign or turn can already measure k.
+        anchorNodeId = startNodeId
+        anchorStep = 0
+        legX = cos(initialHeadingRad)
+        legY = sin(initialHeadingRad)
+        offLegSteps = 0
         calibrator = if (config.autoCalibrateStepLength) {
             StepLengthCalibrator(graph, startNodeId, initialHeadingRad, stepLengthPx, config)
         } else {
@@ -118,6 +159,7 @@ class ParticleTracker(
         val step = event as? MotionEvent.Step
             ?: return last.copy(timestampNanos = event.timestampNanos)
         val heading = step.headingRad
+        steps++
         calibrator?.let { c ->
             c.onStep(heading)?.let { recalibrate(it, heading, step.timestampNanos) }
             if (c.finished) calibrator = null
@@ -139,11 +181,167 @@ class ParticleTracker(
         normalise()
         if (effectiveCount() < config.resampleFraction * particles.size) resample()
         last = estimate(step.timestampNanos, heading)
+        trackLeg(heading, step.timestampNanos)
         return last
     }
 
-    /** Re-anchoring on a scanned sign arrives with #19; until then signs are ignored. */
-    override fun onSign(observation: SignObservation): Boolean = false
+    /** A sign with text only: matched to its door, no bearing or distance. */
+    override fun onSign(observation: SignObservation): Boolean =
+        onSighting(SignSighting(observation)).accepted
+
+    /**
+     * Re-anchors the cloud on a sign the camera read (see the class notes). Never a silent
+     * jump: the caller shows the [SignResult] either way, and a rejected sign changes nothing.
+     */
+    fun onSighting(sighting: SignSighting): SignResult {
+        check(::graph.isInitialized) { "call start() first" }
+        val k = last.stepLengthPx
+        val pxPerMeter = k / config.nominalStrideMeters
+        val spread = last.spreadPx
+        val doors = sighting.observation.matchedNodeId?.let { listOf(it) }
+            ?: SignText.doorsFor(sighting.observation.text, graph)?.second
+        if (doors.isNullOrEmpty()) {
+            return SignResult(false, SignOutcome.UNKNOWN_ROOM, null, 0.0, spread, spread)
+                .also { lastSign = it }
+        }
+        // The gate: how much of the cloud is already near each candidate door.
+        val gate = maxOf(
+            config.scanAcceptSigmaMultiplier * spread,
+            config.scanAcceptMinMeters * pxPerMeter,
+        )
+        val w = weights()
+        val points = particles.map { graph.pointOnEdge(it.edge.id, it.offsetPx) }
+        val (door, support) = doors.map { id ->
+            val at = graph.nodes.getValue(id).position
+            id to particles.indices.sumOf { if (points[it].distanceTo(at) <= gate) w[it] else 0.0 }
+        }.maxBy { it.second }
+        if (support < config.signGateMinWeight) {
+            return SignResult(false, SignOutcome.TOO_FAR, door, support, spread, spread)
+                .also { lastSign = it }
+        }
+
+        // Where the camera puts the walker: back from the door along the line of sight.
+        val doorAt = graph.nodes.getValue(door).position
+        val bearing = sighting.bearingRad
+        val distance = sighting.distancePx
+            ?.takeIf { it.isFinite() && it > 0 }
+            ?.coerceAtMost(config.signMaxReadMeters * pxPerMeter)
+        val seen = if (bearing != null && distance != null) {
+            PixelPoint(doorAt.x - distance * cos(bearing), doorAt.y - distance * sin(bearing))
+        } else {
+            doorAt
+        }
+        val target = graph.nearestEdge(seen)?.point ?: doorAt
+        val sigma = maxOf(
+            config.signAnchorSigmaMeters * pxPerMeter,
+            config.signDistanceSigmaShare * (distance ?: 0.0),
+        )
+        for (i in particles.indices) {
+            val d = points[i].distanceTo(target)
+            particles[i].logWeight -= d * d / (2 * sigma * sigma)
+        }
+        normalise()
+        // Re-place the weakest share of the cloud around the anchor, on the corridors there.
+        val count = (config.signReinjectFraction * particles.size).toInt()
+        val edgesById = graph.edges.associateBy { it.id }
+        for (p in particles.sortedBy { it.logWeight }.take(count)) {
+            val near = PixelPoint(
+                target.x + 0.5 * sigma * gaussian(),
+                target.y + 0.5 * sigma * gaussian(),
+            )
+            val on = graph.nearestEdge(near) ?: continue
+            p.edge = edgesById.getValue(on.edgeId)
+            p.offsetPx = on.offsetPx
+            p.logWeight = 0.0
+        }
+        normalise()
+        resample()
+        val refined = anchorAt(door, last.timestampNanos)
+        last = estimate(last.timestampNanos, last.headingRad)
+        return SignResult(true, SignOutcome.ACCEPTED, door, support, spread, last.spreadPx, refined)
+            .also { lastSign = it }
+    }
+
+    /**
+     * Turn anchors: a heading `turnAnchorMinDeg` off the current leg for
+     * `turnAnchorConfirmSteps` steps is a turn. If the cloud is confident and the estimate is
+     * just past a junction, that junction is a landmark ([anchorAt]).
+     */
+    private fun trackLeg(heading: Double, timestampNanos: Long) {
+        val leg = atan2(legY, legX)
+        if (bearingDifference(heading, leg) <= Math.toRadians(config.turnAnchorMinDeg)) {
+            offLegSteps = 0
+            // Follow slow drift along the leg; a turn is a sudden change.
+            legX = 0.8 * legX + 0.2 * cos(heading)
+            legY = 0.8 * legY + 0.2 * sin(heading)
+            return
+        }
+        offLegSteps++
+        if (offLegSteps < config.turnAnchorConfirmSteps) return
+        offLegSteps = 0
+        legX = cos(heading)
+        legY = sin(heading)
+        // Only once the START calibration is done, and only from a confident estimate.
+        if (calibrator != null || last.topClusterWeight < config.minTopClusterWeight) return
+        val edge = last.edgeId?.let { id -> graph.edges.firstOrNull { it.id == id } } ?: return
+        val k = last.stepLengthPx
+        // The junction behind the walker on the corridor they turned into.
+        val ahead = graph.bearingOnEdge(edge.id, 0.0, towardTo = true)
+        val facingTo = bearingDifference(heading, ahead) <= Math.PI / 2
+        val behindNode = if (facingTo) edge.from else edge.to
+        val node = graph.nodes.getValue(behindNode)
+        val reach = (config.turnAnchorConfirmSteps + config.turnAnchorNodeSteps) * k
+        if (node.position.distanceTo(last.position) > reach) return
+        if ((adjacency[behindNode]?.size ?: 0) < 2) return
+        // The turn began turnAnchorConfirmSteps steps ago, at the junction.
+        anchorAt(behindNode, timestampNanos, steps - config.turnAnchorConfirmSteps)
+    }
+
+    /**
+     * Makes [nodeId] the latest landmark, passed at step [atStep]. With an earlier landmark at
+     * least `legMinSteps` back, refines k from the map distance between them over the steps
+     * taken, if that is within `legMaxChange` of the current k. Returns the new k, if any.
+     */
+    private fun anchorAt(nodeId: String, timestampNanos: Long, atStep: Int = steps): Double? {
+        val previous = anchorNodeId
+        val walked = atStep - anchorStep
+        anchorNodeId = nodeId
+        anchorStep = atStep
+        if (!config.landmarkStepLength || previous == null || previous == nodeId) return null
+        if (walked < config.legMinSteps) return null
+        val distance = graphDistance(previous, nodeId) ?: return null
+        val k = last.stepLengthPx
+        val observed = distance / walked
+        if (abs(observed / k - 1) > config.legMaxChange) return null
+        val blended = config.landmarkBlendOld * k + (1 - config.landmarkBlendOld) * observed
+        for (p in particles) {
+            val drawn = blended * (1 + config.calibratedStepLengthSpread * gaussian())
+            p.stepLengthPx = drawn.coerceAtLeast(0.5 * blended)
+        }
+        calibratedStepLengthPx = blended
+        calibratedAtNanos = timestampNanos
+        return blended
+    }
+
+    /** Shortest corridor distance between two nodes (Dijkstra), or null if not connected. */
+    private fun graphDistance(from: String, to: String): Double? {
+        val best = hashMapOf(from to 0.0)
+        val queue = PriorityQueue<Pair<String, Double>>(compareBy { it.second })
+        queue += from to 0.0
+        while (queue.isNotEmpty()) {
+            val (node, d) = queue.poll()
+            if (node == to) return d
+            if (d > best.getValue(node)) continue
+            for ((edge, next) in adjacency[node].orEmpty()) {
+                val nd = d + edge.lengthPx
+                if (nd < (best[next] ?: Double.MAX_VALUE)) {
+                    best[next] = nd
+                    queue += next to nd
+                }
+            }
+        }
+        return null
+    }
 
     /**
      * Re-draws every particle's k around the calibrated k, and walks a random
@@ -172,6 +370,9 @@ class ParticleTracker(
         val turn = calibration.turn
         val edge = graph.edges.first { it.id == turn.edgeId }
         val forward = turn.towardNodeId == edge.to
+        // The calibration turn is a landmark too, passed stepsPast steps ago.
+        anchorNodeId = if (forward) edge.from else edge.to
+        anchorStep = steps - calibration.stepsPast
         // This step is walked by onMotion next, so place the steps before it.
         val past = (calibration.stepsPast - 1).coerceAtLeast(0)
         val count = (config.calibrationReplaceFraction * particles.size).toInt()

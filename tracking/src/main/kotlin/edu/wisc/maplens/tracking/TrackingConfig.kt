@@ -171,6 +171,33 @@ data class TrackingConfig(
     val scanAcceptMinMeters: Double = 5.0,
     /** Weight kept on the old k when refining at a landmark. */
     val landmarkBlendOld: Double = 0.7,
+    /** A sign is accepted only if this share of the cloud's weight is already near its door. */
+    val signGateMinWeight: Double = 0.05,
+    /** σ of the Gaussian the cloud is re-weighted with around a sign anchor... */
+    val signAnchorSigmaMeters: Double = 1.5,
+    /** ...widened to this share of the read distance (a distance read off text is rough). */
+    val signDistanceSigmaShare: Double = 0.35,
+    /** Share of the cloud re-placed around an accepted sign anchor. */
+    val signReinjectFraction: Double = 0.3,
+    /** Distances read off a sign beyond this are clamped: text that small is unreliable. */
+    val signMaxReadMeters: Double = 8.0,
+    /**
+     * Height of the room-number characters on the building's door signs, for reading a
+     * distance off how tall they look. A guess for EH3 plaques; measure on the evaluation walks.
+     */
+    val signTextHeightMeters: Double = 0.04,
+    /** Refine k at every landmark (accepted sign, turn at a junction) after START. */
+    val landmarkStepLength: Boolean = true,
+    /** Turn anchors: a heading this far off the current leg... */
+    val turnAnchorMinDeg: Double = 60.0,
+    /** ...for this many steps in a row is a turn... */
+    val turnAnchorConfirmSteps: Int = 2,
+    /** ...made at a junction within this many steps (plus the confirming ones) behind. */
+    val turnAnchorNodeSteps: Double = 2.5,
+    /** Refine k between two landmarks only over at least this many steps... */
+    val legMinSteps: Int = 8,
+    /** ...and only if the measured k is within this share of the current one. */
+    val legMaxChange: Double = 0.3,
     /** Display-only stride used to turn steps into meters. */
     val nominalStrideMeters: Double = 0.7,
     /** Scan-to-orient (ADR 0006): bearing noise per observation kind. */
