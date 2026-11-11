@@ -5,6 +5,7 @@ import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.model.nearestEdge
+import edu.wisc.maplens.tracking.SignResult
 import java.io.Writer
 import java.util.Locale
 
@@ -128,6 +129,20 @@ class SessionLog(private val out: Writer) {
         pose,
         errorPx = routeLengthPx,
         kPx = pose.stepLengthPx,
+    )
+
+    /**
+     * A room sign offered to the tracker (#19): `3418:ACCEPTED` (or `TOO_FAR`, `UNKNOWN_ROOM`)
+     * in the label, the pose after it if accepted, the spread after in error_px, and the new
+     * k if the sign refined it.
+     */
+    fun sign(timestampNs: Long, label: String, result: SignResult, pose: PoseEstimate?) = row(
+        timestampNs,
+        "sign",
+        "$label:${result.reason.name}",
+        pose,
+        errorPx = result.spreadAfterPx,
+        kPx = result.refinedStepLengthPx,
     )
 
     fun arrive(pose: PoseEstimate) =

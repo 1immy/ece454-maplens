@@ -142,7 +142,8 @@ class StepLengthCalibratorTest {
 
     @Test
     fun `calibration can be turned off`() {
-        val tracker = ParticleTracker(TrackingConfig(autoCalibrateStepLength = false), Random(3))
+        val off = TrackingConfig(autoCalibrateStepLength = false, landmarkStepLength = false)
+        val tracker = ParticleTracker(off, Random(3))
         tracker.start(ell, "S", right, stepLengthPx = 12.0)
         (List(25) { right } + List(5) { down }).forEachIndexed { i, h ->
             tracker.onMotion(MotionEvent.Step(i + 1L, h, StepSource.STEP_DETECTOR))

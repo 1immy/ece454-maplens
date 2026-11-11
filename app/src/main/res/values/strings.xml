@@ -78,6 +78,27 @@
     <item quantity="other">%1$s · %2$d steps</item>
   </plurals>
   <string name="in_then">Then</string>
+  <!-- Room-sign scan to fix the position (#19). -->
+  <string name="conf_scan_action">Scan a sign</string>
+  <string name="conf_tap_to_scan">Double tap to check your position with a room sign</string>
+  <string name="sign_scan_title">Find a room sign</string>
+  <string name="sign_scan_subtitle">Point your camera at a room number near you to fix your position.</string>
+  <string name="sign_scan_looking">Looking for room numbers…</string>
+  <string name="sign_scan_looking_body">Hold the phone upright, a few steps from a door sign.</string>
+  <string name="sign_scan_reading">Reading %1$s…</string>
+  <string name="sign_scan_hold_steady">Hold steady</string>
+  <string name="sign_scan_checking">Checking %1$s against the map…</string>
+  <string name="sign_scan_found">Found room %1$s</string>
+  <string name="sign_scan_too_far">%1$s seems too far from where you are</string>
+  <string name="sign_scan_unknown">%1$s isn\'t on this map</string>
+  <string name="sign_scan_try_another">Try another sign closer to you.</string>
+  <string name="sign_scan_close">Close sign scan</string>
+  <string name="sign_scan_tag">%1$s · ~%2$.1f m</string>
+  <string name="sign_scan_tag_unknown">%1$s · not on map</string>
+  <string name="sign_scan_anchored">Position updated from room %1$s, about %2$.0f m away</string>
+  <string name="sign_scan_anchored_near">Position updated from room %1$s</string>
+  <string name="sign_scan_camera_needed">MapLens needs the camera to read room signs</string>
+  <string name="sign_scan_live_only">Sign scan works while walking with Live sensors</string>
   <!-- Off route and rerouting (#80). -->
   <string name="in_rerouting">Rerouting…</string>
   <string name="in_rerouting_voice">Rerouting</string>

@@ -16,6 +16,10 @@
       android:screenOrientation="portrait"
       android:windowSoftInputMode="stateAlwaysHidden"
       android:theme="@style/RecorderTheme" />
+    <!-- Debug only: runs the sign-scan pipeline on drawn plaques (#19); started over adb. -->
+    <activity android:name=".debug.SignSelfTestActivity"
+      android:exported="true"
+      android:theme="@style/MapLens.Theme" />
     <activity android:name=".debug.EditFixtureActivity"
       android:exported="false"
       android:theme="@style/MapLens.Theme" />

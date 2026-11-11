@@ -15,6 +15,8 @@ import android.os.SystemClock
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.tracking.ParticleTracker
 import edu.wisc.maplens.tracking.SensorMotionProcessor
+import edu.wisc.maplens.tracking.SignResult
+import edu.wisc.maplens.tracking.SignSighting
 import edu.wisc.maplens.tracking.TraceCsvWriter
 import edu.wisc.maplens.tracking.TraceSensor
 import edu.wisc.maplens.tracking.Tracker
@@ -160,6 +162,21 @@ class LiveMotionSource(
                 this.tracker = tracker
             }
             main.post { done(aligned) }
+        }
+    }
+
+    /**
+     * Offers a room sign the camera read to the tracker, on the worker thread that owns it
+     * (#19). [done] gets the tracker's answer and, if it re-anchored, the new pose, on the main
+     * thread; both are null when nothing is being tracked.
+     */
+    fun sign(sighting: SignSighting, done: (SignResult?, PoseEstimate?) -> Unit) {
+        val h = worker ?: return done(null, null)
+        h.post {
+            val t = tracker as? ParticleTracker
+            val result = t?.onSighting(sighting)
+            val pose = if (result?.accepted == true) t.pose else null
+            main.post { done(result, pose) }
         }
     }
 
