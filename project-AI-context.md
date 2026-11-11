@@ -95,7 +95,7 @@ Package root: `edu.wisc.maplens` (`.model`, `.routing`, `.tracking`, `.mapparse`
 | `app` | `MapAssets` (#41: bundles `data/fixtures/maps` as assets; `loadGraph`, `loadImage`); placeholder `MainActivity`; `NavigationSession` state machine (Capture → Verify → Calibrate → Navigate ⇄ Recover → Arrived); debug-only `RecorderActivity` (#40) | UI in PR #43 |
 | `tools/maplabel.py` | `corners`, `warp`, `trace`, `tidy` | Close the trace window before `tidy` |
 | `tools/rectify.py` | Automatic blue-frame detection + homography; `evaluate` vs labels | 15/16 accepted, median corner error 0.31% of diagonal (~8 px); returns a **retake** reason instead of a bad warp |
-| `tools/corridors.py` | Orange route lines → mask → skeleton → graph, junction refinement, graph F1 scorer | Corridor-length F1 **0.91** (tuned poster) / **0.93** (held out); junction F1 **0.80 / 0.86** |
+| `tools/corridors.py` | Route lines, or free space between walls on a poster with no paint → skeleton → graph, links for unpainted corridors, graph F1 scorer | Corridor-length F1 **0.98 / 0.97**; junction F1 **0.89 / 0.94**, all tuned on (ADR 0010). Directory posters: #78 |
 | Data | 16 EH3 photos, 16 corner labels, straightened elevator posters (evac + directory), **hand-traced elevator evac graph: 75 nodes, 77 edges, 55 landmarks (51 distinct rooms), 7 exits, elevator, AED**, hand-traced stair-3424 evac graph (held out; corridors only), synthetic `t-junction.graph.json` | No sensor traces yet |
 
 ### In open PRs and branches (check GitHub for status)
@@ -152,7 +152,7 @@ Edge `id`, `polyline` and `lengthPx` are optional on read (filled in). Node type
 ### A1 · Map understanding (photo → graph) [Jayden]
 1. Capture with CameraX; find the map frame; homography to a flat image **2000 px wide**; warn on glare (`tools/rectify.py` is the reference).
 2. ML Kit on-device text recognition: room numbers + "You Are Here"; erase text boxes so they don't break corridors.
-3. Corridor mask. The current prototype (`tools/corridors.py`) uses the **orange evacuation-route lines**, which run along almost every corridor; the report's alternative is threshold walls + seal doors + flood-fill rooms.
+3. Corridor mask. The current prototype (`tools/corridors.py`) uses the **orange evacuation-route lines** where they exist and adds unpainted corridors from the walls; a poster with no paint traces narrow free space between walls instead (ADR 0010).
 4. Thin to centerlines (Zhang–Suen / skeletonize); junctions = ≥3 neighbors, ends = 1; Douglas–Peucker; merge close junctions; prune spurs.
 5. Attach each room number to the nearest edge as a door node; "You Are Here" becomes START.
 6. **Verify:** saving is blocked until the graph is connected, each destination reaches a door node, no label is empty, and no edges cross without a junction. A label may repeat: a room with several entrances has one door node per entrance (ADR 0008).
@@ -320,7 +320,7 @@ Issues are created with owner, area label, milestone and a **"Done when"** check
 
 Next for the app (Limo): live-tracking integration (START "which way are you facing" tap → `align`, pose source that swaps `FakePoseStream` for `Tracker`, checkpoint logging for the G2 gate and A–D), then #20 voice/vibration + offline.
 
-Later milestones hold: Kotlin port of rectify + corridors with CameraX, confidence monitor, sign scanner + re-anchor, voice/vibration + offline, recording EH3 evaluation walks, Phase II demo prep (G3); threshold pilot + QA, Writing Center draft (G4); A–D trials + user study, final report + demo, optional ARCore (G5); backlog: corridors without route lines (wall-gap analysis). G0 and G1 issues record the finished work.
+Later milestones hold: Kotlin port of rectify + corridors with CameraX, confidence monitor, sign scanner + re-anchor, voice/vibration + offline, recording EH3 evaluation walks, Phase II demo prep (G3); threshold pilot + QA, Writing Center draft (G4); A–D trials + user study, final report + demo, optional ARCore (G5); G0 and G1 issues record the finished work.
 
 ## 12. How an AI assistant should work in this repo
 
