@@ -6,6 +6,8 @@
   <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="true" />
 
   <uses-permission android:name="android.permission.CAMERA" />
+  <!-- Local link to the temi guide robot (same hotspot or Wi-Fi); no internet is used. -->
+  <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
   <uses-permission android:name="android.permission.VIBRATE" />
 
@@ -15,6 +17,10 @@
     android:roundIcon="@mipmap/ic_launcher_round"
     android:label="@string/app_name"
     android:theme="@style/MapLens.Theme">
+    <activity
+      android:name=".TemiDevActivity"
+      android:exported="false"
+      android:screenOrientation="portrait" />
     <activity
       android:name=".PosterCaptureActivity"
       android:exported="false"

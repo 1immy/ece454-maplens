@@ -86,6 +86,14 @@ internal class IndoorMapView(context: Context) : View(context) {
             invalidate()
         }
 
+    /** The guide robot (temi) on the map, with the way it faces; null hides it. */
+    var robot: PixelPoint? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
+    var robotBearing: Double? = null
+
     /** Distance already walked along [route], drawn grey. */
     var routeWalkedPx = 0.0
         set(value) {
@@ -294,6 +302,7 @@ internal class IndoorMapView(context: Context) : View(context) {
     private val uncertainFill = fill(Color.argb(46, 227, 116, 0))
     private val uncertainRing = stroke(Color.argb(140, 227, 116, 0), 1.5f)
     private val puckGrey = fill(PUCK_UNCERTAIN)
+    private val robotFill = fill(ROBOT_TEAL)
     private val beamPaint = fill(Color.WHITE)
     private val arrowStroke = stroke(Color.WHITE, 2.5f)
     private val pinRed = fill(PIN_RED)
@@ -498,6 +507,7 @@ internal class IndoorMapView(context: Context) : View(context) {
             val (x, y) = screen(truth.x, truth.y)
             canvas.drawCircle(x, y, 5 * density, checkpointPaint)
         }
+        robot?.let { drawRobot(canvas, it) }
         if (hasPuck) {
             if (facingChoices.isNotEmpty()) drawFacing(canvas)
             drawPuck(canvas)
@@ -729,6 +739,43 @@ internal class IndoorMapView(context: Context) : View(context) {
             mapRouteDots[index * 2] = (a.x + (b.x - a.x) * t).toFloat()
             mapRouteDots[index * 2 + 1] = (a.y + (b.y - a.y) * t).toFloat()
         }
+    }
+
+    /**
+     * temi: a teal disc with a white ring and a small screen, and a notch for the way it faces,
+     * distinct from the walker's blue dot and arrow.
+     */
+    private fun drawRobot(canvas: Canvas, at: PixelPoint) {
+        val (x, y) = screen(at.x, at.y)
+        val r = 13 * density
+        robotBearing?.let { b ->
+            val angle = screenAngle(at.x, at.y, b)
+            canvas.save()
+            canvas.translate(x, y)
+            canvas.rotate(Math.toDegrees(angle.toDouble()).toFloat())
+            shape.reset()
+            shape.moveTo(r + 9 * density, 0f)
+            shape.lineTo(r - 1 * density, -6 * density)
+            shape.lineTo(r - 1 * density, 6 * density)
+            shape.close()
+            canvas.drawPath(shape, robotFill)
+            canvas.restore()
+        }
+        canvas.drawCircle(x, y + density, r + 1.5f * density, shadow)
+        canvas.drawCircle(x, y, r + 2.5f * density, puckWhite)
+        canvas.drawCircle(x, y, r, robotFill)
+        val w = 7 * density
+        val h = 5 * density
+        canvas.drawRoundRect(
+            x - w,
+            y - h - 2 * density,
+            x + w,
+            y + h - 2 * density,
+            2 * density,
+            2 * density,
+            puckWhite
+        )
+        canvas.drawCircle(x, y + 7 * density, 2 * density, puckWhite)
     }
 
     private fun drawPuck(canvas: Canvas) {
@@ -1042,6 +1089,7 @@ internal class IndoorMapView(context: Context) : View(context) {
         val ROUTE_BLUE = Color.rgb(26, 115, 232)
         val PUCK_BLUE = Color.rgb(26, 115, 232)
         val PUCK_UNCERTAIN = Color.rgb(128, 134, 139)
+        val ROBOT_TEAL = Color.rgb(0, 121, 107)
         val PIN_RED = Color.rgb(234, 67, 53)
         val BACKGROUND = Color.rgb(232, 234, 237)
 

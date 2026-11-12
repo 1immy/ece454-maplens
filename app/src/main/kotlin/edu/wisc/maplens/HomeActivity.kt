@@ -73,6 +73,14 @@ class HomeActivity : Activity() {
                 },
                 spaced(top = 12),
             )
+            addView(
+                devRow(
+                    R.drawable.ic_robot,
+                    R.string.home_dev_temi,
+                    R.string.home_dev_temi_detail,
+                ) { startActivity(Intent(this@HomeActivity, TemiDevActivity::class.java)) },
+                spaced(top = 8),
+            )
             debugIntent(FIXTURE_EDITOR)?.let { editor ->
                 addView(
                     devRow(
