@@ -90,6 +90,11 @@ import edu.wisc.maplens.nav.Trail
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
 import edu.wisc.maplens.nav.rerouteTo
+import edu.wisc.maplens.robot.Carry
+import edu.wisc.maplens.robot.EscortCue
+import edu.wisc.maplens.robot.EscortState
+import edu.wisc.maplens.robot.RobotHub
+import edu.wisc.maplens.robot.TemiGuide
 import edu.wisc.maplens.routing.AStarRouter
 import edu.wisc.maplens.routing.Reroute
 import edu.wisc.maplens.routing.routeToLabel
@@ -230,6 +235,20 @@ class IndoorNavActivity : ComponentActivity() {
     private var rerouting = false
     private var pendingReroute: Runnable? = null
     private var turnAroundSaid = false
+
+    /** Guide with temi (#temi): chosen on the route preview, run by [TemiGuide]. */
+    private var guideWithTemi = false
+    private var carry = Carry.HAND
+    private var temi: TemiGuide? = null
+    private lateinit var escortCard: LinearLayout
+    private lateinit var escortTitle: TextView
+    private lateinit var escortDetail: TextView
+    private lateinit var escortAction: TextView
+    private var escortShown: EscortState? = null
+
+    /** Demo with temi: the walker stops once halfway, to show temi waiting for them. */
+    private var demoPaused = false
+    private var demoPauseUntil = 0L
     private var walking = false
     private var liveMode = false
     private var following = false
@@ -259,6 +278,10 @@ class IndoorNavActivity : ComponentActivity() {
         override fun run() {
             val stream = walk ?: return
             val path = guide?.path ?: return
+            if (temiHoldsWalker(path.lengthPx)) {
+                ticker.postDelayed(this, Demo.STEP_INTERVAL_MS)
+                return
+            }
             onPose(stream.step(path))
             val active = guide?.path ?: return
             if (walking && !stream.finished(active)) {
@@ -275,6 +298,7 @@ class IndoorNavActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        RobotHub.load(this)
         voice = VoiceAndHaptics(this).apply {
             voiceOn = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_VOICE, true)
         }
@@ -444,6 +468,7 @@ class IndoorNavActivity : ComponentActivity() {
         if (!navLike || next == Screen.CHECKPOINT) recenter.visibility = View.GONE
         setBannerVisible(next == Screen.NAVIGATE || next == Screen.ARRIVED)
         confidenceChip.visibility = shown(next == Screen.NAVIGATE && monitor != null)
+        escortCard.visibility = shown(next == Screen.NAVIGATE && temi != null)
         // Every way into navigation starts in the heading-up view.
         if (next == Screen.NAVIGATE) compass.contentDescription = getString(R.string.in_compass)
         if (next == Screen.SEARCH) {
@@ -846,6 +871,7 @@ class IndoorNavActivity : ComponentActivity() {
                 visibility = shown(!liveMode)
             }.withMargins(top = 12),
             scenarios.withMargins(top = 6),
+            *guideChoice().toTypedArray(),
             stepsHeader.withMargins(top = 8),
             scroll.apply {
                 layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
@@ -938,6 +964,7 @@ class IndoorNavActivity : ComponentActivity() {
         renderNavigateSheet()
         val first = stream.current()
         map.setHeading(first.headingRad)
+        startTemi()
         onPose(first)
         map.startFollowing(IndoorMapView.Follow.HEADING)
         // Give the camera time to swing in before the walker sets off.
@@ -953,6 +980,7 @@ class IndoorNavActivity : ComponentActivity() {
         pendingReroute?.let(ticker::removeCallbacks)
         pendingReroute = null
         closeSignScan()
+        stopTemi()
         setRerouting(null)
         setWalking(false)
         following = false
@@ -1056,6 +1084,7 @@ class IndoorNavActivity : ComponentActivity() {
                     stepLengthPx = k,
                 ),
             )
+            startTemi()
             map.startFollowing(IndoorMapView.Follow.HEADING)
         }
     }
@@ -1108,6 +1137,7 @@ class IndoorNavActivity : ComponentActivity() {
         }
         val tracked = progress ?: return
         val status = tracked.update(pose)
+        temi?.onWalker(if (carry == Carry.HAND) status.progressPx else null, pose.position)
         if (map.driver == null) map.routeWalkedPx = status.progressPx
         // While "Rerouting…" shows, the old route's instructions would be wrong: hold them.
         if (rerouting) return
@@ -1193,6 +1223,7 @@ class IndoorNavActivity : ComponentActivity() {
         s.onRerouted(next.route)
         val newGuide = RouteGuide(g, next.route)
         guide = newGuide
+        temi?.rerouted(newGuide)
         val start = newGuide.path.project(pose.position)
         val tracked = RouteProgress(
             newGuide.path,
@@ -1336,6 +1367,168 @@ class IndoorNavActivity : ComponentActivity() {
             confidenceTitle.text
         }
         confidenceChip.contentDescription = "$described. ${getString(R.string.conf_tap_to_scan)}"
+    }
+
+    // ---- Guide with temi (#temi) ----
+
+    /** Route preview: phone only or with temi, and how the phone is carried; only if temi is up. */
+    private fun guideChoice(): List<View> {
+        if (!RobotHub.connected) {
+            guideWithTemi = false
+            return emptyList()
+        }
+        val guideRow = LinearLayout(this).apply {
+            addView(modeToggle(R.string.guide_phone, !guideWithTemi) { pickGuide(false) })
+            addView(
+                modeToggle(R.string.guide_temi, guideWithTemi) { pickGuide(true) },
+                LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) },
+            )
+        }
+        val carryRow = LinearLayout(this).apply {
+            visibility = shown(guideWithTemi)
+            addView(modeToggle(R.string.carry_hand, carry == Carry.HAND) { pickCarry(Carry.HAND) })
+            addView(
+                modeToggle(
+                    R.string.carry_pocket,
+                    carry == Carry.POCKET
+                ) { pickCarry(Carry.POCKET) },
+                LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) },
+            )
+        }
+        return listOf(
+            text(Ui.CAPTION, Ui.INK_SECONDARY).apply { setText(R.string.guide_title) }
+                .withMargins(top = 12),
+            guideRow.withMargins(top = 6),
+            carryRow.withMargins(top = 8),
+        )
+    }
+
+    private fun pickGuide(withTemi: Boolean) {
+        guideWithTemi = withTemi
+        renderPreviewSheet()
+    }
+
+    private fun pickCarry(next: Carry) {
+        carry = next
+        renderPreviewSheet()
+    }
+
+    /** Starts the escort for the route on screen, if the walker chose temi. */
+    private fun startTemi() {
+        stopTemi()
+        if (!guideWithTemi) return
+        if (!RobotHub.connected) return showSnack(getString(R.string.temi_not_connected))
+        val g = guide ?: return
+        val graph0 = graph ?: return
+        val pxPerMeter = Demo.STEP_LENGTH_PX / stride
+        // The simulator starts each escort at START, next to the walker.
+        if (RobotHub.setup.simulator) {
+            RobotHub.connect(graph0.nodes.getValue(graph0.startNodeId).position, pxPerMeter)
+        }
+        val alignment = RobotHub.alignment(pxPerMeter)
+            ?: return showSnack(getString(R.string.temi_needs_alignment))
+        RobotHub.userAt = { lastPose?.position }
+        RobotHub.onSimulatedSpeech = { line -> showSnack(getString(R.string.temi_says, line)) }
+        demoPaused = false
+        demoPauseUntil = 0L
+        escortShown = null
+        val listener = object : TemiGuide.Listener {
+            override fun onRobot(at: PixelPoint, bearing: Double) {
+                map.robotBearing = bearing
+                map.robot = at
+            }
+
+            override fun onEscort(state: EscortState, gapMeters: Double?) =
+                renderEscort(state, gapMeters)
+
+            override fun onCue(cue: EscortCue, phoneText: String) {
+                val buzz = cue == EscortCue.OPEN_DOOR || cue == EscortCue.WAITING ||
+                    cue == EscortCue.MEET
+                voice.announce(Announcement(phoneText, if (buzz) Haptic.TURN else null))
+            }
+        }
+        val t = TemiGuide(
+            this,
+            g,
+            carry,
+            pxPerMeter,
+            alignment,
+            place?.let { placeTitle(it) }.orEmpty(),
+            demoDoor = !liveMode,
+            listener = listener,
+        )
+        temi = t
+        escortCard.visibility = View.VISIBLE
+        renderEscort(EscortState.STARTING, null)
+        t.start()
+    }
+
+    private fun stopTemi() {
+        temi?.stop()
+        temi = null
+        map.robot = null
+        escortCard.visibility = View.GONE
+    }
+
+    /** The card under the banner: what temi is doing and what the walker should do. */
+    private fun renderEscort(state: EscortState, gapMeters: Double?) {
+        val t = temi
+        val (title, detail) = when (state) {
+            EscortState.STARTING -> getString(R.string.temi_card_starting) to ""
+            EscortState.LEADING -> getString(R.string.temi_card_leading) to
+                if (carry == Carry.HAND && gapMeters != null) {
+                    getString(R.string.temi_card_gap, gapMeters.coerceAtLeast(0.0))
+                } else {
+                    getString(R.string.temi_card_pocket)
+                }
+            EscortState.WAITING_FOR_USER ->
+                getString(R.string.temi_card_waiting) to
+                    getString(R.string.temi_card_waiting_detail)
+            EscortState.MEETING ->
+                getString(R.string.temi_card_meeting) to
+                    getString(R.string.temi_card_meeting_detail)
+            EscortState.DOOR ->
+                getString(R.string.temi_card_door) to getString(R.string.temi_card_door_detail)
+            EscortState.BLOCKED -> getString(R.string.temi_card_blocked) to getString(
+                if (t?.controller?.gaveUp == true) {
+                    R.string.temi_card_gave_up
+                } else {
+                    R.string.temi_card_blocked_detail
+                },
+            )
+            EscortState.ARRIVED ->
+                getString(R.string.temi_card_arrived) to place?.let { placeTitle(it) }.orEmpty()
+        }
+        escortTitle.text = title
+        escortDetail.text = detail
+        escortDetail.visibility = shown(detail.isNotEmpty())
+        escortAction.visibility = shown(state == EscortState.DOOR)
+        escortCard.background = rounded(
+            if (state == EscortState.DOOR) CONF_LOW_SOFT else Ui.SURFACE,
+            radiusDp = 18,
+            stroke = if (state == EscortState.DOOR) CONF_LOW_EDGE else null,
+        )
+        escortCard.contentDescription = "$title. $detail"
+        // Demo: the scripted walker opens the door a moment after temi asks.
+        if (state == EscortState.DOOR && escortShown != EscortState.DOOR && !liveMode) {
+            ticker.postDelayed({ temi?.doorOpened() }, DEMO_DOOR_MS)
+        }
+        escortShown = state
+    }
+
+    /**
+     * Demo with temi: the walker follows temi like a person, staying just behind it, and
+     * stops once halfway for a few seconds so temi's waiting can be seen.
+     */
+    private fun temiHoldsWalker(routePx: Double): Boolean {
+        val t = temi ?: return false
+        val along = progress?.progressPx ?: 0.0
+        val now = SystemClock.uptimeMillis()
+        if (!demoPaused && along > 0.5 * routePx) {
+            demoPaused = true
+            demoPauseUntil = now + DEMO_PAUSE_MS
+        }
+        return now < demoPauseUntil || !t.walkerMayStep(along)
     }
 
     // ---- Room-sign scan (#19) ----
@@ -1570,6 +1763,11 @@ class IndoorNavActivity : ComponentActivity() {
 
     private fun arrive(pose: PoseEstimate) {
         closeSignScan()
+        temi?.let { t ->
+            t.onWalker(guide?.path?.lengthPx, pose.position)
+            t.stop()
+        }
+        temi = null
         setWalking(false)
         following = false
         live.pause()
@@ -1921,6 +2119,47 @@ class IndoorNavActivity : ComponentActivity() {
         }
         confidenceTitle = text(Ui.CAPTION, bold = true)
         confidenceDetail = text(Ui.CAPTION, CONF_LOW_INK).apply { visibility = View.GONE }
+        escortTitle = text(Ui.BODY, bold = true)
+        escortDetail = text(Ui.CAPTION, Ui.INK_SECONDARY)
+        escortAction = text(Ui.BODY, Ui.ON_ACCENT, bold = true).apply {
+            setText(R.string.temi_door_open)
+            gravity = Gravity.CENTER
+            minHeight = dp(Ui.TOUCH_DP)
+            setPadding(dp(16), 0, dp(16), 0)
+            background = pressable(rounded(Ui.ACCENT, radiusDp = 24))
+            visibility = View.GONE
+            setOnClickListener { temi?.doorOpened() }
+        }
+        escortCard = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            elevation = dpf(4f)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            minimumHeight = dp(56)
+            visibility = View.GONE
+            background = rounded(Ui.SURFACE, radiusDp = 18)
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            addView(
+                ImageView(context).apply {
+                    setImageDrawable(icon(R.drawable.ic_robot, Color.WHITE, 22))
+                    scaleType = ImageView.ScaleType.CENTER
+                    background = rounded(IndoorMapView.ROBOT_TEAL, radiusDp = 18)
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                },
+                square(36),
+            )
+            addView(
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(escortTitle)
+                    addView(escortDetail)
+                },
+                LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) },
+            )
+            addView(
+                escortAction,
+                LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) },
+            )
+        }
         confidenceAction = text(Ui.CAPTION, Ui.ON_ACCENT, bold = true).apply {
             setText(R.string.conf_scan_action)
             gravity = Gravity.CENTER
@@ -1999,6 +2238,7 @@ class IndoorNavActivity : ComponentActivity() {
             addView(chips)
             addView(routeCard)
             addView(banner)
+            addView(escortCard, wide().apply { topMargin = dp(8) })
             addView(
                 confidenceChip,
                 LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(8) },
@@ -2423,6 +2663,10 @@ class IndoorNavActivity : ComponentActivity() {
 
         /** "Found room 3418" stays this long before the camera closes. */
         private const val SIGN_FOUND_MS = 900L
+
+        /** Demo with temi: how long the walker stops halfway, and takes to open a door. */
+        private const val DEMO_PAUSE_MS = 7_000L
+        private const val DEMO_DOOR_MS = 3_000L
         private const val SNACK_MS = 3500L
         private const val THEN_WITHIN_STEPS = 25.0
         private const val SNAP_STEPS = 4.0
