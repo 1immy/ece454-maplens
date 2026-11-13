@@ -111,7 +111,9 @@ class TemiDevActivity : Activity() {
         renderModes()
         connectButton = styledButton(ButtonStyle.PRIMARY, getString(R.string.temi_connect)).apply {
             setOnClickListener {
-                if (RobotHub.link != null) {
+                // A link that failed or dropped counts as off: the button connects again.
+                val live = RobotHub.link?.state?.let { it != RobotLink.State.DISCONNECTED } == true
+                if (live) {
                     RobotHub.disconnect()
                 } else {
                     RobotHub.update(this@TemiDevActivity) {
@@ -293,7 +295,8 @@ class TemiDevActivity : Activity() {
                 RobotHub.lastError ?: getString(R.string.temi_status_off)
         }
         status.setTextColor(if (state == RobotLink.State.CONNECTED) Ui.ACCENT else Ui.INK)
-        connectButton.setText(if (link != null) R.string.temi_disconnect else R.string.temi_connect)
+        val off = state == RobotLink.State.DISCONNECTED
+        connectButton.setText(if (off) R.string.temi_connect else R.string.temi_disconnect)
         hostRow.visibility = if (RobotHub.setup.simulator) View.GONE else View.VISIBLE
         val pose = RobotHub.pose
         val battery = RobotHub.hello?.battery?.let { "$it %" } ?: "—"
