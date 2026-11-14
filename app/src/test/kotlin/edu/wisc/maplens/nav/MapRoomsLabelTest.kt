@@ -38,4 +38,17 @@ class MapRoomsLabelTest {
         // Without a door to compare against, the first read stays.
         assertFalse(MapRooms.closer(own, inside3540B, emptyList()))
     }
+
+    @Test
+    fun `a number a digit short of the map's rooms is not a room`() {
+        val accept = MapRooms.extraRoomRule(setOf("3418", "3416", "3540B", "3425"))
+        // A tile edge cut through 3418: "341" is not a room, even standing alone.
+        assertFalse(accept("341", true))
+        assertFalse(accept("360", true))
+        // A real room the graph lacks still counts, alone on its line.
+        assertTrue(accept("3540", true))
+        assertFalse(accept("3540", false))
+        assertFalse(accept("2239", true))
+        assertTrue(accept("3418", false))
+    }
 }

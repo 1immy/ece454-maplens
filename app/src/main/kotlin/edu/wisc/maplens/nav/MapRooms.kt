@@ -46,11 +46,7 @@ internal object MapRooms {
         known: Set<String>,
         doors: Map<String, List<PixelPoint>> = emptyMap(),
     ): List<LabelBox> {
-        val floor = known.groupingBy { it.first() }.eachCount().maxByOrNull { it.value }?.key
-        val accept = { label: String, alone: Boolean ->
-            label in known ||
-                (alone && label.first() == floor && ROOM.matches(label))
-        }
+        val accept = extraRoomRule(known)
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         val found = LinkedHashMap<String, LabelBox>()
         try {
@@ -173,6 +169,24 @@ internal object MapRooms {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Which reads count as rooms: the [known] rooms, plus a number standing alone that looks
+     * like this map's own (same floor digit, same digit count). A tile edge cutting through
+     * "3418" leaves "341", which is not a room, so a read a digit short is never kept.
+     */
+    fun extraRoomRule(known: Set<String>): (String, Boolean) -> Boolean {
+        val floor = known.groupingBy { it.first() }.eachCount().maxByOrNull { it.value }?.key
+        val digits = known.groupingBy { label -> label.count(Char::isDigit) }.eachCount()
+            .maxByOrNull { it.value }?.key
+        return { label, alone ->
+            label in known ||
+                (
+                    alone && label.first() == floor && ROOM.matches(label) &&
+                        label.count(Char::isDigit) == digits
+                    )
         }
     }
 
