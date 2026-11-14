@@ -44,6 +44,9 @@ internal object FeatureParams {
     const val HEART_PAD_PX = 8
     const val HEART_MIN_BLUE = 0.15
 
+    /** Share of a dark-red blob that must be clearly red to be a heart, not dark print. */
+    const val HEART_MIN_RED = 0.5
+
     // Elevator: a light-blue box crossed by a white X, ~57 × 42 px, in pairs on EH3.
     const val LIFT_MIN_W = 35
     const val LIFT_MAX_W = 95
@@ -65,9 +68,20 @@ internal fun aedIcons(hsv: Mat): List<PosterFeature> = Mats().use { mats ->
     Core.inRange(hsv, Scalar(0.0, 110.0, 70.0), Scalar(12.0, 255.0, 255.0), red)
     Core.inRange(hsv, Scalar(166.0, 110.0, 70.0), Scalar(180.0, 255.0, 255.0), redHigh)
     Core.bitwise_or(red, redHigh, red)
+    // "AED" is printed across the heart, and in a darker photo that band is only dark red: the
+    // strict mask then cuts the heart into pieces too small to count (EH3, Nov 14: 26, 47 and
+    // 27 px wide). So the heart is grown in a looser dark-red mask and kept where enough of it
+    // is clearly red, as a two-level threshold does.
+    val dark = mats.mat()
+    val darkHigh = mats.mat()
+    Core.inRange(hsv, Scalar(0.0, 80.0, 40.0), Scalar(14.0, 255.0, 255.0), dark)
+    Core.inRange(hsv, Scalar(160.0, 80.0, 40.0), Scalar(180.0, 255.0, 255.0), darkHigh)
+    Core.bitwise_or(dark, darkHigh, dark)
     val blue = mats.mat()
     Core.inRange(hsv, Scalar(98.0, 60.0, 40.0), Scalar(130.0, 255.0, 255.0), blue)
-    components(red, mats).map { it.first }.mapNotNull { box ->
+    components(dark, mats).filter { (box, area) ->
+        Core.countNonZero(mats.own(red.submat(box))) >= FeatureParams.HEART_MIN_RED * area
+    }.map { it.first }.mapNotNull { box ->
         val p = FeatureParams
         if (box.width !in p.HEART_MIN_PX..p.HEART_MAX_PX ||
             box.height !in p.HEART_MIN_PX..p.HEART_MAX_PX

@@ -422,8 +422,12 @@ internal object PosterMlKit {
     /** Margin around a doubtful room's box for the second reader. */
     private const val DOUBT_PAD = 4
 
-    /** The second, wider crop of an exit-sign patch. */
-    private const val SIGN_PAD = 6
+    /**
+     * Margin added around an exit-sign patch for the second reader. None: the patch already
+     * has 4 px, and more shrinks the sign's small letters and pulls in neighbouring red (EH3,
+     * Nov 14: three of eight signs read empty at 6 px, all eight read EXIT at 0).
+     */
+    private const val SIGN_PAD = 0
 
     private fun padded(r: Rect, pad: Int) = Rect(
         r.left - pad,
