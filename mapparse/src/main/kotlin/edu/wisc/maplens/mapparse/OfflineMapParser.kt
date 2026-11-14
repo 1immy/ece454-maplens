@@ -127,7 +127,7 @@ class OfflineMapParser(
         }
         timer.mark("corridors")
         val warnings = mutableListOf("Check the corridors against the poster before saving.")
-        val readings = try {
+        val raw = try {
             ocr.await()
         } catch (_: CvException) {
             warnings += "Room recognition failed. Check or enter room labels in review."
@@ -137,7 +137,10 @@ class OfflineMapParser(
         checkCancellation()
         onProgress(ParseProgress(ParseStage.PLACE_ROOMS))
         // The poster's floor, from its own room numbers (EH posters exist for every floor).
-        val floor = posterFloor(readings)
+        val floor = posterFloor(raw)
+        // A wall line through a printed number drops a digit ("3540" read "354"): read again.
+        val readings = repairCutNumbers(flat, raw, floor)
+        timer.mark("cut numbers")
         val rooms = distinctRooms(readings, floor)
         if (rooms.isEmpty()) {
             warnings += "No room numbers read. Check focus or enter labels in review."
