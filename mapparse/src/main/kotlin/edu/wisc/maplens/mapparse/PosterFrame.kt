@@ -35,8 +35,9 @@ internal fun checkCancellation() {
 }
 
 internal class PosterFrame {
-    fun corners(bgr: Mat): List<Point> = Mats().use { mats ->
-        val scale = 1500.0 / maxOf(bgr.cols(), bgr.rows())
+    /** The frame's corners, TL TR BR BL; found on a copy whose long side is [workSide] px. */
+    fun corners(bgr: Mat, workSide: Double = 1500.0): List<Point> = Mats().use { mats ->
+        val scale = workSide / maxOf(bgr.cols(), bgr.rows())
         val small = mats.mat()
         Imgproc.resize(
             bgr,

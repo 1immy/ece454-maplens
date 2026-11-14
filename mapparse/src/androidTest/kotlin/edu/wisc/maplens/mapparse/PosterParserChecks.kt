@@ -54,6 +54,8 @@ class PosterParserChecks : Instrumentation() {
 
     /** `-e warm true`: a probe parses after [PosterWarmup], as it does behind the camera. */
     private var warm = false
+    private var aimSide = 1280
+    private var imported = false
 
     private fun warmUp() {
         if (!warm) return
@@ -70,6 +72,8 @@ class PosterParserChecks : Instrumentation() {
         warm = arguments?.getString("warm") == "true"
         all = arguments?.getString("all") == "true"
         only = arguments?.getString("only")
+        imported = arguments?.getString("imported") == "true"
+        aimSide = arguments?.getString("side")?.toIntOrNull() ?: 1280
         start()
     }
 
@@ -96,6 +100,7 @@ class PosterParserChecks : Instrumentation() {
                 when (only) {
                     "settledDoubts" -> checkSettledDoubts()
                     "reachedTargets" -> checkReachedTargets()
+                    "aim" -> checkAim()
                     else -> error("no check named $only")
                 }
             }
@@ -963,6 +968,46 @@ class PosterParserChecks : Instrumentation() {
         File(output, "photos.json").writeText(reports.toString(2))
     }
 
+    /** The live aim detector on every fixture photo at preview size: angles and time per look. */
+    private fun checkAim() {
+        val results = JSONObject()
+        val photos = context.assets.list("").orEmpty().filter {
+            it.endsWith(".jpg") && it.matches(Regex(".*-[0-9]{2}-.*"))
+        }
+        for (photo in photos) {
+            PosterAim.workSide = aimSide.toDouble()
+            val bitmap = load(photo, maxSide = aimSide)
+            try {
+                // iPhone 13 Pro Max main camera, 26 mm equivalent.
+                val focal = 26 / 43.27 * kotlin.math.hypot(
+                    bitmap.width.toDouble(),
+                    bitmap.height.toDouble(),
+                )
+                PosterAim.look(bitmap, 0, focal)
+                val times = List(5) {
+                    val start = SystemClock.elapsedRealtimeNanos()
+                    PosterAim.look(bitmap, 0, focal)
+                    (SystemClock.elapsedRealtimeNanos() - start) / 1e6
+                }
+                val seen = PosterAim.look(bitmap, 0, focal)
+                results.put(
+                    photo,
+                    JSONObject()
+                        .put("problem", seen.problem?.name ?: JSONObject.NULL)
+                        .put("yaw", seen.yawDegrees).put("pitch", seen.pitchDegrees)
+                        .put("fill", seen.fill).put("ms", times.sorted()[2])
+                        .put("size", JSONArray(listOf(seen.width, seen.height)))
+                        .put("corners", JSONArray(seen.corners?.toList())),
+                )
+            } finally {
+                bitmap.recycle()
+            }
+        }
+        File(output, "aim.json").writeText(results.toString(2))
+        // A non-debuggable probe can't be read with run-as.
+        Log.i("MapLensAim", results.toString())
+    }
+
     /** Process-wide peak since launch. Snapshots of PSS miss the detector's transient buffers. */
     private fun peakRssKiB(): Long = File("/proc/self/status").readLines()
         .first { it.startsWith("VmHWM") }.filter(Char::isDigit).toLong()
@@ -1021,15 +1066,34 @@ class PosterParserChecks : Instrumentation() {
         try {
             requireOpenCv()
             threads?.let(org.opencv.core.Core::setNumThreads)
-            val options = BitmapFactory.Options().apply { inSampleSize = 1 }
-            val raw = checkNotNull(BitmapFactory.decodeFile(path, options)) { "cannot read $path" }
-            val scale = minOf(1f, 3200f / maxOf(raw.width, raw.height))
-            val bitmap = android.graphics.Bitmap.createScaledBitmap(
-                raw,
-                (raw.width * scale).toInt(),
-                (raw.height * scale).toInt(),
-                true,
-            )
+            val bitmap = if (imported) {
+                // As the app's "Use a photo" decodes: EXIF turn applied, ImageDecoder scaling.
+                android.graphics.ImageDecoder.decodeBitmap(
+                    android.graphics.ImageDecoder.createSource(File(path)),
+                ) { decoder, info, _ ->
+                    decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+                    val side = maxOf(info.size.width, info.size.height)
+                    if (side > 3200) {
+                        val scale = 3200f / side
+                        decoder.setTargetSize(
+                            Math.round(info.size.width * scale),
+                            Math.round(info.size.height * scale),
+                        )
+                    }
+                }
+            } else {
+                val options = BitmapFactory.Options().apply { inSampleSize = 1 }
+                val raw = checkNotNull(BitmapFactory.decodeFile(path, options)) {
+                    "cannot read $path"
+                }
+                val scale = minOf(1f, 3200f / maxOf(raw.width, raw.height))
+                android.graphics.Bitmap.createScaledBitmap(
+                    raw,
+                    (raw.width * scale).toInt(),
+                    (raw.height * scale).toInt(),
+                    true,
+                )
+            }
             warmUp()
             val parsed = OfflineMapParser().parse(bitmap)
             PosterWarmup.release()

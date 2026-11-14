@@ -11,9 +11,15 @@ import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.hardware.camera2.CameraCharacteristics
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
@@ -24,6 +30,7 @@ import android.util.Size
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -33,7 +40,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
@@ -49,6 +60,7 @@ import edu.wisc.maplens.mapparse.OfflineMapParser
 import edu.wisc.maplens.mapparse.ParseProgress
 import edu.wisc.maplens.mapparse.ParseResult
 import edu.wisc.maplens.mapparse.ParseStage
+import edu.wisc.maplens.mapparse.PosterAim
 import edu.wisc.maplens.mapparse.PosterRetakeException
 import edu.wisc.maplens.mapparse.PosterWarmup
 import edu.wisc.maplens.model.FloorGraph
@@ -56,10 +68,13 @@ import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.routing.AStarRouter
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /** Owns one capture/review session, independently of the bundled navigation demo. */
 class PosterCaptureActivity : ComponentActivity() {
     private lateinit var cameraView: PreviewView
+    private lateinit var cameraFrame: FrameLayout
+    private lateinit var aimOverlay: AimOverlay
     private lateinit var photoView: ImageView
     private lateinit var progress: PosterProgressView
     private lateinit var map: MapView
@@ -85,6 +100,27 @@ class PosterCaptureActivity : ComponentActivity() {
     private var camera: ProcessCameraProvider? = null
     private var preview: Preview? = null
     private var capture: ImageCapture? = null
+    private var analysis: ImageAnalysis? = null
+
+    /** Preview frames are looked at here, one at a time, for the framing hints. */
+    private val aimWorker = Executors.newSingleThreadExecutor()
+    private val aimGuide = AimGuide()
+    private var lastLookMs = 0L
+
+    /** Lens focal length over the sensor's long side (focal pixels per pixel of long side). */
+    @Volatile private var focalShare = DEFAULT_FOCAL_SHARE
+
+    /** Latest turn rate of the phone (rad/s): a turning phone blurs the photo. */
+    @Volatile private var turnRate = 0.0
+    private val sensors by lazy { getSystemService(SensorManager::class.java) }
+    private val gyro = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            val (x, y, z) = event.values
+            turnRate = sqrt((x * x + y * y + z * z).toDouble())
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    }
     private var session = NavigationSession(AStarRouter())
     private var review: ParseResult? = null
     private var busy = false
@@ -121,6 +157,11 @@ class PosterCaptureActivity : ComponentActivity() {
         cameraView = PreviewView(this).apply {
             scaleType = PreviewView.ScaleType.FIT_CENTER
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        }
+        aimOverlay = AimOverlay(this)
+        cameraFrame = FrameLayout(this).apply {
+            addView(cameraView, FrameLayout.LayoutParams(-1, -1))
+            addView(aimOverlay, FrameLayout.LayoutParams(-1, -1))
         }
         photoView = ImageView(this).apply {
             visibility = View.GONE
@@ -270,7 +311,7 @@ class PosterCaptureActivity : ComponentActivity() {
             }
             addView(topBar, LinearLayout.LayoutParams(-1, -2).apply { marginStart = -dp(12) })
             addView(status)
-            addView(cameraView, LinearLayout.LayoutParams(-1, 0, 1f))
+            addView(cameraFrame, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(photoView, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(map, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(mapBar)
@@ -284,8 +325,17 @@ class PosterCaptureActivity : ComponentActivity() {
         if (hasCameraPermission()) startCamera() else showPermission()
     }
 
+    override fun onResume() {
+        super.onResume()
+        sensors?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let {
+            sensors?.registerListener(gyro, it, SensorManager.SENSOR_DELAY_UI)
+        }
+    }
+
     override fun onPause() {
         super.onPause()
+        sensors?.unregisterListener(gyro)
+        turnRate = 0.0
         if (busy) resetCapture()
     }
 
@@ -294,6 +344,7 @@ class PosterCaptureActivity : ComponentActivity() {
         stopCamera()
         PosterWarmup.release()
         worker.shutdown()
+        aimWorker.shutdown()
         super.onDestroy()
     }
 
@@ -319,7 +370,7 @@ class PosterCaptureActivity : ComponentActivity() {
         progress.visibility = View.GONE
         photoView.visibility = View.GONE
         photoView.setImageDrawable(null)
-        cameraView.visibility = View.VISIBLE
+        cameraFrame.visibility = View.VISIBLE
         // Load the Fast parser's models while the poster is being framed.
         if (fastMode) PosterWarmup.start()
         val pending = ProcessCameraProvider.getInstance(this)
@@ -346,10 +397,27 @@ class PosterCaptureActivity : ComponentActivity() {
                     .setResolutionSelector(resolution)
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                     .build()
-                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, view, photo)
+                val look = aimAnalysis()
+                val bound = try {
+                    provider.bindToLifecycle(
+                        this,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        view,
+                        photo,
+                        look,
+                    )
+                } catch (failure: IllegalArgumentException) {
+                    // A camera that can't stream a third output still takes the photo.
+                    Log.w(TAG, "No framing hints on this camera", failure)
+                    provider.unbindAll()
+                    aimOverlay.visibility = View.GONE
+                    provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, view, photo)
+                }
+                focalShare = focalShare(bound)
                 camera = provider
                 preview = view
                 capture = photo
+                analysis = look.takeIf { aimOverlay.visibility == View.VISIBLE }
                 ready(message ?: getString(R.string.poster_ready))
             } catch (failure: Exception) {
                 Log.w(TAG, "Camera bind failed", failure)
@@ -361,9 +429,75 @@ class PosterCaptureActivity : ComponentActivity() {
     private fun stopCamera() {
         preview?.let { camera?.unbind(it) }
         capture?.let { camera?.unbind(it) }
+        analysis?.let {
+            it.clearAnalyzer()
+            camera?.unbind(it)
+        }
         preview = null
         capture = null
+        analysis = null
+        aimOverlay.clear()
     }
+
+    /** Small, latest-only preview frames for the framing hints. */
+    private fun aimAnalysis(): ImageAnalysis {
+        val size = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    Size(AIM_FRAME_WIDTH, AIM_FRAME_HEIGHT),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                )
+            )
+            .build()
+        return ImageAnalysis.Builder()
+            .setResolutionSelector(size)
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+            .build()
+            .apply { setAnalyzer(aimWorker, ::lookForPoster) }
+    }
+
+    /** On [aimWorker]: finds the map in one preview frame and posts the hint. */
+    private fun lookForPoster(image: ImageProxy) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastLookMs < AIM_INTERVAL_MS) {
+            image.close()
+            return
+        }
+        lastLookMs = now
+        val sighting = image.use {
+            val frame = it.toBitmap()
+            try {
+                val focal = focalShare * maxOf(frame.width, frame.height)
+                runCatching { PosterAim.look(frame, it.imageInfo.rotationDegrees, focal) }
+                    .onFailure { failure -> Log.w(TAG, "Framing look failed", failure) }
+                    .getOrNull()
+            } finally {
+                frame.recycle()
+            }
+        }
+        runOnUiThread {
+            if (analysis == null || busy || isDestroyed) return@runOnUiThread
+            aimOverlay.show(aimGuide.update(sighting, now, turnRate))
+        }
+    }
+
+    /**
+     * The lens's focal length over the sensor's long side, so a frame's focal length in pixels
+     * is this times its long side. Assumes the 4:3 stream spans the sensor's width.
+     */
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+    private fun focalShare(camera: Camera): Double = runCatching {
+        val info = Camera2CameraInfo.from(camera.cameraInfo)
+        val focal = checkNotNull(
+            info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+        ).first()
+        val sensor = checkNotNull(
+            info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+        )
+        (focal / maxOf(sensor.width, sensor.height)).toDouble()
+    }.getOrDefault(DEFAULT_FOCAL_SHARE)
 
     private fun ready(message: CharSequence = getString(R.string.poster_ready)) {
         busy = false
@@ -491,7 +625,7 @@ class PosterCaptureActivity : ComponentActivity() {
                 if (id == generation && !isDestroyed) {
                     photoView.setImageBitmap(shown)
                     photoView.visibility = View.VISIBLE
-                    cameraView.visibility = View.GONE
+                    cameraFrame.visibility = View.GONE
                 }
             }
             val began = android.os.SystemClock.elapsedRealtime()
@@ -598,7 +732,7 @@ class PosterCaptureActivity : ComponentActivity() {
         fastSwitch.isEnabled = true
         PosterWarmup.release()
         stopCamera()
-        cameraView.visibility = View.GONE
+        cameraFrame.visibility = View.GONE
         photoView.visibility = View.GONE
         photoView.setImageDrawable(null)
         progress.visibility = View.GONE
@@ -801,5 +935,15 @@ class PosterCaptureActivity : ComponentActivity() {
         const val MAX_PHOTO_SIDE = 3200
         const val PHOTO_VIEW_SIDE = 1280
         const val TAG = "PosterCapture"
+
+        /** Framing-hint frames: the size the detector was checked at (Nov 14, 16 photos). */
+        const val AIM_FRAME_WIDTH = 1280
+        const val AIM_FRAME_HEIGHT = 960
+
+        /** About 8 looks a second: steady hints, and the CPU stays free for the warm-up. */
+        const val AIM_INTERVAL_MS = 120L
+
+        /** Focal length over sensor long side when the camera won't say: a 26 mm phone lens. */
+        const val DEFAULT_FOCAL_SHARE = 0.75
     }
 }
