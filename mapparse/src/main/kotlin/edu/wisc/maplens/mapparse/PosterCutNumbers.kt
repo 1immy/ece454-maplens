@@ -1,6 +1,7 @@
 package edu.wisc.maplens.mapparse
 
 import android.graphics.Rect
+import android.util.Log
 import org.opencv.core.Core
 import org.opencv.core.Mat
 import org.opencv.core.Scalar
@@ -22,10 +23,11 @@ internal data class CutNumberParams(
 
 /**
  * Room numbers a wall line crosses lose the crossed digit: EH3's "3540" has a wall corner
- * through its 0 and reads "354". Such a read is a digit short of the poster's room numbers
- * but as wide as a full one. Each is read again from a crop with the long straight lines
- * erased, and replaced when the reread is a room number on [floor] that keeps every digit
- * already read. Other reads pass through unchanged.
+ * through its 0 and reads "354", or "354p" when the line turns the 0 into a letter. Such a
+ * read is a digit short of the poster's room numbers but as wide as a full one. Each is read
+ * again from a crop with the long straight lines erased, and replaced by the surest reread
+ * that is a room number on [floor] keeping every digit already read.
+ * Other reads pass through unchanged.
  */
 internal fun repairCutNumbers(
     bgr: Mat,
@@ -35,34 +37,49 @@ internal fun repairCutNumbers(
 ): List<PosterReading> {
     val suspects = cutNumberSuspects(readings, floor, params)
     if (suspects.isEmpty()) return readings
+    // A crossing line makes the read's own box taller: size lines by a clean number's.
+    val height = readings.filter { !it.possible && normalizeRoom(it.text) != null }
+        .map { it.box.height() }.sorted().let { it[it.size / 2] }
     // One copy of the map with the lines erased around every suspect, read in one batch.
     val clean = bgr.clone()
-    try {
-        // A crossing line makes the read's own box taller: size lines by a clean number's.
-        val height = readings.filter { !it.possible && normalizeRoom(it.text) != null }
-            .map { it.box.height() }.sorted().let { it[it.size / 2] }
+    val rereads = try {
         val areas = suspects.map { i -> eraseLines(clean, readings[i].box, height, params) }
-        val rereads = recheckEach(clean, areas)
-        val fixed = readings.toMutableList()
-        suspects.forEachIndexed { k, i ->
-            val short = readings[i]
-            val better = rereads[k].filter { it.confidence >= params.minConfidence }
-                .mapNotNull { r -> normalizeRoom(r.text)?.let { r.copy(text = it) } }
-                .firstOrNull { keepsDigits(digitsOf(short.text), it.text, floor) }
-            if (better != null) {
-                fixed[i] = short.copy(
-                    text = better.text,
-                    confidence = minOf(short.confidence, better.confidence),
-                )
-            }
-        }
-        return fixed
+        recheckEach(clean, areas)
     } finally {
         clean.release()
     }
+    val fixed = readings.toMutableList()
+    suspects.forEachIndexed { k, i ->
+        val short = readings[i]
+        Log.d(
+            "MapLensParse",
+            "cut number ${short.text} ${short.box}: reread " +
+                rereads[k].joinToString { "${it.text} ${"%.2f".format(it.confidence)}" },
+        )
+        val stray = digitsOf(short.text).length != short.text.count(Char::isLetterOrDigit)
+        val better = rereads[k].filter { it.confidence >= params.minConfidence }
+            .mapNotNull { r -> normalizeRoom(r.text)?.let { r.copy(text = it) } }
+            .filter { keepsDigits(digitsOf(short.text), it.text, floor) }
+            .maxByOrNull { it.confidence }
+        if (better != null) {
+            fixed[i] = short.copy(
+                text = better.text,
+                // A stray letter is the cut digit misread, not doubt about the others.
+                confidence = if (stray) {
+                    better.confidence
+                } else {
+                    minOf(short.confidence, better.confidence)
+                },
+            )
+        }
+    }
+    return fixed
 }
 
-/** Indexes of reads a digit short of the poster's room numbers yet as wide as one. */
+/**
+ * Indexes of reads a digit short of the poster's room numbers yet as wide as one, with at most
+ * one stray letter where the cut digit was ("354p").
+ */
 internal fun cutNumberSuspects(
     readings: List<PosterReading>,
     floor: Char?,
@@ -79,8 +96,9 @@ internal fun cutNumberSuspects(
     return readings.indices.filter { i ->
         val r = readings[i]
         val text = digitsOf(r.text)
-        val onlyDigits = text.length == r.text.count(Char::isLetterOrDigit)
-        !r.possible && text.length == digits - 1 && onlyDigits &&
+        val symbols = r.text.count(Char::isLetterOrDigit)
+        val stray = symbols == text.length + 1 && normalizeRoom(r.text) == null
+        !r.possible && text.length == digits - 1 && (symbols == text.length || stray) &&
             (floor == null || text.first() == floor) &&
             r.box.width() >= params.minWidthShare * typical &&
             // A full number read over the same print already names it.

@@ -1098,6 +1098,8 @@ class PosterParserChecks : Instrumentation() {
             val parsed = OfflineMapParser().parse(bitmap)
             PosterWarmup.release()
             writeGraph("probe", parsed.graph)
+            // A non-debuggable probe can't be read with run-as.
+            Log.i("MapLensProbe", "rooms " + parsed.graph.landmarks.map { it.label }.sorted())
             writeProbeReadings()
             File(output, "probe.warnings.json").writeText(JSONArray(parsed.warnings).toString(2))
             File(output, "probe.jpg").outputStream().use {
