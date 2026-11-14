@@ -2,6 +2,7 @@ package edu.wisc.maplens.tracking
 
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
+import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.SignObservation
 import kotlin.math.abs
 
@@ -14,12 +15,17 @@ import kotlin.math.abs
  * - [distancePx]: rough distance to the sign in map pixels, from how tall its characters
  *   look ([SignText.distanceMeters]), or null if unknown.
  *
+ * - [roomCenter]: where the room's number is printed on the map. It says which side of the
+ *   corridor the room (and so the sign on its wall) is on, which turns the camera bearing
+ *   into a heading fix.
+ *
  * Without either, the walker is only known to be near the door.
  */
 data class SignSighting(
     val observation: SignObservation,
     val bearingRad: Double? = null,
     val distancePx: Double? = null,
+    val roomCenter: PixelPoint? = null,
 )
 
 /** What the tracker did with a sign, for the screen and the session log. */
@@ -35,6 +41,13 @@ data class SignResult(
     val spreadAfterPx: Double = 0.0,
     /** Step length after a refinement at this sign, or null if k was left alone. */
     val refinedStepLengthPx: Double? = null,
+    /** True when the cloud was elsewhere and was moved to the sign ([TrackingConfig.signRelocates]). */
+    val relocated: Boolean = false,
+    /**
+     * Correction to add to the heading offset θ0: the true map bearing of the sign from where
+     * the walker stands, minus the bearing the camera measured. Null when it can't be told.
+     */
+    val headingFixRad: Double? = null,
 )
 
 enum class SignOutcome {

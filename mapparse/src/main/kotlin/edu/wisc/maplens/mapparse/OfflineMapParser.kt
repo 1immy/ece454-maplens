@@ -1,6 +1,9 @@
 package edu.wisc.maplens.mapparse
 
 import android.graphics.Bitmap
+import android.os.SystemClock
+import android.util.Log
+import edu.wisc.maplens.model.PixelPoint
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Core
@@ -20,6 +23,9 @@ private const val MIN_FRAME_WIDTH = 500.0
 private const val MIN_SHARPNESS = 11.0
 private const val UNCLEAR_PHOTO_WARNING =
     "The photo is small or blurred, so room numbers may be misread. Move closer and retake."
+
+// Fewer sure room reads than this, and the poster may be hung on its side.
+private const val FEW_ROOMS = 5
 
 // Every poster with a floor plan yields over 2000 px of corridor.
 private const val MIN_CORRIDOR_LENGTH = 1000.0
@@ -45,61 +51,127 @@ class OfflineMapParser(
         frame.warp(bgr, corners, flat)
         bgr.release()
         val rectified = bitmapFromBgr(flat)
-        try {
-            val unclear = sourceWidth < CLEAR_FRAME_WIDTH || sharpness(flat) < MIN_SHARPNESS
-            parseRectified(rectified, flat).let {
-                if (unclear) it.copy(warnings = it.warnings + UNCLEAR_PHOTO_WARNING) else it
-            }
+        val unclear = sourceWidth < CLEAR_FRAME_WIDTH || sharpness(flat) < MIN_SHARPNESS
+        val first = try {
+            parseRectified(rectified, flat)
         } catch (failure: Exception) {
             rectified.recycle()
             throw failure
+        }
+        // A poster hung on its side (EH3 stair 3542: landscape plan in a portrait frame) has
+        // its room numbers running vertically, and the reader only reads level text. When
+        // almost nothing was read, find the turn that makes the print level and parse again.
+        val upright = if (first.rooms.count { !it.possible } < FEW_ROOMS) {
+            uprightTurn(rectified)?.let { rotation ->
+                val turned = mats.mat()
+                Core.rotate(flat, turned, rotation)
+                val image = bitmapFromBgr(turned)
+                val again = runCatching { parseRectified(image, turned) }.getOrNull()
+                if (again != null && again.rooms.size > first.rooms.size) {
+                    first.rectified.recycle()
+                    again
+                } else {
+                    image.recycle()
+                    null
+                }
+            }
+        } else {
+            null
+        }
+        val result = upright ?: first
+        return@use if (unclear) {
+            result.copy(warnings = result.warnings + UNCLEAR_PHOTO_WARNING)
+        } else {
+            result
         }
     }
 
     internal fun parseRectified(rectified: Bitmap, flat: Mat): ParseResult = Mats().use { mats ->
         checkCancellation()
         onProgress(ParseProgress(ParseStage.CORRIDORS))
-        val hsv = mats.mat()
-        Imgproc.cvtColor(flat, hsv, Imgproc.COLOR_BGR2HSV)
-        val routes = mats.mat()
-        routeMask(hsv, routes, mats)
-        val stars = detectStars(hsv)
-        val extracted = PosterCorridors().extract(routes, stars, flat)
-        val corridors = recoverMarkerCorridor(hsv, routes, extracted, stars, flat)
-        if (corridors.edges.sumOf { it.lengthPx } < MIN_CORRIDOR_LENGTH) {
-            throw PosterRetakeException(
-                "No corridors found. Fill the frame with the floor plan and avoid glare.",
-            )
+        val timer = StageTimer()
+        // Reading the print doesn't depend on the corridors, so it runs alongside them, on its
+        // own copy of the image.
+        val ocrImage = flat.clone()
+        val ocr = Background {
+            try {
+                onProgress(ParseProgress(ParseStage.FIND_TEXT))
+                PosterMlKit.readPoster(rectified, ocrImage)
+            } finally {
+                ocrImage.release()
+            }
         }
+        val hsv = mats.mat()
+        val routes = mats.mat()
+        val stars: List<PixelPoint>
+        val corridors = try {
+            Imgproc.cvtColor(flat, hsv, Imgproc.COLOR_BGR2HSV)
+            routeMask(hsv, routes, mats)
+            stars = detectStars(hsv)
+            timer.mark("route mask + stars")
+            val extracted = PosterCorridors().extract(routes, stars, flat)
+            timer.mark("extract")
+            recoverMarkerCorridor(hsv, routes, extracted, stars, flat).let { traced ->
+                // The trace bends into the gold star: straighten it there before rooms attach.
+                stars.singleOrNull()?.let(traced::straightenedAround) ?: traced
+            }.also {
+                if (it.edges.sumOf { edge -> edge.lengthPx } < MIN_CORRIDOR_LENGTH) {
+                    throw PosterRetakeException(
+                        "No corridors found. Fill the frame with the floor plan and avoid glare.",
+                    )
+                }
+            }
+        } catch (failure: Throwable) {
+            ocr.cancel()
+            throw failure
+        }
+        timer.mark("corridors")
         val warnings = mutableListOf("Check the corridors against the poster before saving.")
         val readings = try {
-            recognizePoster(flat, onProgress)
+            ocr.await()
         } catch (_: CvException) {
             warnings += "Room recognition failed. Check or enter room labels in review."
             emptyList()
         }
+        timer.mark("ocr")
         checkCancellation()
         onProgress(ParseProgress(ParseStage.PLACE_ROOMS))
-        val rooms = distinctRooms(readings)
+        // The poster's floor, from its own room numbers (EH posters exist for every floor).
+        val floor = posterFloor(readings)
+        val rooms = distinctRooms(readings, floor)
         if (rooms.isEmpty()) {
             warnings += "No room numbers read. Check focus or enter labels in review."
         }
         val labeled = if (rooms.isEmpty()) {
             RoomAttachments(corridors, emptyList())
         } else {
-            corridors.attachRooms(
-                rooms,
-                wallMask(flat, routes, readings),
-                flat.cols(),
-                warnings,
-            )
+            val walls = wallMask(flat, routes, readings)
+            timer.mark("wall mask")
+            corridors.attachRooms(rooms, walls, flat.cols(), warnings)
         }
-        val graph = resolveStart(labeled.graph, stars, warnings)
+        timer.mark("attach rooms")
+        val features = exitSigns(readings) + elevatorIcons(hsv) + aedIcons(hsv)
+        timer.mark("features")
+        val graph = resolveStart(labeled.graph, stars, warnings).attachFeatures(features)
+            .let { if (floor != null) it.copy(floor = floor.toString()) else it }
+        timer.mark("rooms+features")
         val possible = distinctRooms(
             readings.filter { it.possible }.map { it.copy(possible = false) },
+            floor,
         ).filter { weak -> rooms.none { it.text == weak.text } }
             .map { RoomPreview(it.text, it.box, null, it.confidence, possible = true) }
         ParseResult(graph, rectified, warnings, labeled.rooms + possible)
+    }
+}
+
+/** Logs how long each parse stage took, for tuning parse time on a phone. */
+internal class StageTimer {
+    private var last = SystemClock.elapsedRealtime()
+
+    fun mark(stage: String) {
+        val now = SystemClock.elapsedRealtime()
+        Log.i("MapLensParse", "$stage ${now - last} ms")
+        last = now
     }
 }
 

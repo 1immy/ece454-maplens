@@ -139,7 +139,14 @@ class SessionLog(private val out: Writer) {
     fun sign(timestampNs: Long, label: String, result: SignResult, pose: PoseEstimate?) = row(
         timestampNs,
         "sign",
-        "$label:${result.reason.name}",
+        // e.g. "3546:ACCEPTED:MOVED:FIX-31": the cloud was moved, θ0 turned by -31°.
+        buildString {
+            append("$label:${result.reason.name}")
+            if (result.relocated) append(":MOVED")
+            result.headingFixRad?.let {
+                append(":FIX").append(String.format(Locale.US, "%+.0f", Math.toDegrees(it)))
+            }
+        },
         pose,
         errorPx = result.spreadAfterPx,
         kPx = result.refinedStepLengthPx,

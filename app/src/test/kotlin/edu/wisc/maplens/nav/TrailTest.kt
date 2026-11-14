@@ -14,7 +14,9 @@ class TrailTest {
         assertEquals(PixelPoint(5.0, 0.0), trail.pointAt(5.0))
         assertEquals(PixelPoint(10.0, 5.0), trail.pointAt(15.0))
         assertEquals(PixelPoint(10.0, 5.0), trail.pointAt(25.0))
-        assertEquals(PixelPoint(10.0, 0.0), trail.pointAt(99.0))
+        // Past the end it carries on the way the last stretch went, at most 40 px.
+        assertEquals(PixelPoint(10.0, -5.0), trail.pointAt(35.0))
+        assertEquals(PixelPoint(10.0, -40.0), trail.pointAt(99.0))
         assertEquals(PixelPoint(0.0, 0.0), trail.pointAt(-1.0))
     }
 

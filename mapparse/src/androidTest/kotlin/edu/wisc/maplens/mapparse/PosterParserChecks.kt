@@ -39,12 +39,31 @@ private val WALL = Scalar(40.0, 40.0, 40.0)
 class PosterParserChecks : Instrumentation() {
     private val output by lazy { File(targetContext.filesDir, "poster-eval").apply { mkdirs() } }
 
+    private var probe: String? = null
+    private var photo: String? = null
+    private var compare: String? = null
+
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
+        probe = arguments?.getString("probe")
+        photo = arguments?.getString("photo")
+        compare = arguments?.getString("compare")
         start()
     }
 
     override fun onStart() {
+        probe?.let { path ->
+            runProbe(path)
+            return
+        }
+        photo?.let { path ->
+            runPhoto(path)
+            return
+        }
+        compare?.let { path ->
+            runCompare(path)
+            return
+        }
         try {
             requireOpenCv()
             checkFaintPaint()
@@ -829,5 +848,91 @@ class PosterParserChecks : Instrumentation() {
 
     private fun writeGraph(name: String, graph: FloorGraph) {
         File(output, "$name.graph.json").writeText(FloorGraphJson.encode(graph))
+    }
+
+    /**
+     * `-e probe <straightened.jpg>`: parses one straightened poster from device storage and
+     * writes its graph, OCR words and warnings to files/poster-eval/probe.*, for debugging.
+     */
+    /**
+     * `-e photo <camera.jpg>`: the whole parse from a camera photo, as the app runs it, writing
+     * probe.graph.json, probe.warnings.json and the straightened probe.jpg.
+     */
+    private fun runPhoto(path: String) {
+        val result = Bundle()
+        try {
+            requireOpenCv()
+            val options = BitmapFactory.Options().apply { inSampleSize = 1 }
+            val raw = checkNotNull(BitmapFactory.decodeFile(path, options)) { "cannot read $path" }
+            val scale = minOf(1f, 3200f / maxOf(raw.width, raw.height))
+            val bitmap = android.graphics.Bitmap.createScaledBitmap(
+                raw,
+                (raw.width * scale).toInt(),
+                (raw.height * scale).toInt(),
+                true,
+            )
+            val parsed = OfflineMapParser().parse(bitmap)
+            writeGraph("probe", parsed.graph)
+            File(output, "probe.warnings.json").writeText(JSONArray(parsed.warnings).toString(2))
+            File(output, "probe.jpg").outputStream().use {
+                parsed.rectified.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it)
+            }
+            result.putString("stream", "Photo parsed to ${output.absolutePath}")
+            finish(Activity.RESULT_OK, result)
+        } catch (failure: Exception) {
+            result.putString("stream", Log.getStackTraceString(failure))
+            finish(Activity.RESULT_CANCELED, result)
+        }
+    }
+
+    /** `-e compare <straightened.jpg>`: PP-OCR vs ML Kit room reads and times, to logcat. */
+    private fun runCompare(path: String) {
+        val result = Bundle()
+        try {
+            requireOpenCv()
+            val bitmap = checkNotNull(BitmapFactory.decodeFile(path)) { "cannot read $path" }
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            val fast = PosterMlKit.read(bitmap)
+            val t1 = android.os.SystemClock.elapsedRealtime()
+            val fastAgain = PosterMlKit.read(bitmap)
+            val t2 = android.os.SystemClock.elapsedRealtime()
+            val slow = Mats().use { mats -> recognizePoster(bitmapBgr(bitmap, mats)) }
+            val t3 = android.os.SystemClock.elapsedRealtime()
+            val a = distinctRooms(fast).map { it.text }.toSortedSet()
+            val b = distinctRooms(slow).map { it.text }.toSortedSet()
+            Log.i("MapLensCompare", "mlkit ${t1 - t0} ms (again ${t2 - t1} ms) rooms ${a.size}")
+            Log.i("MapLensCompare", "ppocr ${t3 - t2} ms rooms ${b.size}")
+            Log.i("MapLensCompare", "only mlkit ${a - b}")
+            Log.i("MapLensCompare", "only ppocr ${b - a}")
+            Log.i("MapLensCompare", "mlkit exits ${fast.filter { isExitText(it.text) }.size}")
+            Log.i("MapLensCompare", "mlkit size ${fastAgain.size}")
+            for (r in fast) Log.i("MapLensLines", "${r.text} | ${r.box} | ${r.confidence}")
+            result.putString("stream", "compared")
+            finish(Activity.RESULT_OK, result)
+        } catch (failure: Exception) {
+            result.putString("stream", Log.getStackTraceString(failure))
+            finish(Activity.RESULT_CANCELED, result)
+        }
+    }
+
+    private fun runProbe(path: String) {
+        val result = Bundle()
+        try {
+            requireOpenCv()
+            val bitmap = checkNotNull(BitmapFactory.decodeFile(path)) { "cannot read $path" }
+            Mats().use { mats ->
+                val bgr = bitmapBgr(bitmap, mats)
+                val parsed = OfflineMapParser().parseRectified(bitmap, bgr)
+                writeGraph("probe", parsed.graph)
+                File(output, "probe.warnings.json").writeText(
+                    JSONArray(parsed.warnings).toString(2),
+                )
+            }
+            result.putString("stream", "Probe written to ${output.absolutePath}")
+            finish(Activity.RESULT_OK, result)
+        } catch (failure: Exception) {
+            result.putString("stream", Log.getStackTraceString(failure))
+            finish(Activity.RESULT_CANCELED, result)
+        }
     }
 }

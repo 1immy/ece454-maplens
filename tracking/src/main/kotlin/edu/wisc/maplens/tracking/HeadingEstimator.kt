@@ -67,6 +67,16 @@ class HeadingEstimator(private val config: TrackingConfig = TrackingConfig()) {
     }
 
     /**
+     * Turns θ0 by [deltaRad], e.g. the fix a room-sign scan measured. False before [align].
+     */
+    fun rotate(deltaRad: Double): Boolean {
+        require(deltaRad.isFinite())
+        val offset = offsetRad ?: return false
+        offsetRad = wrapHeading(offset + deltaRad)
+        return true
+    }
+
+    /**
      * Folds in one game-rotation-vector event and returns the smoothed heading, or null when the
      * sample is invalid, out of order, or the pose has no meaningful facing direction.
      *

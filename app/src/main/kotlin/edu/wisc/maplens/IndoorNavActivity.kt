@@ -78,9 +78,6 @@ import edu.wisc.maplens.nav.PlaceKind
 import edu.wisc.maplens.nav.PlaceMatch
 import edu.wisc.maplens.nav.PlaceSearch
 import edu.wisc.maplens.nav.PuckMotion
-import edu.wisc.maplens.nav.RoomArea
-import edu.wisc.maplens.nav.RoomBounds
-import edu.wisc.maplens.nav.RoomBox
 import edu.wisc.maplens.nav.RoomFinder
 import edu.wisc.maplens.nav.SignDetection
 import edu.wisc.maplens.nav.SignReader
@@ -90,6 +87,7 @@ import edu.wisc.maplens.nav.Trail
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
 import edu.wisc.maplens.nav.rerouteTo
+import edu.wisc.maplens.nav.smoothedCorridors
 import edu.wisc.maplens.robot.Carry
 import edu.wisc.maplens.robot.EscortCue
 import edu.wisc.maplens.robot.EscortState
@@ -140,6 +138,9 @@ class IndoorNavActivity : ComponentActivity() {
     private lateinit var map: IndoorMapView
     private lateinit var topArea: LinearLayout
     private lateinit var searchBar: LinearLayout
+
+    /** The search bar's text: the hint, or the open place's name, as maps apps do. */
+    private lateinit var searchLabel: TextView
     private lateinit var modeChip: TextView
     private lateinit var chips: HorizontalScrollView
 
@@ -218,7 +219,6 @@ class IndoorNavActivity : ComponentActivity() {
     private var search: PlaceSearch? = null
     private var roomFinder: RoomFinder? = null
     private var labelBoxes: Map<String, LabelBox> = emptyMap()
-    private var roomBoxes: Map<String, RoomBox> = emptyMap()
 
     private var screen = Screen.BROWSE
     private var place: Place? = null
@@ -334,7 +334,7 @@ class IndoorNavActivity : ComponentActivity() {
     /** Graph, image, every searchable place and its walking distance from START. */
     private fun loadMap(): Pair<FloorGraph, android.graphics.Bitmap> {
         val savedId = intent.getStringExtra(EXTRA_MAP_ID)
-        val (g, image) = if (savedId == null) {
+        val (loaded, image) = if (savedId == null) {
             MapAssets.loadGraph(this) to MapAssets.loadImage(this)
         } else {
             val store = MapAssets.savedMaps(this)
@@ -342,6 +342,8 @@ class IndoorNavActivity : ComponentActivity() {
             runOnUiThread { mapName = saved.name }
             store.loadGraph(saved) to MapAssets.loadImage(saved)
         }
+        // Routes, turn cues and tracking follow each corridor's straight line, not its trace.
+        val g = loaded.smoothedCorridors()
         val all = g.places()
         val distances = all.mapNotNull { p ->
             val route = if (p.label != null) {
@@ -377,12 +379,9 @@ class IndoorNavActivity : ComponentActivity() {
         // Reading the printed numbers takes a few seconds; taps work from doors until then.
         loader.execute {
             val boxes = MapRooms.labels(image, doors.keys, doors)
-            // Each room's outline, wall to wall, grown once from its printed number.
-            val rooms = RoomBounds.grow(walls, boxes)
             runOnUiThread {
                 finder.labels = boxes
                 labelBoxes = boxes.associateBy { it.label }
-                roomBoxes = rooms
             }
         }
         return g to image
@@ -459,6 +458,14 @@ class IndoorNavActivity : ComponentActivity() {
         screen = next
         val navLike = next == Screen.NAVIGATE || next == Screen.CHECKPOINT || next == Screen.ARRIVED
         searchBar.visibility = shown(next == Screen.BROWSE || next == Screen.PLACE)
+        val open = place.takeIf { next == Screen.PLACE }
+        if (open != null) {
+            searchLabel.text = placeTitle(open)
+            searchLabel.setTextColor(Ui.INK)
+        } else {
+            searchLabel.setText(R.string.in_search_hint)
+            searchLabel.setTextColor(Ui.INK_SECONDARY)
+        }
         chips.visibility = shown(
             next == Screen.BROWSE && featureChips.values.any { it.visibility == View.VISIBLE },
         )
@@ -530,6 +537,7 @@ class IndoorNavActivity : ComponentActivity() {
         place = null
         map.pin = null
         map.pinLabel = null
+        map.choicePins = emptyList()
         map.highlight = null
         map.highlightBox = null
         map.route = emptyList()
@@ -631,14 +639,15 @@ class IndoorNavActivity : ComponentActivity() {
 
     // ---- Place ----
 
-    /** Selects [p]: pin on its printed number (or door), the room tinted, and its card. */
-    private fun openPlace(p: Place, area: RoomArea? = null, moveCamera: Boolean = true) {
+    /** Selects [p]: pin on its printed number (or door) and its card. */
+    private fun openPlace(p: Place, moveCamera: Boolean = true) {
         stopNavigation(toBrowse = false)
         place = p
+        map.choicePins = emptyList()
         val box = p.label?.let { labelBoxes[it] }
         val at = box?.center ?: p.position
         map.route = emptyList()
-        showRoom(p.label, area ?: box?.let { roomFinder?.areaAround(it.center) })
+        clearRoomTint()
         map.pin = at
         map.pinLabel = p.label ?: placeTitle(p)
         show(Screen.PLACE)
@@ -695,32 +704,46 @@ class IndoorNavActivity : ComponentActivity() {
 
     /** A tap on the map: select the room under it, or deselect when there is none. */
     private fun pickRoomAt(tap: PixelPoint) {
+        // While choosing an elevator, a tap near one of its pins picks it.
+        val reach = map.mapDistance(dpf(TAP_DOOR_DP))
+        val chosen = map.choicePins.withIndex()
+            .filter { it.value.distanceTo(tap) <= 2 * reach }
+            .minByOrNull { it.value.distanceTo(tap) }
+        if (chosen != null) {
+            places.firstOrNull { it.position == chosen.value }?.let { return openPlace(it) }
+        }
+        // Exits, elevators and AEDs are places too: a tap on or beside one opens it, like a
+        // room. Their sign is printed beside the corridor point, so the reach is wider.
+        val feature = places.filter { it.kind != PlaceKind.ROOM }
+            .map { it to it.position.distanceTo(tap) }
+            .filter { (_, d) -> d <= FEATURE_TAP_REACH * reach }
+            .minByOrNull { (_, d) -> d }?.first
+        if (feature != null) return openPlace(feature, moveCamera = false)
         val finder = roomFinder ?: return
         val hit = finder.roomAt(tap, map.mapDistance(dpf(TAP_DOOR_DP)))
         val target = hit?.let { h -> places.firstOrNull { it.label == h.label } }
         when {
-            target != null -> openPlace(target, hit.area, moveCamera = false)
-            hit != null -> openUnmapped(hit.label, hit.area)
+            target != null -> openPlace(target, moveCamera = false)
+            hit != null -> openUnmapped(hit.label)
             screen == Screen.PLACE -> clearPlace(moveCamera = false)
         }
     }
 
     /**
-     * Tints the room: its wall-to-wall outline when one was found, which covers the whole room
-     * however much print is inside it, else the enclosed area around the tap.
+     * Rooms are marked by the pin alone. A tinted outline claimed an exact room shape that a
+     * poster photo can't give (walls, doors and print run together), so none is drawn.
      */
-    private fun showRoom(label: String?, area: RoomArea?) {
-        val outline = label?.let { roomBoxes[it] }
-        map.highlightBox = outline
-        map.highlight = if (outline == null) area else null
+    private fun clearRoomTint() {
+        map.highlightBox = null
+        map.highlight = null
     }
 
     /** A printed room the traced graph has no door for: name it, but offer no route. */
-    private fun openUnmapped(label: String, area: RoomArea?) {
+    private fun openUnmapped(label: String) {
         stopNavigation(toBrowse = false)
         place = null
         map.route = emptyList()
-        showRoom(label, area)
+        clearRoomTint()
         map.pin = labelBoxes[label]?.center
         map.pinLabel = label
         show(Screen.PLACE)
@@ -1117,6 +1140,16 @@ class IndoorNavActivity : ComponentActivity() {
 
     /** One pose update: session first (the single writer), then everything that renders it. */
     private fun onPose(pose: PoseEstimate) {
+        val began = SystemClock.elapsedRealtimeNanos()
+        try {
+            handlePose(pose)
+        } finally {
+            val ms = (SystemClock.elapsedRealtimeNanos() - began) / 1e6
+            if (ms > SLOW_UI_MS) android.util.Log.w(PERF_TAG, "pose took %.1f ms".format(ms))
+        }
+    }
+
+    private fun handlePose(pose: PoseEstimate) {
         val s = session ?: return
         val g = guide ?: return
         s.onPose(pose)
@@ -1576,8 +1609,10 @@ class IndoorNavActivity : ComponentActivity() {
     /** A room read steadily: hand it to the tracker on the live worker. */
     private fun submitSign(reads: List<SignDetection>) {
         val k = lastPose?.stepLengthPx ?: Demo.STEP_LENGTH_PX
-        val sighting = SignVoter.sighting(reads, SystemClock.elapsedRealtimeNanos(), k / stride)
         val label = reads.first().label
+        // The printed number tells the tracker which side of the corridor the sign is on.
+        val sighting = SignVoter.sighting(reads, SystemClock.elapsedRealtimeNanos(), k / stride)
+            .copy(roomCenter = labelBoxes[label]?.center)
         val meters = reads.mapNotNull { it.distanceMeters }.sorted().let {
             it.getOrNull(
                 it.size / 2
@@ -1609,10 +1644,11 @@ class IndoorNavActivity : ComponentActivity() {
         // The cloud was just re-anchored: confidence starts afresh from here.
         monitor?.reset()
         showSnack(
-            if (meters != null) {
-                getString(R.string.sign_scan_anchored, label, meters)
-            } else {
-                getString(R.string.sign_scan_anchored_near, label)
+            when {
+                result.relocated -> getString(R.string.sign_scan_moved, label)
+                result.headingFixRad != null -> getString(R.string.sign_scan_anchored_facing, label)
+                meters != null -> getString(R.string.sign_scan_anchored, label, meters)
+                else -> getString(R.string.sign_scan_anchored_near, label)
             },
         )
         if (pose != null) onPose(pose)
@@ -1627,19 +1663,21 @@ class IndoorNavActivity : ComponentActivity() {
     ) {
         val arrived = instruction.maneuver == Maneuver.ARRIVE && instruction.stepsUntil == 0
         bannerIcon.maneuver = instruction.maneuver
-        bannerTitle.text = maneuverText(instruction.maneuver, instruction.stepsUntil)
+        bannerTitle.update(maneuverText(instruction.maneuver, instruction.stepsUntil))
         val meters = NavMath.roundedMeters(instruction.stepsUntil * stride)
         val noDistance = arrived || turnAround
-        bannerDistance.text = if (noDistance) "" else getString(R.string.in_step_distance, meters)
+        bannerDistance.update(if (noDistance) "" else getString(R.string.in_step_distance, meters))
         bannerDistance.visibility = if (noDistance) View.GONE else View.VISIBLE
-        bannerDetail.text = if (turnAround) {
-            instruction.detail
-        } else if (arrived) {
-            place?.let { placeTitle(it) }
-        } else {
-            val n = instruction.stepsUntil
-            resources.getQuantityString(R.plurals.in_banner_detail, n, instruction.detail, n)
-        }
+        bannerDetail.update(
+            if (turnAround) {
+                instruction.detail
+            } else if (arrived) {
+                place?.let { placeTitle(it) }
+            } else {
+                val n = instruction.stepsUntil
+                resources.getQuantityString(R.plurals.in_banner_detail, n, instruction.detail, n)
+            },
+        )
         banner.contentDescription = "${bannerTitle.text}, ${bannerDetail.text}"
         // "Then" preview of the maneuver after this one, when it comes soon after.
         val index = g.cues.indexOfFirst { it.distancePx > s }
@@ -1655,18 +1693,28 @@ class IndoorNavActivity : ComponentActivity() {
         if (soon) thenIcon.maneuver = after!!.maneuver
     }
 
+    /**
+     * The arrival-time format, looked up once: each lookup reads the 12/24-hour setting from
+     * the system, 7-16 ms on the UI thread, and it ran on every footfall, so the map stalled a
+     * few frames per step while walking (Pixel 7a, Nov 13).
+     */
+    private val arrivalFormat by lazy { DateFormat.getTimeFormat(this) }
+
     private fun renderEta(g: RouteGuide, s: Double, k: Double) {
         val stepsLeft = g.remainingSteps(s, k).coerceAtLeast(0)
         val meters = stepsLeft * stride
         val minutes = NavMath.walkingMinutes(meters)
         val arrival = Date(System.currentTimeMillis() + minutes * 60_000L)
-        etaText?.text = getString(R.string.in_minutes, minutes)
-        etaDetail?.text = resources.getQuantityString(
-            R.plurals.in_eta_line,
-            stepsLeft,
-            NavMath.roundedMeters(meters),
-            stepsLeft,
-            DateFormat.getTimeFormat(this).format(arrival),
+        etaText?.update(getString(R.string.in_minutes, minutes))
+        val clock = arrivalFormat.format(arrival)
+        etaDetail?.update(
+            resources.getQuantityString(
+                R.plurals.in_eta_line,
+                stepsLeft,
+                NavMath.roundedMeters(meters),
+                stepsLeft,
+                clock,
+            ),
         )
         renderDevLine(k)
     }
@@ -1674,7 +1722,11 @@ class IndoorNavActivity : ComponentActivity() {
     /** The developer readout under the ETA: k, step counts and what the walking gate ignored. */
     private fun renderDevLine(k: Double) {
         val sensors = stats
-        devLine?.text = if (liveMode && sensors != null) {
+        devLine?.update(devText(k, sensors))
+    }
+
+    private fun devText(k: Double, sensors: LiveStats?): String =
+        if (liveMode && sensors != null) {
             getString(
                 R.string.in_dev_live,
                 k,
@@ -1690,6 +1742,13 @@ class IndoorNavActivity : ComponentActivity() {
         } else {
             getString(R.string.in_dev_demo, getString(scenarioLabel(demoScenario)), k)
         }
+
+    /**
+     * Sets text only when it changed. A TextView re-lays out on every set, and the banner and
+     * ETA are refreshed on every footfall.
+     */
+    private fun TextView.update(value: CharSequence?) {
+        if (text?.toString() != value?.toString()) text = value
     }
 
     private fun renderNavigateSheet() {
@@ -1962,9 +2021,15 @@ class IndoorNavActivity : ComponentActivity() {
             background = rounded(Ui.SURFACE, radiusDp = 28)
             elevation = dpf(6f)
             setPadding(dp(4), 0, dp(10), 0)
-            addView(backButton(Ui.INK) { finish() }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            // One step back, like the system back gesture: an open place closes first, and
+            // only the plain map leaves for Home (it used to leave from any screen).
+            addView(
+                backButton(Ui.INK) { backHandler.handleOnBackPressed() },
+                LinearLayout.LayoutParams(dp(48), dp(48)),
+            )
             addView(
                 text(Ui.BODY, Ui.INK_SECONDARY).apply {
+                    searchLabel = this
                     setText(R.string.in_search_hint)
                     gravity = Gravity.CENTER_VERTICAL
                     minHeight = dp(56)
@@ -2628,8 +2693,39 @@ class IndoorNavActivity : ComponentActivity() {
         DemoScenario.WRONG_WAY -> R.string.demo_wrong_way
     }
 
+    /**
+     * A feature shortcut. Exits and AEDs open the nearest one: in a hurry, the closest is the
+     * answer. Elevators differ (banks serve different wings), so with more than one on the
+     * map every elevator gets a pin and a row, and the user picks.
+     */
     private fun openNearest(kind: PlaceKind) {
+        val reachable = places.filter { it.kind == kind && walkPx[it.key] != null }
+            .sortedBy { walkPx.getValue(it.key) }
+        if (kind == PlaceKind.ELEVATOR && reachable.size > 1) return chooseAmong(reachable)
         search?.nearest(kind)?.let(::openPlace)
+    }
+
+    /** Pins every place in [choices] and lists them, nearest first; a pin or row opens one. */
+    private fun chooseAmong(choices: List<Place>) {
+        stopNavigation(toBrowse = false)
+        place = null
+        map.route = emptyList()
+        clearRoomTint()
+        map.pin = null
+        map.pinLabel = null
+        map.choicePins = choices.map { it.position }
+        show(Screen.PLACE)
+        map.fit(choices.map { it.position })
+        setSheet(
+            text(Ui.TITLE, bold = true).apply {
+                text = getString(R.string.in_choose_elevator, choices.size)
+                markHeading()
+            },
+            text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
+                setText(R.string.in_choose_elevator_body)
+            }.withMargins(top = 2, bottom = 8),
+            *choices.map { resultRow(PlaceMatch(it, null)) }.toTypedArray(),
+        )
     }
 
     private fun square(sizeDp: Int) = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
@@ -2657,6 +2753,11 @@ class IndoorNavActivity : ComponentActivity() {
             Intent(context, IndoorNavActivity::class.java).putExtra(EXTRA_MAP_ID, mapId)
 
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+        private const val PERF_TAG = "MapLensPerf"
+
+        /** Tap reach around an exit, elevator or AED, as a multiple of a door's. */
+        private const val FEATURE_TAP_REACH = 2.5
+        private const val SLOW_UI_MS = 16.0
         private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
         private const val STEP_PERMISSION = 8
         private const val CAMERA_PERMISSION = 9

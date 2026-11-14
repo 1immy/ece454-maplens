@@ -43,9 +43,12 @@ internal fun requireOcrModel(bytes: ByteArray) {
     }
 }
 
-/** The label at least two margin re-reads agree on. EH3 rooms all start with 3. */
-internal fun marginVote(rereads: List<String>): String? =
-    rereads.mapNotNull(::normalizeRoom).filter { it.startsWith("3") }
+/**
+ * The label at least two margin re-reads agree on, on [floor] when it is known. Reads happen
+ * before the poster's floor is, so the parser passes null and drops other floors later.
+ */
+internal fun marginVote(rereads: List<String>, floor: Char? = null): String? =
+    rereads.mapNotNull(::normalizeRoom).filter { floor == null || it.first() == floor }
         .groupingBy { it }.eachCount().entries.firstOrNull { it.value >= 2 }?.key
 
 internal data class OcrCharacter(val text: String, val column: Int, val confidence: Float)
@@ -93,6 +96,98 @@ internal fun recognizePoster(
     System.runFinalization()
 }
 
+/**
+ * Which turn (a Core.ROTATE_* code) makes the poster's print level, or null if it already is
+ * or none reads clearly better. Reads one tile from the middle in each orientation, so it
+ * costs a few seconds and only runs when a parse found almost no rooms.
+ */
+internal fun uprightRotation(bgr: Mat): Int? = try {
+    val ocr = PosterOcr {}
+    Mats().use { mats ->
+        val w = minOf(OcrParams.TILE_WIDTH, bgr.cols(), bgr.rows())
+        val left = (bgr.cols() - w) / 2
+        val top = (bgr.rows() - w) / 2
+        val tile = mats.own(bgr.submat(top, top + w, left, left + w).clone())
+        val level = ocr.roomsIn(tile)
+        listOf(Core.ROTATE_90_CLOCKWISE, Core.ROTATE_180, Core.ROTATE_90_COUNTERCLOCKWISE)
+            .map { code ->
+                val turned = mats.mat()
+                Core.rotate(tile, turned, code)
+                code to ocr.roomsIn(turned)
+            }
+            .maxByOrNull { it.second }
+            ?.takeIf { (_, rooms) -> rooms >= MIN_UPRIGHT_ROOMS && rooms > 2 * level }
+            ?.first
+    }
+} finally {
+    System.gc()
+    System.runFinalization()
+}
+
+/**
+ * Whether the print in the middle of the poster runs vertically: most text boxes the detector
+ * finds there are tall rather than wide. One detector pass on one tile, about a second.
+ */
+internal fun looksSideways(bgr: Mat): Boolean = try {
+    val ocr = PosterOcr {}
+    Mats().use { mats ->
+        val w = minOf(OcrParams.TILE_WIDTH, bgr.cols(), bgr.rows())
+        val left = (bgr.cols() - w) / 2
+        val top = (bgr.rows() - w) / 2
+        val tile = mats.own(bgr.submat(top, top + w, left, left + w).clone())
+        val shapes = ocr.boxShapes(tile)
+        shapes.size >= MIN_SHAPE_BOXES && shapes.count { it > TALL_RATIO } > shapes.size / 2
+    }
+} finally {
+    System.gc()
+    System.runFinalization()
+}
+
+private const val MIN_SHAPE_BOXES = 6
+private const val TALL_RATIO = 1.3
+
+/** Room reads needed in the test tile to trust a turn. */
+private const val MIN_UPRIGHT_ROOMS = 3
+
+/**
+ * PP-OCR's recognizer alone on word-sized [regions] (no detector pass): the second look at
+ * patches ML Kit left unread. Readings below the supplemental confidence come back possible.
+ */
+internal fun recheckRegions(bgr: Mat, regions: List<Rect>): List<PosterReading> =
+    recheckEach(bgr, regions).flatten()
+
+/** [recheckRegions] keeping each region's reads apart, with the networks loaded once. */
+internal fun recheckEach(bgr: Mat, regions: List<Rect>): List<List<PosterReading>> {
+    if (regions.isEmpty()) return emptyList()
+    return try {
+        // A few recognizers side by side, each on its own thread and slice of the regions:
+        // each read is single-threaded and small, so they don't compete much.
+        val slices = regions.indices.groupBy { it % RECHECK_THREADS }.values.toList()
+        val bySlice = slices.parallelMap { slice ->
+            val ocr = PosterOcr {}
+            slice.map { i ->
+                val region = regions[i]
+                val quad = arrayOf(
+                    Point(region.left.toDouble(), region.top.toDouble()),
+                    Point(region.right.toDouble(), region.top.toDouble()),
+                    Point(region.right.toDouble(), region.bottom.toDouble()),
+                    Point(region.left.toDouble(), region.bottom.toDouble()),
+                )
+                i to ocr.readQuad(bgr, quad)
+                    .map { it.copy(possible = it.confidence < OcrParams.SUPPLEMENTAL_CONFIDENCE) }
+            }
+        }
+        val reads = bySlice.flatten().toMap()
+        regions.indices.map { reads.getValue(it) }
+    } finally {
+        System.gc()
+        System.runFinalization()
+    }
+}
+
+/** Recognizer copies run at once by [recheckEach]. */
+private const val RECHECK_THREADS = 4
+
 internal fun posterTileOrigins(size: Int, span: Int): List<Int> {
     val last = (size - span).coerceAtLeast(0)
     if (last == 0) return listOf(0)
@@ -102,7 +197,7 @@ internal fun posterTileOrigins(size: Int, span: Int): List<Int> {
 
 /** Native networks for one read. Reloading costs less than holding them through navigation. */
 private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
-    private val detector = network("det.onnx")
+    private val detector by lazy { network("det.onnx") }
     private val recognizer = network("rec.onnx")
     private val alphabet =
         listOf("") + resource("characters.txt").bufferedReader().use { it.readLines() } + " "
@@ -118,8 +213,25 @@ private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
         Dnn.readNetFromONNX(mats.own(MatOfByte(*bytes)))
     }
 
+    /** One recognizer read of [quad], for [recheckRegions]. */
+    fun readQuad(bgr: Mat, quad: Array<Point>): List<PosterReading> = recognize(bgr, quad)
+
+    /** Height over width of each text box the detector finds in [tile]. */
+    fun boxShapes(tile: Mat): List<Double> = detectTile(tile).map { quad ->
+        val w = maxOf(distance(quad[0], quad[1]), distance(quad[2], quad[3]))
+        val h = maxOf(distance(quad[0], quad[3]), distance(quad[1], quad[2]))
+        h / maxOf(w, 1.0)
+    }
+
+    /** Room numbers read in one tile-sized image: the orientation test. */
+    fun roomsIn(tile: Mat): Int = detectTile(tile).count { quad ->
+        recognize(tile, quad).any { normalizeRoom(it.text) != null }
+    }
+
     fun read(bgr: Mat): List<PosterReading> {
+        val timer = StageTimer()
         val quads = detect(bgr)
+        timer.mark("ocr detect (${quads.size} boxes)")
         val sure = mutableListOf<Array<Point>>()
         val primary = quads.flatMapIndexed { index, quad ->
             onProgress(ParseProgress(ParseStage.READ_ROOMS, index, quads.size))
@@ -134,7 +246,9 @@ private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
                 }
             }
         }
-        val rooms = distinctRooms(primary)
+        timer.mark("ocr read")
+        val floor = posterFloor(primary)
+        val rooms = distinctRooms(primary, floor)
         val prose = primary.filter {
             normalizeRoom(it.text) == null && roomRowTokens(it.text).isEmpty() &&
                 standaloneRoomTokens(it.text).isEmpty() && it.text.any(Char::isLetter)
@@ -151,10 +265,35 @@ private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
                 Point(region.right.toDouble(), region.bottom.toDouble()),
                 Point(region.left.toDouble(), region.bottom.toDouble()),
             )
-            recognize(bgr, quad).filter { normalizeRoom(it.text)?.startsWith("3") == true }
+            recognize(bgr, quad).filter { reading ->
+                normalizeRoom(reading.text)?.let { floor == null || it.first() == floor } == true
+            }
                 .map { it.copy(possible = it.confidence < OcrParams.SUPPLEMENTAL_CONFIDENCE) }
         }
-        return primary + supplemental
+        timer.mark("ocr recheck (${regions.size} regions)")
+        // Exit signs are white on red, which the text detector often doesn't box (EH3, Nov 13:
+        // three of seven, including the one beside START). Red patches the size of a sign are
+        // read directly; those that say EXIT join the reads.
+        val found = (primary + supplemental).filter { isExitText(it.text) }
+        val signs = exitPatches(bgr)
+            .filter { patch -> found.none { patch.contains(it.box.centerX(), it.box.centerY()) } }
+            .mapNotNull { patch ->
+                // Two crops: a reading that is borderline in one is usually clean in the other.
+                val reads = listOf(0.0, 6.0).flatMap { pad ->
+                    val quad = arrayOf(
+                        Point(patch.left - pad, patch.top - pad),
+                        Point(patch.right + pad, patch.top - pad),
+                        Point(patch.right + pad, patch.bottom + pad),
+                        Point(patch.left - pad, patch.bottom + pad),
+                    )
+                    recognize(bgr, quad)
+                }
+                android.util.Log.i("MapLensParse", "red patch $patch: ${reads.map { it.text }}")
+                // A red sign-shaped patch is already most of the evidence: a near miss counts.
+                reads.firstOrNull { isExitLike(it.text) }?.copy(text = "EXIT", box = patch)
+            }
+        timer.mark("exit signs (${signs.size})")
+        return primary + supplemental + signs
     }
 
     private fun detect(bgr: Mat): List<Array<Point>> = Mats().use { mats ->
@@ -370,4 +509,179 @@ private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
             )
         }
     }
+}
+
+/** Whether a read is an exit sign's word: "EXIT", maybe with "To" or a room run into it. */
+internal fun isExitText(text: String): Boolean {
+    val letters = text.uppercase(java.util.Locale.ROOT).filter(Char::isLetter)
+    return "EXIT" in letters && letters.length <= 7
+}
+
+/**
+ * Red patches about the size of an exit sign (white EXIT on red, 60–90 × 25–45 px on a
+ * 2000 px poster), letters closed in. Neighbouring red marks can merge in, so the bounds are
+ * generous; reading the patch decides.
+ */
+internal fun exitPatches(bgr: Mat): List<Rect> = Mats().use { mats ->
+    val hsv = mats.mat()
+    Imgproc.cvtColor(bgr, hsv, Imgproc.COLOR_BGR2HSV)
+    val red = mats.mat()
+    val wrap = mats.mat()
+    Core.inRange(hsv, Scalar(0.0, 85.0, 40.0), Scalar(9.0, 255.0, 255.0), red)
+    Core.inRange(hsv, Scalar(172.0, 85.0, 40.0), Scalar(180.0, 255.0, 255.0), wrap)
+    Core.bitwise_or(red, wrap, red)
+    Imgproc.morphologyEx(red, red, Imgproc.MORPH_OPEN, mats.kernel(3, 3))
+    // Thick red only: letters filled sideways, then anything thinner than a sign dropped. A
+    // sign that touches the red-brown route line (EH3, beside the AED) stays a sign-sized band
+    // here, where the closed blobs below join it to the whole line.
+    val band = mats.mat()
+    Imgproc.morphologyEx(red, band, Imgproc.MORPH_CLOSE, mats.kernel(15, 5))
+    Imgproc.morphologyEx(band, band, Imgproc.MORPH_OPEN, mats.kernel(25, 11))
+    val thick = components(band, mats).filter { r ->
+        r.width() in 35..200 && r.height() in 14..70 && r.width() >= 1.3 * r.height()
+    }.map { r ->
+        Rect(
+            (r.left - 4).coerceAtLeast(0),
+            (r.top - 4).coerceAtLeast(0),
+            (r.right + 4).coerceAtMost(bgr.cols()),
+            (r.bottom + 4).coerceAtMost(bgr.rows()),
+        )
+    }
+    Imgproc.morphologyEx(red, red, Imgproc.MORPH_CLOSE, mats.kernel(9, 9))
+    val labels = mats.mat()
+    val stats = mats.mat()
+    val count = Imgproc.connectedComponentsWithStats(
+        red,
+        labels,
+        stats,
+        mats.mat(),
+        8,
+        CvType.CV_32S
+    )
+    val trimmed = (1 until count).mapNotNull { i ->
+        val row = IntArray(5)
+        stats.get(i, 0, row)
+        val (x, y, w, h) = row
+        if (w !in 40..260 || h !in 16..110 || w < 1.2 * h) return@mapNotNull null
+        val sign = signBand(red, x, y, w, h)
+        val pad = 4
+        Rect(
+            (sign.left - pad).coerceAtLeast(0),
+            (sign.top - pad).coerceAtLeast(0),
+            (sign.right + pad).coerceAtMost(bgr.cols()),
+            (sign.bottom + pad).coerceAtMost(bgr.rows()),
+        )
+    }
+    // Both ways in, one patch per sign.
+    (trimmed + thick).fold(mutableListOf<Rect>()) { kept, r ->
+        val near = kept.any {
+            kotlin.math.hypot(
+                (it.exactCenterX() - r.exactCenterX()).toDouble(),
+                (it.exactCenterY() - r.exactCenterY()).toDouble(),
+            ) < SAME_SIGN_PX
+        }
+        if (!near) kept += r
+        kept
+    }
+}
+
+/** Bounding boxes of the 8-connected blobs in [mask]. */
+private fun components(mask: Mat, mats: Mats): List<Rect> {
+    val stats = mats.mat()
+    val count = Imgproc.connectedComponentsWithStats(
+        mask,
+        mats.mat(),
+        stats,
+        mats.mat(),
+        8,
+        CvType.CV_32S,
+    )
+    return (1 until count).map { i ->
+        val row = IntArray(5)
+        stats.get(i, 0, row)
+        Rect(row[0], row[1], row[0] + row[2], row[1] + row[3])
+    }
+}
+
+private const val SAME_SIGN_PX = 20.0
+
+/**
+ * The sign itself within a red patch: the longest run of rows that are mostly red, then the
+ * columns mostly red within it. A warning triangle or extinguisher dot merged into the patch
+ * squashed the crop until only "EX" was read (EH3 stair 3424 sign, Nov 13).
+ */
+private fun signBand(red: Mat, x: Int, y: Int, w: Int, h: Int): Rect {
+    val pixels = ByteArray(w * h)
+    red.submat(y, y + h, x, x + w).let { patch ->
+        patch.get(0, 0, pixels)
+        patch.release()
+    }
+    fun on(col: Int, row: Int) = pixels[row * w + col] != 0.toByte()
+    val rowFull = (0 until h).map { r -> (0 until w).count { on(it, r) } >= SIGN_ROW_SHARE * w }
+    var best = 0 until 0
+    var start = -1
+    for (r in 0..h) {
+        val full = r < h && rowFull[r]
+        if (full && start < 0) start = r
+        if (!full && start >= 0) {
+            if (r - start > best.last - best.first + 1) best = start until r
+            start = -1
+        }
+    }
+    if (best.isEmpty() || best.last - best.first + 1 < MIN_SIGN_ROWS) {
+        return Rect(
+            x,
+            y,
+            x + w,
+            y + h
+        )
+    }
+    val rows = best.last - best.first + 1
+    val cols = (0 until w).filter { c -> best.count { on(c, it) } >= SIGN_COL_SHARE * rows }
+    val left = cols.firstOrNull() ?: 0
+    val right = (cols.lastOrNull() ?: (w - 1)) + 1
+    return Rect(x + left, y + best.first, x + right, y + best.last + 1)
+}
+
+private const val SIGN_ROW_SHARE = 0.5
+private const val SIGN_COL_SHARE = 0.5
+private const val MIN_SIGN_ROWS = 12
+
+/**
+ * A loose "EXIT" for reads of red sign patches: 1, l and | read as I, 0 as O, and one letter
+ * off still counts ("EXlT", "FXIT", "EXT"). Only used where the colour and shape already say
+ * exit sign; [isExitText] stays strict for words found anywhere on the poster.
+ */
+internal fun isExitLike(text: String): Boolean {
+    val letters = text.uppercase(java.util.Locale.ROOT).map {
+        when (it) {
+            '1', 'L', '|', '!' -> 'I'
+            '0' -> 'O'
+            else -> it
+        }
+    }.filter(Char::isLetter).joinToString("")
+    // The front of the word survives a tight crop: "EX" from a red sign is the sign.
+    if (letters.startsWith("EX") && letters.length <= 8) return true
+    if (letters.length !in 3..8) return false
+    return (0..letters.length).any { start ->
+        (3..5).any { len ->
+            start + len <= letters.length &&
+                editDistance(letters.substring(start, start + len), "EXIT") <= 1
+        }
+    }
+}
+
+private fun editDistance(a: String, b: String): Int {
+    val row = IntArray(b.length + 1) { it }
+    for (i in 1..a.length) {
+        var diagonal = row[0]
+        row[0] = i
+        for (j in 1..b.length) {
+            val above = row[j]
+            val swap = diagonal + if (a[i - 1] == b[j - 1]) 0 else 1
+            row[j] = minOf(row[j] + 1, row[j - 1] + 1, swap)
+            diagonal = above
+        }
+    }
+    return row[b.length]
 }

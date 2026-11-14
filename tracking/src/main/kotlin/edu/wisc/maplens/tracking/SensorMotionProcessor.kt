@@ -117,6 +117,19 @@ class SensorMotionProcessor(private val config: TrackingConfig = TrackingConfig(
         return true
     }
 
+    /**
+     * Turns θ0 by [deltaRad] (a room-sign heading fix). Like [align], history restarts so no
+     * later step takes a heading from before the fix.
+     */
+    fun rotate(deltaRad: Double): Boolean {
+        if (!estimator.rotate(deltaRad)) return false
+        history.clear()
+        val offset = estimator.offsetRad!!
+        heading = heading?.let { it.copy(mapRad = wrapHeading(it.relativeRad + offset)) }
+        heading?.let { history.addLast(it) }
+        return true
+    }
+
     /** Game-rotation-vector event: update the heading and trim history to its time window. */
     fun rotation(timestampNs: Long, vector: FloatArray, screenRotation: Int) {
         val next = estimator.update(timestampNs, vector, screenRotation)

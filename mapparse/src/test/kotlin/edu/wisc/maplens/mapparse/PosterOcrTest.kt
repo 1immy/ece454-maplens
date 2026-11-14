@@ -33,7 +33,28 @@ class PosterOcrTest {
         assertEquals("3613", marginVote(listOf("3613", "36513", "3613")))
         assertEquals("3540", marginVote(listOf("354p", "35-40", "3540")))
         assertNull(marginVote(listOf("3613", "3513", "3713")))
-        assertNull(marginVote(listOf("2613", "2613", "AED")))
+        assertNull(marginVote(listOf("2613", "2613", "AED"), floor = '3'))
+        // Before the floor is known, any room number may win; other floors drop out later.
+        assertEquals("1102", marginVote(listOf("1102", "1102", "AED")))
+    }
+
+    @Test
+    fun redSignReadsForgiveOneWrongLetter() {
+        for (read in listOf("EXIT", "EX1T", "EXlT", "FXIT", "EXT", "EX", "EXIT A", "ToEXIT")) {
+            assertTrue(isExitLike(read), read)
+        }
+        for (read in listOf("3424", "AED", "F.E", "SKYLIGHTS", "")) {
+            assertFalse(isExitLike(read), read)
+        }
+    }
+
+    @Test
+    fun theFloorComesFromTheRoomNumbersNotTheLegend() {
+        // EH first floor (Nov 13 scan): the AED legend lists 2239 and 3040 among its rooms.
+        val first = listOf("1102H", "1102G", "1119", "1226", "1712C", "2239", "3040", "AED")
+        assertEquals('1', floorOf(first))
+        assertEquals('3', floorOf(listOf("3540", "3540B", "3542", "1224")))
+        assertNull(floorOf(listOf("1102", "3540")))
     }
 
     @Test

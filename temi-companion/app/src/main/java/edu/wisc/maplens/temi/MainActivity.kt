@@ -7,6 +7,7 @@ import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -56,6 +57,15 @@ class MainActivity :
     private var server: ServerSocket? = null
     private var lastPoseMs = 0L
 
+    /**
+     * temi's own voice ([Robot.speak]) is made in temi's cloud, so it is silent without
+     * internet (a phone hotspot with no SIM). Android's on-device text-to-speech works
+     * offline, so guiding lines go through it, and fall back to temi's voice only if it
+     * isn't available.
+     */
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+
     private lateinit var title: TextView
     private lateinit var message: TextView
     private lateinit var status: TextView
@@ -64,6 +74,10 @@ class MainActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(layout())
+        tts = TextToSpeech(this) { status ->
+            ttsReady = status == TextToSpeech.SUCCESS &&
+                (tts?.setLanguage(Locale.US) ?: TextToSpeech.LANG_NOT_SUPPORTED) >= 0
+        }
         startServer()
     }
 
@@ -85,6 +99,7 @@ class MainActivity :
 
     override fun onDestroy() {
         super.onDestroy()
+        tts?.shutdown()
         runCatching { server?.close() }
         runCatching { client?.close() }
         io.shutdownNow()
@@ -152,7 +167,7 @@ class MainActivity :
             "goToLocation" -> robot.goTo(msg.getString("name"))
             "stop" -> robot.stopMovement()
             "turnBy" -> robot.turnBy(msg.getInt("degrees"), 0.6f)
-            "speak" -> robot.speak(TtsRequest.create(msg.getString("text"), false))
+            "speak" -> speak(msg.getString("text"))
             "detection" -> robot.setDetectionModeOn(
                 msg.optBoolean("on", true),
                 msg.optDouble("maxDistance", 3.0).toFloat(),
@@ -161,6 +176,15 @@ class MainActivity :
             "listLocations" -> send(
                 JSONObject().put("type", "locations").put("names", JSONArray(robot.locations)),
             )
+        }
+    }
+
+    private fun speak(text: String) {
+        val local = tts
+        if (ttsReady && local != null) {
+            local.speak(text, TextToSpeech.QUEUE_FLUSH, null, "maplens")
+        } else {
+            robot.speak(TtsRequest.create(text, false))
         }
     }
 

@@ -91,13 +91,76 @@ class SignReanchorTest {
     }
 
     @Test
-    fun `a sign far from the cloud is rejected and changes nothing`() {
-        val tracker = walked(15)
+    fun `with the A5 gate a sign far from the cloud is rejected and changes nothing`() {
+        val tracker = ParticleTracker(config.copy(signRelocates = false), Random(1))
+        tracker.start(corridor, "S", right, 10.0)
+        repeat(15) {
+            tracker.onMotion(MotionEvent.Step(it + 1L, right, StepSource.STEP_DETECTOR))
+        }
         val before = tracker.pose
         val result = tracker.onSighting(SignSighting(sign("3450")))
         assertFalse(result.accepted)
         assertEquals(SignOutcome.TOO_FAR, result.reason)
         assertEquals(before, tracker.pose)
+    }
+
+    @Test
+    fun `a sign far from a drifted cloud moves it to the door and says so`() {
+        // Field test: the dot had drifted and a correct sign at the walker's door was refused.
+        val tracker = walked(15)
+        val result = tracker.onSighting(SignSighting(sign("3450")))
+        assertTrue(result.accepted, "$result")
+        assertTrue(result.relocated)
+        assertEquals("D2", result.doorNodeId)
+        assertEquals(500.0, tracker.pose.position.x, 25.0)
+        // Walking on from the door continues from there.
+        val next = tracker.onMotion(MotionEvent.Step(99L, right, StepSource.STEP_DETECTOR))
+        assertEquals(510.0, next.position.x, 25.0)
+    }
+
+    @Test
+    fun `a sign straight ahead of the walker fixes the heading offset`() {
+        // Room 3410 is below the corridor; its sign hangs on the lower wall at the door. The
+        // walker stands at the door and points the phone at it: truly "down" (π/2). The
+        // drifted heading says 0.5 rad less, so θ0 must turn by +0.5.
+        val tracker = walked(20)
+        val wall = 1.0 / 0.7 * 10.0
+        val result = tracker.onSighting(
+            SignSighting(sign("3410"), down - 0.5, wall, roomCenter = PixelPoint(200.0, 60.0)),
+        )
+        assertTrue(result.accepted)
+        assertEquals(0.5, assertNotNull(result.headingFixRad), 1e-9)
+        assertEquals(200.0, tracker.pose.position.x, 15.0)
+    }
+
+    @Test
+    fun `a sign seen at an angle places the walker along the corridor and fixes heading`() {
+        // 3 m from the sign on the lower wall, 1 m off the centreline: the walker is √8 m
+        // (about 40 px) before the door and truly looks atan2(1, √8) ≈ 19.5° right of ahead.
+        val tracker = walked(15)
+        val px = 10.0 / 0.7
+        val truth = kotlin.math.atan2(1.0, kotlin.math.sqrt(8.0))
+        val result = tracker.onSighting(
+            SignSighting(sign("3410"), truth + 0.3, 3 * px, roomCenter = PixelPoint(200.0, 60.0)),
+        )
+        assertEquals(-0.3, assertNotNull(result.headingFixRad), 0.01)
+        assertEquals(200.0 - kotlin.math.sqrt(8.0) * px, tracker.pose.position.x, 15.0)
+    }
+
+    @Test
+    fun `an implausible heading fix is not applied`() {
+        val tracker = walked(20)
+        // Measured pointing up while the sign is on the lower wall: 180° off, a wrong match.
+        val result = tracker.onSighting(
+            SignSighting(
+                sign("3410"),
+                -down,
+                1.0 / 0.7 * 10.0,
+                roomCenter = PixelPoint(200.0, 60.0)
+            ),
+        )
+        assertTrue(result.accepted)
+        assertNull(result.headingFixRad)
     }
 
     @Test

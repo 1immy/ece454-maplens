@@ -24,10 +24,25 @@ class Trail(start: PixelPoint) {
         return length
     }
 
-    /** The point [s] px along the trail (clamped to its ends). */
+    /**
+     * The point [s] px along the trail. Past its end the trail carries on in the direction of
+     * its last stretch, up to [MAX_AHEAD_PX]: between footfalls the dot walks a little ahead of
+     * the last fix (PuckMotion), and clamping it at the end froze the dot until the next step,
+     * then jumped it ~30 px in one frame, so live walking looked frame-by-frame (Nov 13).
+     */
     fun pointAt(s: Double): PixelPoint {
         if (s <= 0.0 || points.size == 1) return points.first()
-        if (s >= length) return points.last()
+        if (s >= length) {
+            val end = points.last()
+            val from = points[points.lastIndex - 1]
+            val stretch = from.distanceTo(end)
+            if (stretch == 0.0) return end
+            val ahead = (s - length).coerceAtMost(MAX_AHEAD_PX)
+            return PixelPoint(
+                end.x + (end.x - from.x) / stretch * ahead,
+                end.y + (end.y - from.y) / stretch * ahead,
+            )
+        }
         var lo = 0
         var hi = lengths.lastIndex
         while (hi - lo > 1) {
@@ -42,5 +57,8 @@ class Trail(start: PixelPoint) {
 
     private companion object {
         const val MIN_STEP_PX = 0.5
+
+        /** Furthest past the last fix the dot is drawn: about two steps. */
+        const val MAX_AHEAD_PX = 40.0
     }
 }

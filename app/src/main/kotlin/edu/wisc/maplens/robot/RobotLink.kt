@@ -55,7 +55,9 @@ class TcpRobotLink(private val host: String, private val port: Int) : RobotLink 
         setState(RobotLink.State.CONNECTING)
         io.execute {
             val s = runCatching {
-                Socket().apply { connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
+                // Build the address outside apply {}: inside it, `port` would be Socket.port (0).
+                val address = InetSocketAddress(host, port)
+                Socket().apply { connect(address, CONNECT_TIMEOUT_MS) }
             }.getOrElse {
                 main.post {
                     onEvent?.invoke(

@@ -94,12 +94,47 @@ class LiveTrackingTest {
     @Test
     fun `facing options name what lies along each corridor`() {
         val atStart = graph.facingOptions("S").associate { it.arrow to it.description }
-        assertEquals(mapOf("→" to "past room 3418", "←" to "toward the stairs"), atStart)
+        assertEquals(
+            mapOf(
+                "→" to "past room 3418",
+                "←" to "toward the stairs",
+                "↑" to "facing the map poster",
+                "↓" to "with your back to the map poster",
+            ),
+            atStart,
+        )
         val atJunction = graph.facingOptions("J").associate { it.arrow to it.description }
         assertEquals("along the corridor", atJunction["↑"])
         assertEquals("toward the elevator", atJunction["↓"])
         assertEquals("past room 3420", atJunction["→"])
         assertEquals("past room 3418", atJunction["←"])
+    }
+
+    @Test
+    fun `facing choices are four right angles even where START leaves crooked`() {
+        // A star traced as a bump: START sits 13 px off the corridor line, so both of its
+        // edges leave diagonally (32° and 148°). The choices still follow the corridor axis.
+        val s = Node("S", PixelPoint(100.0, -13.0), NodeType.START)
+        val w = Node("W", PixelPoint(0.0, 0.0), NodeType.DEAD_END)
+        val e = Node("E", PixelPoint(300.0, 0.0), NodeType.DEAD_END)
+        val crooked = FloorGraph(
+            buildingId = "test",
+            floor = "3",
+            nodes = listOf(s, w, e).associateBy { it.id },
+            edges = listOf(
+                Edge("w", "W", "S", listOf(w.position, PixelPoint(80.0, 0.0), s.position), 101.0),
+                Edge("e", "S", "E", listOf(s.position, PixelPoint(120.0, 0.0), e.position), 204.0),
+            ),
+            landmarks = emptyList(),
+            startNodeId = "S",
+        )
+        val options = crooked.facingOptions("S")
+        assertEquals(listOf("→", "←", "↑", "↓"), options.map { it.arrow })
+        val bearings = options.map { Math.toDegrees(it.bearingRad) }
+        for ((got, want) in bearings.zip(listOf(0.0, 180.0, -90.0, 90.0))) {
+            assertEquals(want, got, 1e-9)
+        }
+        assertEquals(listOf("e", "w"), options.take(2).map { it.edgeId })
     }
 
     @Test
@@ -183,8 +218,9 @@ class LiveTrackingTest {
             .firstOrNull { it.exists() } ?: return
         val eh3 = FloorGraphJson.decode(file.readText())
         val options = eh3.facingOptions(eh3.startNodeId)
-        assertEquals(3, options.size)
+        assertEquals(4, options.size)
         assertTrue(options.any { it.description == "toward the elevator" && it.arrow == "↓" })
+        assertEquals(1, options.count { "map poster" in it.description })
         assertTrue(options.all { it.description.isNotBlank() })
         assertEquals(eh3.edges.size, eh3.corridorIds().size)
     }

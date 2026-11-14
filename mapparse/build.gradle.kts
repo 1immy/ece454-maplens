@@ -38,6 +38,8 @@ kotlin {
 dependencies {
     api(project(":core:model"))
     implementation(libs.opencv)
+    // On-device text recognition, model bundled in the APK (no network, no Play services).
+    implementation(libs.mlkit.text.recognition)
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
 }
