@@ -742,7 +742,7 @@ class PosterCaptureActivity : ComponentActivity() {
         }
         status.setText(R.string.poster_user_saving)
         cancel.visibility = View.GONE
-        saveAndNavigate(verified, result.rectified)
+        saveAndNavigate(verified, result.rectified, labelsOf(result))
     }
 
     private fun showReview(result: ParseResult) {
@@ -860,20 +860,27 @@ class PosterCaptureActivity : ComponentActivity() {
         AlertDialog.Builder(this)
             .setTitle(R.string.map_save_title)
             .setMessage(getString(R.string.map_save_message, toCheck))
-            .setPositiveButton(R.string.map_save) { _, _ -> saveAndNavigate(graph, image) }
+            .setPositiveButton(R.string.map_save) { _, _ ->
+                saveAndNavigate(graph, image, review?.let(::labelsOf).orEmpty())
+            }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
     /** Writes the map off the UI thread, then opens it for navigation. */
-    private fun saveAndNavigate(graph: FloorGraph, image: Bitmap) {
+    /** Where the parser read each room number: kept with the map so taps on them work. */
+    private fun labelsOf(result: ParseResult) = result.rooms.map {
+        SavedLabel(it.label, it.bounds.left, it.bounds.top, it.bounds.right, it.bounds.bottom)
+    }
+
+    private fun saveAndNavigate(graph: FloorGraph, image: Bitmap, labels: List<SavedLabel>) {
         save.isEnabled = false
         action.isEnabled = false
         val name = suggestedMapName(graph)
         val store = MapAssets.savedMaps(this)
         worker.execute {
             val saved = runCatching {
-                store.save(graph, name) { file ->
+                store.save(graph, name, labels = labels) { file ->
                     file.outputStream().use {
                         check(image.compress(Bitmap.CompressFormat.JPEG, 92, it)) { "JPEG failed" }
                     }

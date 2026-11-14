@@ -34,8 +34,20 @@ internal class DraftStore(private val folder: File) {
     }
 
     /** Saves the verified map with this draft's image. The draft goes only once that worked. */
-    fun saveTo(store: MapStore, verified: FloorGraph, name: String): SavedMap =
-        store.save(verified, name) { image.copyTo(it) }.also { folder.deleteRecursively() }
+    fun saveTo(store: MapStore, verified: FloorGraph, name: String): SavedMap {
+        val rooms = File(folder, ROOMS).takeIf { it.exists() }?.readText()?.let(::decodeRooms)
+        val labels = rooms.orEmpty().map {
+            SavedLabel(
+                it.label,
+                it.left,
+                it.top,
+                it.right,
+                it.bottom
+            )
+        }
+        return store.save(verified, name, labels = labels) { image.copyTo(it) }
+            .also { folder.deleteRecursively() }
+    }
 
     private fun File.writeAtomically(text: String) {
         val temporary = File(parentFile, "$name.tmp")

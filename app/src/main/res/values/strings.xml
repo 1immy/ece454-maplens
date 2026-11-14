@@ -418,19 +418,13 @@
     <item quantity="one">%1$d more tap for developer mode</item>
     <item quantity="other">%1$d more taps for developer mode</item>
   </plurals>
-  <string name="mode_user">User</string>
   <string name="mode_developer">Developer</string>
-  <string name="mode_switch_to_developer">User mode. Tap to turn on developer mode</string>
   <string name="mode_switch_to_user">Developer mode. Tap to go back to user mode</string>
   <string name="mode_user_on">User mode</string>
+  <string name="mode_confirm_title">Turn on developer mode?</string>
+  <string name="mode_confirm_body">Adds the team\'s tools: map editing after a scan, the parser switch, the demo walk and debug screens. Tap the Developer button to turn it off.</string>
+  <string name="mode_confirm_on">Turn on</string>
   <string name="mode_developer_on">Developer mode on</string>
-  <string name="mode_password_title">Developer mode</string>
-  <string name="mode_password_body">Shows the team\'s tools: map editing, the parser switch and debug screens.</string>
-  <string name="mode_password_hint">Password</string>
-  <string name="mode_password_show">Show password</string>
-  <string name="mode_password_hide">Hide password</string>
-  <string name="mode_password_unlock">Unlock</string>
-  <string name="mode_password_wrong">Wrong password. Try again.</string>
   <string name="poster_user_blocked">This photo didn\'t give a complete map. Retake it straight on, with the whole blue border in view.</string>
   <string name="poster_user_saving">Saving the map…</string>
   <string name="map_save_blocked">Can\'t save yet: use Edit map to fix it</string>

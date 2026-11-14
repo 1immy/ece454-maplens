@@ -251,6 +251,9 @@ class IndoorNavActivity : ComponentActivity() {
     private var demoPauseUntil = 0L
     private var walking = false
     private var liveMode = false
+
+    /** User mode walks for real: no Demo walk, its scenarios or the Demo / Live chip. */
+    private val developer by lazy { AppMode.isDeveloper(this) }
     private var following = false
     private var resumeFollowing = false
     private var stats: LiveStats? = null
@@ -312,6 +315,11 @@ class IndoorNavActivity : ComponentActivity() {
             isAppearanceLightNavigationBars = true
         }
         setContentView(buildLayout())
+        if (!developer) {
+            modeChip.visibility = View.GONE
+            // Live from the start, so its sensors settle while the user picks a room.
+            toggleMode()
+        }
         onBackPressedDispatcher.addCallback(this, backHandler)
         show(Screen.BROWSE)
         loader.execute {
@@ -334,12 +342,22 @@ class IndoorNavActivity : ComponentActivity() {
     /** Graph, image, every searchable place and its walking distance from START. */
     private fun loadMap(): Pair<FloorGraph, android.graphics.Bitmap> {
         val savedId = intent.getStringExtra(EXTRA_MAP_ID)
+        var printed = emptyList<LabelBox>()
         val (loaded, image) = if (savedId == null) {
             MapAssets.loadGraph(this) to MapAssets.loadImage(this)
         } else {
             val store = MapAssets.savedMaps(this)
             val saved = store.get(savedId) ?: error("saved map $savedId is gone")
             runOnUiThread { mapName = saved.name }
+            printed = store.loadLabels(saved).map {
+                LabelBox(
+                    it.label,
+                    it.left.toDouble(),
+                    it.top.toDouble(),
+                    it.right.toDouble(),
+                    it.bottom.toDouble(),
+                )
+            }
             store.loadGraph(saved) to MapAssets.loadImage(saved)
         }
         // Routes, turn cues and tracking follow each corridor's straight line, not its trace.
@@ -376,9 +394,19 @@ class IndoorNavActivity : ComponentActivity() {
             featureChips.forEach { (kind, view) -> view.visibility = shown(kind in kinds) }
             chips.visibility = shown(screen == Screen.BROWSE && kinds.isNotEmpty())
         }
-        // Reading the printed numbers takes a few seconds; taps work from doors until then.
+        // Where the scan read the room numbers, saved with the map: exact, and no wait. That
+        // includes numbers a wall line cuts, which a fresh read here can miss (EH3's 3540).
+        // Maps saved without them, or rooms they lack, are read here again (a few seconds;
+        // taps work from doors until then).
         loader.execute {
-            val boxes = MapRooms.labels(image, doors.keys, doors)
+            val missing = doors.keys - printed.map { it.label }.toSet()
+            val read = if (missing.isEmpty()) {
+                emptyList()
+            } else {
+                MapRooms.labels(image, doors.keys, doors)
+                    .filter { box -> printed.none { it.label == box.label } }
+            }
+            val boxes = printed + read
             runOnUiThread {
                 finder.labels = boxes
                 labelBoxes = boxes.associateBy { it.label }
@@ -901,12 +929,12 @@ class IndoorNavActivity : ComponentActivity() {
                 text = resources.getQuantityString(R.plurals.in_route_line, steps, steps)
                 contentDescription = "${placeTitle(p)}. $text"
             }.withMargins(top = 2),
-            modes.withMargins(top = 16),
+            modes.withMargins(top = 16).apply { visibility = shown(developer) },
             text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
                 setText(R.string.demo_scenario_title)
-                visibility = shown(!liveMode)
+                visibility = shown(developer && !liveMode)
             }.withMargins(top = 12),
-            scenarios.withMargins(top = 6),
+            scenarios.withMargins(top = 6).apply { visibility = shown(developer && !liveMode) },
             *guideChoice().toTypedArray(),
             stepsHeader.withMargins(top = 8),
             scroll.apply {
@@ -975,6 +1003,9 @@ class IndoorNavActivity : ComponentActivity() {
     // ---- Navigation ----
 
     private fun beginNavigation() {
+        // User mode never plays the demo: without live tracking yet, ask for it (sensor or
+        // permission) instead of walking a pretend route.
+        if (!developer && !liveMode) return toggleMode()
         val g = guide ?: return
         val p = place ?: return
         stats = null

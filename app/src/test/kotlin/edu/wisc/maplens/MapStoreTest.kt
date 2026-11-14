@@ -53,6 +53,16 @@ class MapStoreTest {
     }
 
     @Test
+    fun `printed room numbers are kept with the map`() {
+        // EH3's 3540, which a wall line cuts: the scan read it, a fresh read may not.
+        val labels = listOf(SavedLabel("3540", 978, 752, 1060, 810), SavedLabel("3546", 1, 2, 3, 4))
+        val saved = store.save(graph, "with labels", labels = labels, writeImage = ::image)
+        assertEquals(labels, MapStore(root).loadLabels(saved))
+        val older = store.save(graph, "before labels", nowMillis = 9L, writeImage = ::image)
+        assertTrue(store.loadLabels(older).isEmpty())
+    }
+
+    @Test
     fun `a new store on the same folder sees earlier maps, newest first`() {
         store.save(graph, "first", nowMillis = 1_000L, writeImage = ::image)
         store.save(graph, "second", nowMillis = 2_000L, writeImage = ::image)

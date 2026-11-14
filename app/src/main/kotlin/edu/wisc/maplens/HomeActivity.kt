@@ -359,7 +359,7 @@ class HomeActivity : ComponentActivity() {
     private var lastLogoTapMs = 0L
     private var tapHint: Toast? = null
 
-    /** Counts quick taps on the logo; the fifth asks for the developer password. */
+    /** Counts quick taps on the logo; the fifth offers developer mode. */
     private fun logoTapped() {
         if (AppMode.isDeveloper(this)) return
         val now = android.os.SystemClock.elapsedRealtime()
@@ -369,7 +369,7 @@ class HomeActivity : ComponentActivity() {
         val left = LOGO_TAPS - logoTaps
         if (left <= 0) {
             logoTaps = 0
-            askDeveloperPassword {
+            confirmDeveloperMode {
                 AppMode.setDeveloper(this, true)
                 Toast.makeText(this, R.string.mode_developer_on, Toast.LENGTH_SHORT).show()
                 refresh()
@@ -388,45 +388,22 @@ class HomeActivity : ComponentActivity() {
      * goes back to user mode at once. (User mode shows no pill; see [logoTapped].)
      */
     private fun modeSwitch(): View = TextView(this).apply {
-        val developer = AppMode.isDeveloper(context)
-        val ink = if (developer) Ui.ON_ACCENT else Ui.INK_SECONDARY
-        setText(if (developer) R.string.mode_developer else R.string.mode_user)
+        setText(R.string.mode_developer)
         textSize = Ui.CAPTION
         typeface = android.graphics.Typeface.create("sans-serif-medium", 0)
-        setTextColor(ink)
+        setTextColor(Ui.ON_ACCENT)
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(12), 0, dp(14), 0)
-        setCompoundDrawablesRelative(
-            icon(if (developer) R.drawable.ic_code else R.drawable.ic_person, ink, 18),
-            null,
-            null,
-            null,
-        )
+        setCompoundDrawablesRelative(icon(R.drawable.ic_code, Ui.ON_ACCENT, 18), null, null, null)
         compoundDrawablePadding = dp(6)
-        background = pressable(
-            if (developer) {
-                rounded(Ui.ACCENT, radiusDp = 24)
-            } else {
-                rounded(Ui.SURFACE, radiusDp = 24, stroke = Ui.BORDER)
-            },
-        )
+        background = pressable(rounded(Ui.ACCENT, radiusDp = 24))
         isClickable = true
-        contentDescription = getString(
-            if (developer) R.string.mode_switch_to_user else R.string.mode_switch_to_developer,
-        )
+        contentDescription = getString(R.string.mode_switch_to_user)
         tooltipText = contentDescription
         setOnClickListener {
-            if (developer) {
-                AppMode.setDeveloper(context, false)
-                Toast.makeText(context, R.string.mode_user_on, Toast.LENGTH_SHORT).show()
-                refresh()
-            } else {
-                askDeveloperPassword {
-                    AppMode.setDeveloper(context, true)
-                    Toast.makeText(context, R.string.mode_developer_on, Toast.LENGTH_SHORT).show()
-                    refresh()
-                }
-            }
+            AppMode.setDeveloper(context, false)
+            Toast.makeText(context, R.string.mode_user_on, Toast.LENGTH_SHORT).show()
+            refresh()
         }
     }
 

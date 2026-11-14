@@ -18,24 +18,37 @@ data class SavedMap(
     val pinned: Boolean = false,
 )
 
+/** Where a room number is printed on a map's image (its pixels), as the parser read it. */
+data class SavedLabel(
+    val label: String,
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int,
+)
+
 /**
  * Verified maps kept in app storage, so they work offline and survive a restart (#65, #20).
  *
  * One folder per map under [root]: `graph.json` (FloorGraphJson), `image.jpg` (the straightened
- * poster the graph's pixels refer to) and `map.properties` (name, save time, room count). A map
- * is written to a temporary folder and renamed into place, so a half-written map never lists.
+ * poster the graph's pixels refer to), `map.properties` (name, save time, room count) and
+ * `labels.tsv` (where each room number is printed, so a tap on it selects the room; maps saved
+ * before it have none). A map is written to a temporary folder and renamed into place, so a
+ * half-written map never lists.
  *
  * Plain java.io, no Android, so it unit-tests on a laptop. Call it off the UI thread.
  */
 class MapStore(private val root: File) {
     /**
-     * Saves [graph], which must be verified (`NavigationSession.onGraphVerified`). [writeImage]
-     * writes the straightened image to the file it is given.
+     * Saves [graph], which must be verified (`NavigationSession.onGraphVerified`), with the
+     * room numbers' printed [labels]. [writeImage] writes the straightened image to the file it
+     * is given.
      */
     fun save(
         graph: FloorGraph,
         name: String,
         nowMillis: Long = System.currentTimeMillis(),
+        labels: List<SavedLabel> = emptyList(),
         writeImage: (File) -> Unit,
     ): SavedMap {
         require(graph.verified) { "only verified graphs can be saved" }
@@ -50,6 +63,13 @@ class MapStore(private val root: File) {
             File(staging, GRAPH).writeText(FloorGraphJson.encode(graph))
             writeImage(File(staging, IMAGE))
             check(File(staging, IMAGE).length() > 0) { "image was not written" }
+            if (labels.isNotEmpty()) {
+                File(staging, LABELS).writeText(
+                    labels.joinToString("") {
+                        "${it.label}\t${it.left}\t${it.top}\t${it.right}\t${it.bottom}\n"
+                    },
+                )
+            }
             val meta = Properties().apply {
                 setProperty("name", name)
                 setProperty("savedAtMillis", nowMillis.toString())
@@ -103,6 +123,16 @@ class MapStore(private val root: File) {
     /** The saved graph, still verified. */
     fun loadGraph(map: SavedMap): FloorGraph = FloorGraphJson.decode(map.graphFile.readText())
 
+    /** [map]'s printed room numbers; empty for a map saved before they were kept. */
+    fun loadLabels(map: SavedMap): List<SavedLabel> =
+        File(map.graphFile.parentFile, LABELS).takeIf { it.isFile }?.readLines().orEmpty()
+            .mapNotNull { line ->
+                val parts = line.split('\t')
+                val box = parts.drop(1).mapNotNull(String::toIntOrNull)
+                if (parts.size != 5 || box.size != 4 || parts[0].isBlank()) return@mapNotNull null
+                SavedLabel(parts[0], box[0], box[1], box[2], box[3])
+            }
+
     fun delete(id: String): Boolean = File(root, id).deleteRecursively()
 
     private fun read(dir: File): SavedMap? {
@@ -126,5 +156,6 @@ class MapStore(private val root: File) {
         const val GRAPH = "graph.json"
         const val IMAGE = "image.jpg"
         const val META = "map.properties"
+        const val LABELS = "labels.tsv"
     }
 }
