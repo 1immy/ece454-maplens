@@ -43,11 +43,15 @@ class PosterParserChecks : Instrumentation() {
     private var photo: String? = null
     private var compare: String? = null
 
+    /** `-e threads N`: OpenCV worker threads for a probe run, to time the parse with each. */
+    private var threads: Int? = null
+
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         probe = arguments?.getString("probe")
         photo = arguments?.getString("photo")
         compare = arguments?.getString("compare")
+        threads = arguments?.getString("threads")?.toIntOrNull()
         start()
     }
 
@@ -862,6 +866,7 @@ class PosterParserChecks : Instrumentation() {
         val result = Bundle()
         try {
             requireOpenCv()
+            threads?.let(org.opencv.core.Core::setNumThreads)
             val options = BitmapFactory.Options().apply { inSampleSize = 1 }
             val raw = checkNotNull(BitmapFactory.decodeFile(path, options)) { "cannot read $path" }
             val scale = minOf(1f, 3200f / maxOf(raw.width, raw.height))
@@ -873,6 +878,7 @@ class PosterParserChecks : Instrumentation() {
             )
             val parsed = OfflineMapParser().parse(bitmap)
             writeGraph("probe", parsed.graph)
+            writeProbeReadings()
             File(output, "probe.warnings.json").writeText(JSONArray(parsed.warnings).toString(2))
             File(output, "probe.jpg").outputStream().use {
                 parsed.rectified.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it)
@@ -915,6 +921,22 @@ class PosterParserChecks : Instrumentation() {
         }
     }
 
+    /** Every reading the probe's parse used, to tell whether an OCR change altered any. */
+    private fun writeProbeReadings() {
+        val readings = ParseDebug.readings ?: return
+        val rows = JSONArray(
+            readings.map {
+                JSONObject().put("text", it.text).put("confidence", it.confidence.toDouble())
+                    .put("possible", it.possible)
+                    .put(
+                        "box",
+                        JSONArray(listOf(it.box.left, it.box.top, it.box.right, it.box.bottom))
+                    )
+            },
+        )
+        File(output, "probe.readings.json").writeText(rows.toString(1))
+    }
+
     private fun runProbe(path: String) {
         val result = Bundle()
         try {
@@ -922,8 +944,10 @@ class PosterParserChecks : Instrumentation() {
             val bitmap = checkNotNull(BitmapFactory.decodeFile(path)) { "cannot read $path" }
             Mats().use { mats ->
                 val bgr = bitmapBgr(bitmap, mats)
+                threads?.let(org.opencv.core.Core::setNumThreads)
                 val parsed = OfflineMapParser().parseRectified(bitmap, bgr)
                 writeGraph("probe", parsed.graph)
+                writeProbeReadings()
                 File(output, "probe.warnings.json").writeText(
                     JSONArray(parsed.warnings).toString(2),
                 )

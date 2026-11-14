@@ -225,7 +225,9 @@ internal class PosterCorridors {
         stars: List<PixelPoint> = emptyList(),
         bgr: Mat? = null,
     ): FloorGraph = Mats().use { mats ->
+        val timer = StageTimer()
         var mask = corridorMask(routes, mats)
+        timer.mark("corridor mask")
         traced(mask, stars, params.spurLength, params.mergeRadius, mats)
         var corridorWidth = 0.0
         if (bgr != null) {
@@ -234,8 +236,10 @@ internal class PosterCorridors {
             val painted = total >= params.minRouteLength &&
                 (lengths.maxOrNull() ?: 0.0) >= params.paintShare * total &&
                 inFills(bgr, routes, mats) < params.fillShare
+            timer.mark("painted check")
             val space =
                 freeSpace(bgr, if (painted) mask else null, if (painted) routes else null, mats)
+            timer.mark("free space")
             corridorWidth = space.width.toDouble()
             if (!painted) {
                 nodes.clear()
@@ -254,14 +258,19 @@ internal class PosterCorridors {
                 val links = CorridorLinks(nodes, paths, space)
                 if (painted) {
                     links.joinFacingEnds()
+                    timer.mark("links: facing ends")
                     val paint = ByteArray(routes.rows() * routes.cols())
                     routes.get(0, 0, paint)
                     links.joinByColour(paint)
+                    timer.mark("links: colour (${links.took()})")
                 }
                 links.linkGaps()
+                timer.mark("links: gaps (${links.took()})")
                 links.joinNetworks()
+                timer.mark("links: networks (${links.took()})")
                 links.dropParallel()
                 contract()
+                timer.mark("links: parallel + contract")
             }
         }
         keepNetworks()
@@ -305,17 +314,24 @@ internal class PosterCorridors {
         mergeRadius: Double,
         mats: Mats,
     ) {
+        val timer = StageTimer()
         val filled = fillHoles(mask, mats)
+        timer.mark("traced: fill holes")
         val padded = mats.mat()
         Core.copyMakeBorder(filled, padded, 1, 1, 1, 1, Core.BORDER_CONSTANT, Scalar(0.0))
         val stride = mask.cols() + 2
         val pixels = ByteArray(stride * (mask.rows() + 2))
         padded.get(0, 0, pixels)
-        trace(thin(pixels, stride).toIntArray(), stride, pixels.size)
+        val skeleton = thin(pixels, stride).toIntArray()
+        timer.mark("traced: thin")
+        trace(skeleton, stride, pixels.size)
+        timer.mark("traced: trace (${paths.size} paths)")
         prune(stars, spur)
+        timer.mark("traced: prune")
         merge(mergeRadius)
         contract()
         refine(mats)
+        timer.mark("traced: merge, contract, refine")
     }
 
     /**

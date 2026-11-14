@@ -36,12 +36,16 @@ class OfflineMapParser(
 ) : MapParser {
     override fun parse(photo: Bitmap): ParseResult = Mats().use { mats ->
         onProgress(ParseProgress(ParseStage.STRAIGHTEN))
+        val whole = SystemClock.elapsedRealtime()
+        val timer = StageTimer()
         requireOpenCv()
         checkCancellation()
         val bgr = bitmapBgr(photo, mats)
+        timer.mark("photo to bgr")
         val frame = PosterFrame()
         val flat = mats.mat()
         val corners = frame.corners(bgr)
+        timer.mark("frame corners")
         val sourceWidth = frame.width(corners)
         if (sourceWidth < MIN_FRAME_WIDTH) {
             throw PosterRetakeException(
@@ -50,8 +54,11 @@ class OfflineMapParser(
         }
         frame.warp(bgr, corners, flat)
         bgr.release()
+        timer.mark("warp")
         val rectified = bitmapFromBgr(flat)
+        timer.mark("warp to bitmap")
         val unclear = sourceWidth < CLEAR_FRAME_WIDTH || sharpness(flat) < MIN_SHARPNESS
+        timer.mark("sharpness")
         val first = try {
             parseRectified(rectified, flat)
         } catch (failure: Exception) {
@@ -79,6 +86,7 @@ class OfflineMapParser(
             null
         }
         val result = upright ?: first
+        Log.i("MapLensParse", "whole ${SystemClock.elapsedRealtime() - whole} ms")
         return@use if (unclear) {
             result.copy(warnings = result.warnings + UNCLEAR_PHOTO_WARNING)
         } else {
@@ -89,7 +97,9 @@ class OfflineMapParser(
     internal fun parseRectified(rectified: Bitmap, flat: Mat): ParseResult = try {
         parseFlat(rectified, flat)
     } finally {
+        val timer = StageTimer()
         Recognizers.release()
+        timer.mark("release recognizers")
     }
 
     private fun parseFlat(rectified: Bitmap, flat: Mat): ParseResult = Mats().use { mats ->
@@ -147,6 +157,7 @@ class OfflineMapParser(
         val floor = posterFloor(raw)
         // A wall line through a printed number drops a digit ("3540" read "354"): read again.
         val readings = repairCutNumbers(flat, raw, floor)
+        ParseDebug.readings = readings
         timer.mark("cut numbers")
         val rooms = distinctRooms(readings, floor)
         if (rooms.isEmpty()) {

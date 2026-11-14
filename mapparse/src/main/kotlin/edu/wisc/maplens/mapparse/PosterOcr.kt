@@ -200,7 +200,10 @@ internal object Recognizers {
     private val idle = java.util.concurrent.ConcurrentLinkedQueue<PosterOcr>()
 
     fun <T> use(block: (PosterOcr) -> T): T {
-        val ocr = idle.poll() ?: PosterOcr {}
+        val ocr = idle.poll() ?: run {
+            val timer = StageTimer()
+            PosterOcr {}.also { timer.mark("load recognizer") }
+        }
         try {
             return block(ocr)
         } finally {

@@ -137,7 +137,26 @@ internal class CorridorLinks(
 
     private class Found(val kind: Kind, val travelled: Int, val hit: Int)
 
-    private fun lineLabels(): IntArray = Mats().use { mats ->
+    /** Tuning counters: label images built and the time they took since the last [took]. */
+    private var labelBuilds = 0
+    private var labelMs = 0L
+    private var loops = 0
+
+    fun took(): String = "$loops loops, $labelBuilds label images $labelMs ms".also {
+        labelBuilds = 0
+        labelMs = 0
+        loops = 0
+    }
+
+    private fun lineLabels(): IntArray {
+        val started = android.os.SystemClock.elapsedRealtime()
+        return drawLineLabels().also {
+            labelBuilds++
+            labelMs += android.os.SystemClock.elapsedRealtime() - started
+        }
+    }
+
+    private fun drawLineLabels(): IntArray = Mats().use { mats ->
         val labels = mats.own(Mat.zeros(space.rows, space.cols, CvType.CV_32S))
         for ((index, path) in paths.withIndex()) {
             val line = mats.own(MatOfPoint())
@@ -406,6 +425,7 @@ internal class CorridorLinks(
         val reach = width * FACING_REACH
         while (true) {
             checkCancellation()
+            loops++
             val degree = degree(paths)
             var bestGap = Double.MAX_VALUE
             var best: Triple<Int, Int, Int>? = null
@@ -502,6 +522,7 @@ internal class CorridorLinks(
         val limit = (width * COLOUR_REACH).toInt()
         while (true) {
             checkCancellation()
+            loops++
             val labels = lineLabels()
             val degree = degree(paths)
             var best: Pair<Reached, Int>? = null
@@ -529,6 +550,7 @@ internal class CorridorLinks(
         val used = hashSetOf<List<Int>>()
         while (true) {
             checkCancellation()
+            loops++
             if (addCornerLink()) continue
             val link = shortestLink(lineLabels(), used) ?: return
             val x0 = round(link.origin.position.x).toInt()
@@ -657,6 +679,7 @@ internal class CorridorLinks(
         val parents = IntArray(clearance.size)
         while (true) {
             checkCancellation()
+            loops++
             val (network, lengths) = networks(nodes, paths)
             if (lengths.size < 2) return
             val main = lengths.keys.maxBy { lengths.getValue(it) }

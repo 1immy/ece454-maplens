@@ -297,6 +297,9 @@ internal object ParseDebug {
     @Volatile var regions: IntArray? = null
 
     @Volatile var relief: ByteArray? = null
+
+    /** Every reading the last parse used, after cut numbers were repaired. */
+    @Volatile var readings: List<PosterReading>? = null
 }
 
 /**

@@ -180,10 +180,13 @@ private fun corridorWidth(h: IntArray, v: IntArray, blocked: ByteArray, routes: 
  * the paint itself.
  */
 internal fun freeSpace(bgr: Mat, routes: Mat?, paint: Mat?, mats: Mats): FreeSpace {
+    val timer = StageTimer()
     val hsv = mats.mat()
     Imgproc.cvtColor(bgr, hsv, Imgproc.COLOR_BGR2HSV)
     val walls = longWalls(hsv, paint, mats)
+    timer.mark("free: long walls")
     val outside = offPaper(bgr, hsv, mats)
+    timer.mark("free: off paper")
     val rows = bgr.rows()
     val cols = bgr.cols()
     val widened = routes?.let { ByteArray(rows * cols).also { bytes -> it.get(0, 0, bytes) } }
@@ -202,8 +205,10 @@ internal fun freeSpace(bgr: Mat, routes: Mat?, paint: Mat?, mats: Mats): FreeSpa
 
     val (firstBlocked, firstH, firstV) = measure(FIRST_SEAL)
     val first = corridorWidth(firstH, firstV, firstBlocked, widened)
+    timer.mark("free: first measure")
     val (blocked, h, v) = measure(maxOf(FIRST_SEAL, (first * SEAL).toInt()))
     val width = maxOf(MIN_WIDTH, corridorWidth(h, v, blocked, widened))
+    timer.mark("free: second measure")
     val open = mats.mat()
     Core.bitwise_or(walls, outside, open)
     val unsealed = ByteArray(rows * cols).also { open.get(0, 0, it) }
