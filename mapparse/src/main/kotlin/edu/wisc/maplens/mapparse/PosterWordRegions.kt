@@ -75,3 +75,22 @@ internal fun doorInk(bgr: Mat): ByteArray = Mats().use { mats ->
 
 /** Ink blobs smaller than this are hatching dots or noise, not marks across a doorway. */
 private const val SPECK_PX = 15
+
+/**
+ * [regions] most like a room label first: closest in width and height to the median box of
+ * the room numbers already [read] (padded like a region). With no reads to compare, as found.
+ * Where the patch cap falls, the specks and fragments go, not a real label low on the poster.
+ */
+internal fun mostLabelLike(regions: List<Rect>, read: List<PosterReading>): List<Rect> {
+    val rooms = read.filter { normalizeRoom(it.text) != null }
+    if (rooms.isEmpty()) return regions
+    val width = rooms.map { it.box.width() }.sorted()[rooms.size / 2] + 2 * REGION_PAD
+    val height = rooms.map { it.box.height() }.sorted()[rooms.size / 2] + 2 * REGION_PAD
+    return regions.sortedBy { region ->
+        kotlin.math.abs(region.width() - width).toDouble() / width +
+            kotlin.math.abs(region.height() - height).toDouble() / height
+    }
+}
+
+/** Padding [roomWordRegions] puts around each word, in px. */
+private const val REGION_PAD = 5

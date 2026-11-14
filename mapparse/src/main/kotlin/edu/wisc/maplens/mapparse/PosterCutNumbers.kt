@@ -25,8 +25,8 @@ internal data class CutNumberParams(
  * Room numbers a wall line crosses lose the crossed digit: EH3's "3540" has a wall corner
  * through its 0 and reads "354", or "354p" when the line turns the 0 into a letter. Such a
  * read is a digit short of the poster's room numbers but as wide as a full one. Each is read
- * again from a crop with the long straight lines erased, and replaced by the surest reread
- * that is a room number on [floor] keeping every digit already read.
+ * again, as printed and then with the long straight lines erased, and replaced by the surest
+ * reread that is a room number on [floor] keeping every digit already read.
  * Other reads pass through unchanged.
  */
 internal fun repairCutNumbers(
@@ -40,28 +40,35 @@ internal fun repairCutNumbers(
     // A crossing line makes the read's own box taller: size lines by a clean number's.
     val height = readings.filter { !it.possible && normalizeRoom(it.text) != null }
         .map { it.box.height() }.sorted().let { it[it.size / 2] }
-    // One copy of the map with the lines erased around every suspect, read in one batch.
-    val clean = bgr.clone()
-    val rereads = try {
-        val areas = suspects.map { i -> eraseLines(clean, readings[i].box, height, params) }
-        recheckEach(clean, areas)
-    } finally {
-        clean.release()
-    }
     val fixed = readings.toMutableList()
-    suspects.forEachIndexed { k, i ->
-        val short = readings[i]
-        Log.d(
-            "MapLensParse",
-            "cut number ${short.text} ${short.box}: reread " +
-                rereads[k].joinToString { "${it.text} ${"%.2f".format(it.confidence)}" },
-        )
-        val stray = digitsOf(short.text).length != short.text.count(Char::isLetterOrDigit)
-        val better = rereads[k].filter { it.confidence >= params.minConfidence }
-            .mapNotNull { r -> normalizeRoom(r.text)?.let { r.copy(text = it) } }
-            .filter { keepsDigits(digitsOf(short.text), it.text, floor) }
-            .maxByOrNull { it.confidence }
-        if (better != null) {
+    // First as printed: the sharper recognizer often reads through the line ML Kit tripped
+    // on. Then, for what that leaves, with the lines painted out. (Inpainting the lines made
+    // EH3's 3540 into "3543" on two of five test copies, so it isn't used.)
+    var open = suspects
+    for (fix in listOf(LineFix.NONE, LineFix.PAINT)) {
+        if (open.isEmpty()) break
+        val clean = bgr.clone()
+        val rereads = try {
+            recheckEach(
+                clean,
+                open.map { i -> eraseLines(clean, readings[i].box, height, params, fix) }
+            )
+        } finally {
+            clean.release()
+        }
+        open = open.filterIndexed { k, i ->
+            val short = readings[i]
+            Log.d(
+                "MapLensParse",
+                "cut number ${short.text} ${short.box} ${fix.name.lowercase()}: reread " +
+                    rereads[k].joinToString { "${it.text} ${"%.2f".format(it.confidence)}" },
+            )
+            val better = rereads[k].filter { it.confidence >= params.minConfidence }
+                .mapNotNull { r -> normalizeRoom(r.text)?.let { r.copy(text = it) } }
+                .filter { keepsDigits(digitsOf(short.text), it.text, floor) }
+                .maxByOrNull { it.confidence }
+                ?: return@filterIndexed true
+            val stray = digitsOf(short.text).length != short.text.count(Char::isLetterOrDigit)
             fixed[i] = short.copy(
                 text = better.text,
                 // A stray letter is the cut digit misread, not doubt about the others.
@@ -71,6 +78,7 @@ internal fun repairCutNumbers(
                     minOf(short.confidence, better.confidence)
                 },
             )
+            false
         }
     }
     return fixed
@@ -118,8 +126,11 @@ internal fun keepsDigits(short: String, reread: String, floor: Char?): Boolean {
 
 private fun digitsOf(text: String) = text.filter(Char::isDigit)
 
+/** How a crop's wall lines are dealt with before a reread. */
+internal enum class LineFix { NONE, PAINT }
+
 /**
- * Paints long straight lines (walls) around [box] in paper colour, in place in [image], and
+ * Removes long straight lines (walls) around [box] in place in [image], as [fix] says, and
  * returns the area to read again.
  */
 private fun eraseLines(
@@ -127,6 +138,7 @@ private fun eraseLines(
     box: Rect,
     h: Int,
     params: CutNumberParams,
+    fix: LineFix = LineFix.PAINT,
 ): Rect = Mats().use { mats ->
     val area = Rect(
         (box.left - (params.padX * h).toInt()).coerceAtLeast(0),
@@ -134,6 +146,7 @@ private fun eraseLines(
         (box.right + (params.padX * h).toInt()).coerceAtMost(image.cols()),
         (box.bottom + (params.padY * h).toInt()).coerceAtMost(image.rows()),
     )
+    if (fix == LineFix.NONE) return@use area
     val crop = mats.own(image.submat(area.top, area.bottom, area.left, area.right))
     val dark = darkInk(crop, mats)
     val vertical = mats.mat()

@@ -96,7 +96,7 @@ internal object PosterMlKit {
         // on a scan where almost every room was right), so a low one gets a second opinion:
         // the sharper recognizer reads the same spot, and agreement makes the room sure.
         val doubtful = (rooms + small).filter { it.confidence < MLKIT_SURE }
-        val unread = stillUnread.take(MAX_RECHECK)
+        val unread = mostLabelLike(stillUnread, readNow).take(MAX_RECHECK)
         val recheck = Recheck(
             bgr,
             unread + signCrops + doubtful.map { padded(it.box, DOUBT_PAD) },
@@ -404,7 +404,10 @@ internal object PosterMlKit {
     /** A small-patch read below this confidence is offered as a possible room only. */
     private const val SMALL_SURE = 0.8f
 
-    /** At most this many leftover word patches get the slower recognizer (~0.1 s each). */
+    /**
+     * At most this many leftover word patches get the slower recognizer (~0.1 s each), the
+     * most label-like first ([mostLabelLike]). Taken top to bottom, EH3's 3440 was 13th of 14.
+     */
     private const val MAX_RECHECK = 12
 
     /**
