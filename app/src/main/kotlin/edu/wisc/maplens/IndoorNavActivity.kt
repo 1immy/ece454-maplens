@@ -66,6 +66,7 @@ import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.model.RecoveryAction
 import edu.wisc.maplens.model.edgePoints
+import edu.wisc.maplens.model.wrapBearing
 import edu.wisc.maplens.nav.CompassView
 import edu.wisc.maplens.nav.DemoScenario
 import edu.wisc.maplens.nav.DemoWalker
@@ -85,6 +86,7 @@ import edu.wisc.maplens.nav.SignReader
 import edu.wisc.maplens.nav.SignScanView
 import edu.wisc.maplens.nav.SignVoter
 import edu.wisc.maplens.nav.Trail
+import edu.wisc.maplens.nav.TurnDial
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
 import edu.wisc.maplens.nav.rerouteTo
@@ -108,6 +110,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -159,6 +162,15 @@ class IndoorNavActivity : ComponentActivity() {
     private lateinit var bannerTitle: TextView
     private lateinit var bannerDetail: TextView
     private lateinit var thenStrip: LinearLayout
+
+    /**
+     * Before the first step: the map bearing the user should turn to face (the route's first
+     * stretch), while they face elsewhere. Null once they face it, walk off, or skip.
+     */
+    private var orientTo: Double? = null
+    private var orientSinceMs = 0L
+    private var orientDial: TurnDial? = null
+    private var orientLine: TextView? = null
     private lateinit var thenIcon: ManeuverView
     private lateinit var hintCard: LinearLayout
     private lateinit var confidenceChip: LinearLayout
@@ -1128,6 +1140,9 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun stopNavigation(toBrowse: Boolean = true) {
+        orientTo = null
+        orientDial = null
+        orientLine = null
         voice.stop()
         announcer.reset()
         pendingReroute?.let(ticker::removeCallbacks)
@@ -1237,7 +1252,17 @@ class IndoorNavActivity : ComponentActivity() {
             openLog("live", p.label ?: p.key, facing.bearingRad)
             startedAt = SystemClock.elapsedRealtime()
             show(Screen.NAVIGATE)
-            renderNavigateSheet()
+            // Facing away from the route? Turn first, as a maps app says "Head north" before
+            // anything else: the turn step shows until the user faces the way to go.
+            val way = guide?.path?.bearingAt(0.0)
+            val turn = way?.let { wrapBearing(it - facing.bearingRad) }
+            if (way != null && turn != null &&
+                NavMath.startTurn(turn, ORIENT_MIN_RAD, ORIENT_AROUND_RAD) != null
+            ) {
+                beginOrient(way, turn)
+            } else {
+                renderNavigateSheet()
+            }
             map.setHeading(facing.bearingRad)
             onPose(
                 PoseEstimate(
@@ -1255,8 +1280,93 @@ class IndoorNavActivity : ComponentActivity() {
         }
     }
 
+    // ---- Turn to face the route ----
+
+    private fun beginOrient(way: Double, turn: Double) {
+        orientTo = way
+        orientSinceMs = 0L
+        val dial = TurnDial(this).apply { offsetRad = turn }
+        orientDial = dial
+        val line = text(Ui.BODY, Ui.INK_SECONDARY).apply {
+            gravity = Gravity.CENTER
+            setText(R.string.in_orient_body)
+        }
+        orientLine = line
+        val skip = styledButton(ButtonStyle.SECONDARY, getString(R.string.in_orient_skip)).apply {
+            setOnClickListener { endOrient(spoken = false) }
+        }
+        setSheet(
+            dial.withMargins(top = 8),
+            line.withMargins(top = 12),
+            skip.withMargins(top = 16, bottom = 4),
+        )
+        (dial.layoutParams as? LinearLayout.LayoutParams)?.gravity = Gravity.CENTER_HORIZONTAL
+        renderOrientBanner(turn)
+        voice.announce(Announcement(getString(orientVoice(turn)), Haptic.TURN))
+    }
+
+    /** The banner while turning: which way, and that it is to face the route. */
+    private fun renderOrientBanner(turn: Double) {
+        val maneuver = orientManeuver(turn)
+        bannerIcon.maneuver = maneuver
+        bannerTitle.update(maneuverText(maneuver, 1))
+        bannerDistance.visibility = View.GONE
+        bannerDetail.update(getString(R.string.in_orient_detail))
+        thenStrip.visibility = View.GONE
+        banner.contentDescription = "${bannerTitle.text}, ${bannerDetail.text}"
+    }
+
+    private fun orientManeuver(turn: Double) =
+        NavMath.startTurn(turn, minRad = 0.0, aroundRad = ORIENT_AROUND_RAD) ?: Maneuver.STRAIGHT
+
+    private fun orientVoice(turn: Double) = when (orientManeuver(turn)) {
+        Maneuver.U_TURN -> R.string.in_orient_say_around
+        Maneuver.TURN_RIGHT -> R.string.in_orient_say_right
+        else -> R.string.in_orient_say_left
+    }
+
+    /** Each compass reading while turning: follow it, and start once the route is ahead. */
+    private fun updateOrient(heading: Double) {
+        val way = orientTo ?: return
+        val turn = wrapBearing(way - heading)
+        orientDial?.offsetRad = turn
+        val facing = abs(turn) <= ORIENT_DONE_RAD
+        orientLine?.setText(if (facing) R.string.in_orient_facing else R.string.in_orient_body)
+        if (!facing) {
+            orientSinceMs = 0L
+            renderOrientBanner(turn)
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (orientSinceMs == 0L) orientSinceMs = now
+        // Held for a moment, so swinging past the right way doesn't count.
+        if (now - orientSinceMs >= ORIENT_HOLD_MS) endOrient(spoken = true)
+    }
+
+    /** Turning done (or skipped, or the user just walked): on to the real directions. */
+    private fun endOrient(spoken: Boolean) {
+        if (orientTo == null) return
+        orientTo = null
+        orientDial = null
+        orientLine = null
+        if (spoken) {
+            map.performHapticFeedback(
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    android.view.HapticFeedbackConstants.CONFIRM
+                } else {
+                    android.view.HapticFeedbackConstants.VIRTUAL_KEY
+                },
+            )
+        }
+        bannerDistance.visibility = View.VISIBLE
+        renderNavigateSheet()
+        // The first real instruction, spoken by the announcer as a fresh route's first cue.
+        lastPose?.let(::handlePose)
+    }
+
     private fun onLiveHeading(mapRad: Double) {
         liveHeadingRad = mapRad
+        if (orientTo != null) updateOrient(mapRad)
         if (following) map.setHeading(mapRad, minimumChangeRad = Math.toRadians(0.5))
     }
 
@@ -1323,6 +1433,12 @@ class IndoorNavActivity : ComponentActivity() {
         // Off the line but not yet confirmed: keep the last instruction, like a maps app,
         // rather than skipping ahead to a turn the walker hasn't reached.
         if (status.offRoute) return
+        // Still turning to face the route: keep the turn step, unless they already set off.
+        if (orientTo != null) {
+            if (status.progressPx < ORIENT_WALK_STEPS * pose.stepLengthPx) return
+            endOrient(spoken = false)
+            return
+        }
         guideFrom(g, pose, status)
     }
 
@@ -2928,6 +3044,21 @@ class IndoorNavActivity : ComponentActivity() {
 
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val PERF_TAG = "MapLensPerf"
+
+        /** Facing further than this from the route's first stretch adds a turn step first. */
+        private val ORIENT_MIN_RAD = Math.toRadians(40.0)
+
+        /** From this much, the turn step says "turn around" rather than left or right. */
+        private val ORIENT_AROUND_RAD = Math.toRadians(135.0)
+
+        /** Within this of the route's way counts as facing it... */
+        private val ORIENT_DONE_RAD = Math.toRadians(25.0)
+
+        /** ...held this long, so swinging past it doesn't count. */
+        private const val ORIENT_HOLD_MS = 450L
+
+        /** Walking this far along the route ends the turn step: they found the way. */
+        private const val ORIENT_WALK_STEPS = 2.0
 
         /** Tap reach around an exit, elevator or AED, as a multiple of a door's. */
         private const val FEATURE_TAP_REACH = 2.5

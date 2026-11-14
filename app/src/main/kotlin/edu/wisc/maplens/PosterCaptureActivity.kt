@@ -67,6 +67,8 @@ import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.routing.AStarRouter
 import java.util.concurrent.Executors
+import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -82,6 +84,10 @@ class PosterCaptureActivity : ComponentActivity() {
     private lateinit var mapBar: LinearLayout
     private lateinit var mapButton: Button
     private lateinit var status: TextView
+    private lateinit var retakeCard: LinearLayout
+    private lateinit var retakeIcon: ImageView
+    private lateinit var retakeTitle: TextView
+    private lateinit var retakeBody: TextView
     private lateinit var action: Button
     private lateinit var details: Button
     private lateinit var cancel: Button
@@ -229,6 +235,43 @@ class PosterCaptureActivity : ComponentActivity() {
             setLineSpacing(0f, 1.15f)
             setPadding(0, pad / 2, 0, pad)
         }
+        // Why the last scan was sent back, in Google's amber warning style, so it is never
+        // mistaken for the usual "hold the phone" line above the camera.
+        retakeIcon = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER }
+        retakeTitle = TextView(this).apply {
+            textSize = Ui.BODY
+            setTextColor(RETAKE_INK)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
+        retakeBody = TextView(this).apply {
+            textSize = Ui.CAPTION
+            setTextColor(RETAKE_INK)
+            setLineSpacing(0f, 1.15f)
+        }
+        retakeCard = LinearLayout(this).apply {
+            visibility = View.GONE
+            setPadding(dp(12), dp(12), dp(16), dp(12))
+            background = rounded(RETAKE_FILL, radiusDp = 16, stroke = RETAKE_EDGE)
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE
+            addView(
+                FrameLayout(context).apply {
+                    background = rounded(RETAKE_EDGE, radiusDp = 18)
+                    addView(retakeIcon, FrameLayout.LayoutParams(-1, -1))
+                },
+                LinearLayout.LayoutParams(dp(36), dp(36)),
+            )
+            addView(
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(retakeTitle)
+                    addView(
+                        retakeBody,
+                        LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) },
+                    )
+                },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(12) },
+            )
+        }
         // No icon: the label changes with the step (allow camera, capture, retake).
         action = styledButton(ButtonStyle.PRIMARY, getString(R.string.capture_poster))
         details = styledButton(ButtonStyle.SECONDARY).apply { visibility = View.GONE }
@@ -315,6 +358,7 @@ class PosterCaptureActivity : ComponentActivity() {
             }
             addView(topBar, LinearLayout.LayoutParams(-1, -2).apply { marginStart = -dp(12) })
             addView(status)
+            addView(retakeCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = pad })
             addView(cameraFrame, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(photoView, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(map, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -483,7 +527,13 @@ class PosterCaptureActivity : ComponentActivity() {
         }
         runOnUiThread {
             if (analysis == null || busy || isDestroyed) return@runOnUiThread
-            aimOverlay.show(aimGuide.update(sighting, now, turnRate))
+            val state = aimGuide.update(sighting, now, turnRate)
+            aimOverlay.show(state)
+            // User mode won't take a photo the parse would get wrong: the chip says how to fix
+            // it, and the shutter comes back as soon as the phone is close enough.
+            if (!developer && review == null) {
+                action.isEnabled = capture != null && !state.blocksCapture
+            }
         }
     }
 
@@ -528,7 +578,12 @@ class PosterCaptureActivity : ComponentActivity() {
                     }
                     // The live preview would compete with the parser for CPU.
                     stopCamera()
-                    worker.execute { parse(id) { image.use(::upright) } }
+                    val share = focalShare
+                    worker.execute {
+                        parse(id, { maxOf(it.width, it.height) * share }) {
+                            image.use(::upright)
+                        }
+                    }
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -546,6 +601,7 @@ class PosterCaptureActivity : ComponentActivity() {
 
     /** Shows the parsing state and returns this attempt's generation. */
     private fun startParsing(): Int {
+        hideRetake()
         val id = synchronized(workLock) { ++generation }
         busy = true
         fastSwitch.isEnabled = false
@@ -568,7 +624,20 @@ class PosterCaptureActivity : ComponentActivity() {
         val id = startParsing()
         // The live preview would compete with the parser for CPU.
         stopCamera()
-        worker.execute { parse(id) { decodePhoto(uri) } }
+        worker.execute {
+            val focal35 = runCatching {
+                contentResolver.openInputStream(uri)?.use {
+                    android.media.ExifInterface(it).getAttributeInt(
+                        android.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+                        0,
+                    )
+                }
+            }.getOrNull()?.takeIf { it > 0 } ?: DEFAULT_FOCAL_35MM
+            // A 35 mm-equivalent focal length is over the 43.27 mm diagonal of 35 mm film.
+            parse(id, { hypot(it.width.toDouble(), it.height.toDouble()) * focal35 / 43.27 }) {
+                decodePhoto(uri)
+            }
+        }
     }
 
     /**
@@ -611,14 +680,18 @@ class PosterCaptureActivity : ComponentActivity() {
         ).also { if (it !== bitmap) bitmap.recycle() }
     }
 
-    /** Parses the photo [load] gives, on the worker, unless a newer attempt replaced [id]. */
-    private fun parse(id: Int, load: () -> Bitmap) {
+    /**
+     * Parses the photo [load] gives, on the worker, unless a newer attempt replaced [id].
+     * [focalPx] is the lens's focal length in that photo's pixels, for the angle check.
+     */
+    private fun parse(id: Int, focalPx: (Bitmap) -> Double, load: () -> Bitmap) {
         synchronized(workLock) {
             if (id != generation) return
             parsingThread = Thread.currentThread()
         }
         val result = try {
             val photo = load()
+            checkAngle(photo, focalPx(photo))
             val shown = Bitmap.createScaledBitmap(
                 photo,
                 photo.width * PHOTO_VIEW_SIDE / maxOf(photo.width, photo.height),
@@ -667,13 +740,81 @@ class PosterCaptureActivity : ComponentActivity() {
             }
             result.onSuccess { if (developer) showReview(it) else saveForUser(it) }.onFailure {
                 Log.w(TAG, "Poster processing failed", it)
-                val message = (it as? PosterRetakeException)?.message
                 busy = false
                 fastSwitch.isEnabled = true
-                fastSwitch.isEnabled = true
-                startCamera(message ?: getString(R.string.poster_parse_failed))
+                startCamera()
+                when (it) {
+                    is TooAngled -> showRetake(R.string.poster_retake_angled, it.message, it.iconId)
+                    is PosterRetakeException -> showRetake(R.string.poster_retake_title, it.message)
+                    else -> showRetake(
+                        R.string.poster_retake_title,
+                        getString(R.string.poster_parse_failed),
+                    )
+                }
             }
         }
+    }
+
+    /**
+     * The map in [photo] seen too far from straight on: user mode stops here with how to
+     * retake it (a slanted map loses rooms and doors); developer mode goes on, to test with.
+     */
+    private fun checkAngle(photo: Bitmap, focalPx: Double) {
+        val seen = runCatching { PosterAim.look(photo, 0, focalPx) }.getOrNull() ?: return
+        if (seen.corners == null) return
+        val angle = maxOf(abs(seen.yawDegrees), abs(seen.pitchDegrees))
+        Log.i(TAG, "photo angle yaw %.1f pitch %.1f".format(seen.yawDegrees, seen.pitchDegrees))
+        if (angle <= AimParams().rejectDegrees) return
+        if (developer) {
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    getString(R.string.poster_angled_developer, angle.roundToInt()),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            return
+        }
+        photo.recycle()
+        val (move, iconId) = when (moveFor(seen.yawDegrees, seen.pitchDegrees)) {
+            AimHint.STEP_RIGHT -> R.string.aim_step_right to R.drawable.ic_aim_right
+            AimHint.STEP_LEFT -> R.string.aim_step_left to R.drawable.ic_aim_left
+            AimHint.LOWER -> R.string.aim_lower to R.drawable.ic_aim_down
+            else -> R.string.aim_raise to R.drawable.ic_aim_up
+        }
+        throw TooAngled(
+            getString(R.string.poster_too_angled, angle.roundToInt(), getString(move)),
+            iconId,
+        )
+    }
+
+    /** A photo sent back for its angle, with the arrow for the way to move. */
+    private class TooAngled(message: String, val iconId: Int) : Exception(message)
+
+    /**
+     * Shows why the last scan was sent back: a short title, the reason and what to do, with a
+     * light buzz and a spoken announcement. Stays until the next scan starts.
+     */
+    private fun showRetake(titleId: Int, reason: String?, iconId: Int = R.drawable.ic_warning) {
+        retakeTitle.setText(titleId)
+        retakeBody.text = reason ?: getString(R.string.poster_parse_failed)
+        retakeIcon.setImageDrawable(icon(iconId, Color.WHITE, 20))
+        retakeCard.visibility = View.VISIBLE
+        retakeCard.alpha = 0f
+        retakeCard.translationY = -dpf(8f)
+        retakeCard.animate().alpha(1f).translationY(0f).setDuration(220).start()
+        retakeCard.performHapticFeedback(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.view.HapticFeedbackConstants.REJECT
+            } else {
+                android.view.HapticFeedbackConstants.LONG_PRESS
+            },
+        )
+        status.setText(R.string.poster_ready)
+    }
+
+    private fun hideRetake() {
+        retakeCard.visibility = View.GONE
     }
 
     private fun upright(image: ImageProxy): Bitmap {
@@ -737,7 +878,8 @@ class PosterCaptureActivity : ComponentActivity() {
         if (verified == null) {
             result.rectified.recycle()
             busy = false
-            startCamera(getString(R.string.poster_user_blocked))
+            startCamera()
+            showRetake(R.string.poster_retake_title, getString(R.string.poster_user_blocked))
             return
         }
         status.setText(R.string.poster_user_saving)
@@ -977,5 +1119,13 @@ class PosterCaptureActivity : ComponentActivity() {
 
         /** Focal length over sensor long side when the camera won't say: a 26 mm phone lens. */
         const val DEFAULT_FOCAL_SHARE = 0.75
+
+        /** A phone's main camera, in 35 mm terms, when an imported photo doesn't say. */
+        const val DEFAULT_FOCAL_35MM = 26
+
+        /** Google's amber warning colours: yellow 50 fill, yellow 700 edge, brown ink. */
+        val RETAKE_FILL = Color.rgb(254, 247, 224)
+        val RETAKE_EDGE = Color.rgb(242, 153, 0)
+        val RETAKE_INK = Color.rgb(94, 61, 0)
     }
 }

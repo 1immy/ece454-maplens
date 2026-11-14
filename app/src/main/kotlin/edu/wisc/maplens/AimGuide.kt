@@ -13,6 +13,12 @@ import kotlin.math.abs
 internal data class AimParams(
     val straightDegrees: Double = 10.0,
     val angledDegrees: Double = 18.0,
+    /**
+     * A photo (taken or imported) more than this off the wall is sent back in user mode, before
+     * the parse: the Oct 12 "left30", "right30" and "down" shots are 22–37°, every straight-on
+     * one 13° or less.
+     */
+    val rejectDegrees: Double = 20.0,
     /** A state is left only this far past its threshold, so the hint doesn't flicker. */
     val hysteresisDegrees: Double = 2.0,
     /** Share of the frame the map should span; below it, ask to move closer. */
@@ -56,7 +62,19 @@ internal data class AimState(
     val corners: DoubleArray? = null,
     val moveX: Double = 0.0,
     val moveY: Double = 0.0,
-)
+) {
+    /** Angled enough that user mode holds the shutter until the user moves. */
+    val blocksCapture: Boolean
+        get() = tone == AimTone.WARN &&
+            hint in setOf(AimHint.STEP_LEFT, AimHint.STEP_RIGHT, AimHint.RAISE, AimHint.LOWER)
+}
+
+/** Which way to move for a map seen at [yaw] and [pitch] degrees (see [PosterSighting]). */
+internal fun moveFor(yaw: Double, pitch: Double): AimHint = if (abs(yaw) >= abs(pitch)) {
+    if (yaw < 0) AimHint.STEP_RIGHT else AimHint.STEP_LEFT
+} else {
+    if (pitch < 0) AimHint.LOWER else AimHint.RAISE
+}
 
 /** Turns a stream of preview looks into one steady instruction. Not thread-safe. */
 internal class AimGuide(private val params: AimParams = AimParams()) {
@@ -126,11 +144,7 @@ internal class AimGuide(private val params: AimParams = AimParams()) {
     }
 
     /** Negative yaw: the phone is left of the map. Negative pitch: it is above the map. */
-    private fun moveHint(): AimHint = if (abs(yaw) >= abs(pitch)) {
-        if (yaw < 0) AimHint.STEP_RIGHT else AimHint.STEP_LEFT
-    } else {
-        if (pitch < 0) AimHint.LOWER else AimHint.RAISE
-    }
+    private fun moveHint(): AimHint = moveFor(yaw, pitch)
 
     private fun nearEdge(corners: DoubleArray, width: Int, height: Int): Boolean {
         val dx = params.edgeMargin * width

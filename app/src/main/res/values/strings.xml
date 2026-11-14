@@ -86,6 +86,13 @@
   <string name="in_turn_around">Turn around</string>
   <string name="in_destination_ahead">Destination ahead</string>
   <string name="in_walk_straight">Walk straight</string>
+  <string name="in_orient_detail">to face your route</string>
+  <string name="in_orient_body">Turn with the phone until the green arrow is at the top.</string>
+  <string name="in_orient_facing">That\'s the way. Start walking.</string>
+  <string name="in_orient_skip">Skip</string>
+  <string name="in_orient_say_around">Turn around to face your route</string>
+  <string name="in_orient_say_left">Turn left to face your route</string>
+  <string name="in_orient_say_right">Turn right to face your route</string>
   <string name="in_arrived">You\'ve arrived</string>
   <string name="in_arrived_near">You\'re near the room</string>
   <string name="in_arrived_near_detail">The map shows no clear doorway here. Check the door sign to find the entrance.</string>
@@ -285,6 +292,10 @@
   <string name="poster_import_description">Use a poster photo you took earlier, from your photos or files</string>
   <string name="poster_import_unreadable">MapLens couldn\'t open that file as a photo. Pick another or capture the poster.</string>
   <string name="poster_ready">Stand in front of the map and hold your phone parallel to it.</string>
+  <string name="poster_too_angled">The map was %1$d° off straight on, so rooms would be missed. %2$s, then try again.</string>
+  <string name="poster_retake_angled">Too angled to read</string>
+  <string name="poster_retake_title">Retake needed</string>
+  <string name="poster_angled_developer">Photo is %1$d° off straight on (user mode would ask to retake)</string>
   <string name="aim_find">Point at the map and fit its blue border</string>
   <string name="aim_glare">Glare on the border. Shift a little</string>
   <string name="aim_step_back">Step back to fit the whole map</string>
@@ -447,7 +458,14 @@
   <string name="home_map_detail">%1$d rooms · saved %2$s</string>
   <string name="home_map_delete_title">Delete %1$s?</string>
   <string name="home_map_delete">Delete</string>
-  <string name="home_map_delete_body">The map and its photo are removed from this phone.</string>
+  <plurals name="home_delete_many_title">
+    <item quantity="one">Delete %1$d map?</item>
+    <item quantity="other">Delete %1$d maps?</item>
+  </plurals>
+  <plurals name="home_delete_body">
+    <item quantity="one">The map and its photo are removed from this phone. You can undo for a few seconds.</item>
+    <item quantity="other">The maps and their photos are removed from this phone. You can undo for a few seconds.</item>
+  </plurals>
   <string name="home_map_actions">More options for %1$s</string>
   <string name="home_map_rename">Rename</string>
   <string name="home_map_rename_save">Save</string>

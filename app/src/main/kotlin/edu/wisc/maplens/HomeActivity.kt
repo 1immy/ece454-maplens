@@ -565,7 +565,7 @@ class HomeActivity : ComponentActivity() {
         )
         addView(
             action(R.drawable.ic_delete, getString(R.string.home_selection_delete)) {
-                deleteWithUndo(picked.map { it.id })
+                confirmDelete(picked)
             },
             LinearLayout.LayoutParams(dp(48), dp(48)),
         )
@@ -708,7 +708,7 @@ class HomeActivity : ComponentActivity() {
             getString(R.string.home_map_delete),
             DELETE_RED,
             removes = true,
-        ) { deleteWithUndo(listOf(map.id)) }
+        ) { confirmDelete(listOf(map)) }
         return SwipeRow(this, card, pinAction, deleteAction).apply {
             swipeEnabled = !selecting
             // The same map's card before and after a rebuild: it glides, not jumps.
@@ -788,6 +788,35 @@ class HomeActivity : ComponentActivity() {
      * Takes [ids] off the list at once and offers Undo for a few seconds, as Gmail does,
      * before the maps are deleted from the phone. A new delete first finishes the last one.
      */
+    /**
+     * "Delete …?" before anything goes, for the menu, the selection bar and a swipe alike.
+     * Delete is in red; Cancel (or Back, or a tap outside) keeps the maps, and a swiped card
+     * slides back. Undo stays available for a few seconds after, as a second chance.
+     */
+    private fun confirmDelete(maps: List<SavedMap>) {
+        if (maps.isEmpty()) return
+        val title = if (maps.size == 1) {
+            getString(R.string.home_map_delete_title, maps.single().name)
+        } else {
+            resources.getQuantityString(R.plurals.home_delete_many_title, maps.size, maps.size)
+        }
+        var deleted = false
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(
+                resources.getQuantityString(R.plurals.home_delete_body, maps.size, maps.size),
+            )
+            .setPositiveButton(R.string.home_map_delete) { _, _ ->
+                deleted = true
+                deleteWithUndo(maps.map { it.id })
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            // A card swiped away comes back when the delete is called off.
+            .setOnDismissListener { if (!deleted) refresh() }
+            .show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(DELETE_RED)
+    }
+
     private fun deleteWithUndo(ids: List<String>) {
         if (ids.isEmpty()) return
         commitPendingDeletes()
@@ -827,7 +856,7 @@ class HomeActivity : ComponentActivity() {
                     MapAssets.savedMaps(this).setPinned(map.id, !map.pinned)
                     refresh()
                 }
-                MENU_DELETE -> deleteWithUndo(listOf(map.id))
+                MENU_DELETE -> confirmDelete(listOf(map))
             }
             true
         }

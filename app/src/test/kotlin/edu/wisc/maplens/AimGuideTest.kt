@@ -94,4 +94,23 @@ class AimGuideTest {
         guide.settle(seen())
         assertEquals(AimHint.READY, guide.update(seen(yaw = 27.0), 2_100).hint)
     }
+
+    @Test
+    fun `user mode holds the shutter only for a bad angle`() {
+        assertTrue(AimGuide().settle(seen(yaw = -28.7)).blocksCapture)
+        assertTrue(AimGuide().settle(seen(pitch = -33.0)).blocksCapture)
+        // A gentle hint, a small map or no map found never holds it.
+        assertTrue(!AimGuide().settle(seen(pitch = 13.0)).blocksCapture)
+        assertTrue(!AimGuide().settle(seen(fill = 0.4)).blocksCapture)
+        val missing = PosterSighting(960, 1280, null, SightingProblem.NOT_FOUND)
+        assertTrue(!AimGuide().settle(missing).blocksCapture)
+    }
+
+    @Test
+    fun `a photo's angle says which way to move`() {
+        assertEquals(AimHint.STEP_RIGHT, moveFor(-28.5, -0.3))
+        assertEquals(AimHint.STEP_LEFT, moveFor(36.1, -2.0))
+        assertEquals(AimHint.LOWER, moveFor(2.8, -33.0))
+        assertEquals(AimHint.RAISE, moveFor(-2.1, 13.1))
+    }
 }

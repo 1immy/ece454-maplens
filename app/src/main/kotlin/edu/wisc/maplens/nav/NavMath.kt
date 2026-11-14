@@ -10,6 +10,21 @@ import kotlin.math.sin
 
 /** Small, Android-free helpers for the navigation screen, so they unit-test on the JVM. */
 internal object NavMath {
+    /**
+     * The turn to make before walking, for [turnRad] still to turn (positive to the right):
+     * none within [minRad], "turn around" from [aroundRad], otherwise left or right.
+     */
+    fun startTurn(
+        turnRad: Double,
+        minRad: Double = Math.toRadians(40.0),
+        aroundRad: Double = Math.toRadians(135.0),
+    ): edu.wisc.maplens.guidance.Maneuver? = when {
+        kotlin.math.abs(turnRad) <= minRad -> null
+        kotlin.math.abs(turnRad) >= aroundRad -> edu.wisc.maplens.guidance.Maneuver.U_TURN
+        turnRad > 0 -> edu.wisc.maplens.guidance.Maneuver.TURN_RIGHT
+        else -> edu.wisc.maplens.guidance.Maneuver.TURN_LEFT
+    }
+
     /** Typical indoor walking speed, used only for the displayed time. */
     const val WALK_SPEED_MPS = 1.2
 
