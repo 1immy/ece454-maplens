@@ -122,12 +122,25 @@ private fun FloorGraph.withFoundDoor(
             graph = graph.split(edge, hit, it)
         }
     val door = Node(graph.nextNodeId(doorIdPrefix(finding.kind)), finding.outside, NodeType.DOOR)
-    val line = listOf(joint.position) + finding.link.reversed().drop(1).dropLast(1) + door.position
+    var start = joint
+    var line = listOf(joint.position) + finding.link.reversed().drop(1).dropLast(1) + door.position
+    // Rooms reached through one opening walk the same way there. Their links branch where they
+    // part; near-identical traced lines would otherwise wobble across each other. Each fork can
+    // lead along another room's link, so look again from there. The line shrinks every time.
+    while (true) {
+        val (shared, last) = graph.sharedLink(start, line) ?: break
+        val hit = checkNotNull(graph.copy(edges = listOf(shared)).nearestEdge(line[last]))
+        start = graph.endpointNear(shared, hit.point, 3.0)
+            ?: Node(graph.nextNodeId("fj"), hit.point, NodeType.JUNCTION).also {
+                graph = graph.split(shared, hit, it)
+            }
+        line = listOf(start.position) + line.drop(last + 1)
+    }
     val linkId = generateSequence(1) { it + 1 }.map { "door$it" }
         .first { id -> graph.edges.none { it.id == id } }
     graph = graph.copy(
         nodes = graph.nodes + (door.id to door),
-        edges = graph.edges + Edge(linkId, joint.id, door.id, line, pathLength(line)),
+        edges = graph.edges + Edge(linkId, start.id, door.id, line, pathLength(line)),
     )
     return graph.labelled(room, door.id, previews)
 }
@@ -178,6 +191,41 @@ private fun FloorGraph.labelled(
     }
     return graph
 }
+
+/**
+ * The edge leaving [joint] that [line] (also from [joint]) runs along furthest, at least
+ * [SHARED_MIN_PX], with the index of [line]'s last point still on it. Null when there is none.
+ */
+internal fun FloorGraph.sharedLink(joint: Node, line: List<PixelPoint>): Pair<Edge, Int>? =
+    edges.filter { joint.id == it.from || joint.id == it.to }.map { edge ->
+        var last = 0
+        while (last < line.lastIndex &&
+            distanceToLine(line[last + 1], edge.polyline) <= SHARED_PX
+        ) {
+            last++
+        }
+        edge to last
+    }.filter { (_, last) -> last > 0 && pathLength(line.take(last + 1)) >= SHARED_MIN_PX }
+        .maxByOrNull { (_, last) -> last }
+
+private fun distanceToLine(point: PixelPoint, line: List<PixelPoint>): Double =
+    line.zipWithNext().minOfOrNull { (a, b) ->
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+        val squared = dx * dx + dy * dy
+        val t = if (squared == 0.0) {
+            0.0
+        } else {
+            (((point.x - a.x) * dx + (point.y - a.y) * dy) / squared).coerceIn(0.0, 1.0)
+        }
+        point.distanceTo(PixelPoint(a.x + t * dx, a.y + t * dy))
+    } ?: point.distanceTo(line.first())
+
+/** Door links this close together walk the same way. */
+private const val SHARED_PX = 3.0
+
+/** Shorter shared stretches are left as they are: they can't wobble across each other. */
+private const val SHARED_MIN_PX = 10.0
 
 /** A door this close to the traced corridor sits on it; further, it gets a link edge. */
 private const val DIRECT_LINK_PX = 25.0
