@@ -132,3 +132,18 @@ class PlaceSearch(
         }
     }
 }
+
+/**
+ * This map with START moved to [nodeId], for a walk that begins somewhere other than the
+ * poster (the user said "I'm here" at a room). Routes, the facing step and tracking all start
+ * from [FloorGraph.startNodeId], so nothing else changes. The poster's START becomes a plain
+ * corridor point; landmarks keep their node ids, so every room still routes and lists.
+ */
+fun FloorGraph.startingAt(nodeId: String): FloorGraph {
+    if (nodeId == startNodeId || nodeId !in nodes) return this
+    val poster = nodes.getValue(startNodeId)
+    val ways = adjacency()[poster.id].orEmpty().size
+    val plain = poster.copy(type = if (ways >= 2) NodeType.JUNCTION else NodeType.DEAD_END)
+    val here = nodes.getValue(nodeId).copy(type = NodeType.START)
+    return copy(nodes = nodes + (plain.id to plain) + (here.id to here), startNodeId = nodeId)
+}

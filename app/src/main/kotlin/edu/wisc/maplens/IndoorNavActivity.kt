@@ -40,6 +40,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import edu.wisc.maplens.guidance.Announcement
+import edu.wisc.maplens.guidance.AnnouncerParams
 import edu.wisc.maplens.guidance.CueAnnouncer
 import edu.wisc.maplens.guidance.Haptic
 import edu.wisc.maplens.guidance.Instruction
@@ -88,6 +89,7 @@ import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
 import edu.wisc.maplens.nav.rerouteTo
 import edu.wisc.maplens.nav.smoothedCorridors
+import edu.wisc.maplens.nav.startingAt
 import edu.wisc.maplens.robot.Carry
 import edu.wisc.maplens.robot.EscortCue
 import edu.wisc.maplens.robot.EscortState
@@ -148,6 +150,7 @@ class IndoorNavActivity : ComponentActivity() {
     private val featureChips = mutableMapOf<PlaceKind, View>()
     private lateinit var routeCard: LinearLayout
     private lateinit var routeTo: TextView
+    private lateinit var routeFrom: TextView
     private lateinit var banner: LinearLayout
     private lateinit var bannerCard: LinearLayout
     private lateinit var bannerIcon: ManeuverView
@@ -213,6 +216,12 @@ class IndoorNavActivity : ComponentActivity() {
     private var logFile: File? = null
 
     private var graph: FloorGraph? = null
+
+    /** The map as loaded, START at the poster; [graph] is it with START moved to [origin]. */
+    private var baseGraph: FloorGraph? = null
+
+    /** Where the user said "I'm here"; null means the poster's START. */
+    private var origin: Place? = null
     private var corridors: Map<String, String> = emptyMap()
     private var places: List<Place> = emptyList()
     private var walkPx: Map<String, Double> = emptyMap()
@@ -327,6 +336,7 @@ class IndoorNavActivity : ComponentActivity() {
             runOnUiThread {
                 loaded.onSuccess { (g, image) ->
                     graph = g
+                    baseGraph = g
                     corridors = g.corridorIds()
                     map.bitmap = image
                     map.setPuck(g.nodes.getValue(g.startNodeId).position)
@@ -363,14 +373,7 @@ class IndoorNavActivity : ComponentActivity() {
         // Routes, turn cues and tracking follow each corridor's straight line, not its trace.
         val g = loaded.smoothedCorridors()
         val all = g.places()
-        val distances = all.mapNotNull { p ->
-            val route = if (p.label != null) {
-                router.routeToLabel(g, g.startNodeId, p.label)
-            } else {
-                router.route(g, g.startNodeId, p.nodeIds.first())
-            }
-            route?.let { p.key to it.lengthPx }
-        }.toMap()
+        val distances = distancesFrom(g, all)
         val doors = all.filter { it.kind == PlaceKind.ROOM }.associate { room ->
             room.label!! to room.nodeIds.map { g.nodes.getValue(it).position }
         }
@@ -387,7 +390,9 @@ class IndoorNavActivity : ComponentActivity() {
         runOnUiThread {
             places = all
             walkPx = distances
-            val found = PlaceSearch(all) { distances[it.key] }
+            // Distances from wherever the walk starts now ([walkPx]), so "nearest exit" and
+            // result order follow an "I'm here" start, not only the poster.
+            val found = PlaceSearch(all) { walkPx[it.key] }
             search = found
             roomFinder = finder
             val kinds = found.available()
@@ -551,15 +556,34 @@ class IndoorNavActivity : ComponentActivity() {
 
     private fun renderBrowseSheet() {
         etaText = null
+        val here = origin
+        val title = text(Ui.HEADING, bold = true).apply {
+            text = mapName ?: getString(R.string.in_building)
+            markHeading()
+        }
+        if (here == null) {
+            setSheet(
+                title,
+                text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
+                    val line = if (mapName == null) R.string.in_floor_line else R.string.in_at_start
+                    text = getString(line)
+                }.withMargins(top = 4, bottom = 8),
+            )
+            return
+        }
+        val reset = styledButton(
+            ButtonStyle.SECONDARY,
+            getString(R.string.in_origin_poster),
+            R.drawable.ic_my_location,
+        ).apply { setOnClickListener { setOrigin(null) } }
         setSheet(
-            text(Ui.HEADING, bold = true).apply {
-                text = mapName ?: getString(R.string.in_building)
-                markHeading()
-            },
+            title,
             text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
-                val line = if (mapName == null) R.string.in_floor_line else R.string.in_at_start
-                text = getString(line)
-            }.withMargins(top = 4, bottom = 8),
+                text = getString(R.string.in_origin_line, placeTitle(here))
+                setStartIcon(R.drawable.ic_my_location, IndoorMapView.PUCK_BLUE)
+                compoundDrawablePadding = dp(6)
+            }.withMargins(top = 4),
+            reset.withMargins(top = 12, bottom = 4),
         )
     }
 
@@ -575,6 +599,51 @@ class IndoorNavActivity : ComponentActivity() {
         show(Screen.BROWSE)
         renderBrowseSheet()
         if (moveCamera) graph?.let { map.focus(it.nodes.getValue(it.startNodeId).position) }
+    }
+
+    /** Walking distance in px from [g]'s START to each of [all], where there is a route. */
+    private fun distancesFrom(g: FloorGraph, all: List<Place>): Map<String, Double> =
+        all.mapNotNull { p ->
+            val route = if (p.label != null) {
+                router.routeToLabel(g, g.startNodeId, p.label)
+            } else {
+                router.route(g, g.startNodeId, p.nodeIds.first())
+            }
+            route?.let { p.key to it.lengthPx }
+        }.toMap()
+
+    /**
+     * "I'm here" at [p], or back to the poster's START for null. Like choosing a starting
+     * point in Google Maps: the blue dot moves there, and distances, routes and the facing
+     * step all start from it until the user changes it again.
+     */
+    private fun setOrigin(p: Place?) {
+        val base = baseGraph ?: return
+        stopNavigation(toBrowse = false)
+        origin = p
+        val g = if (p == null) base else base.startingAt(originNode(p))
+        graph = g
+        walkPx = distancesFrom(g, places)
+        routeFrom.text = p?.let { placeTitle(it) } ?: getString(R.string.in_your_location)
+        // A shortcut is offered only where one is reachable from the new start.
+        val kinds = search?.available().orEmpty()
+        featureChips.forEach { (kind, view) -> view.visibility = shown(kind in kinds) }
+        map.setPuck(g.nodes.getValue(g.startNodeId).position, durationMs = 500)
+        clearPlace(moveCamera = true)
+        showSnack(
+            if (p == null) {
+                getString(R.string.in_origin_reset)
+            } else {
+                getString(R.string.in_origin_set, placeTitle(p))
+            },
+        )
+    }
+
+    /** The door of [p] nearest where its number is printed: where someone there stands. */
+    private fun originNode(p: Place): String {
+        val g = baseGraph ?: return p.nodeIds.first()
+        val printed = p.label?.let { labelBoxes[it]?.center } ?: return p.nodeIds.first()
+        return p.nodeIds.minBy { g.nodes.getValue(it).position.distanceTo(printed) }
     }
 
     // ---- Search ----
@@ -720,6 +789,22 @@ class IndoorNavActivity : ComponentActivity() {
                 isEnabled = meters != null
                 setOnClickListener { if (plan(p)) beginNavigation() }
             }
+        val isOrigin = origin?.key == p.key
+        // Where the user is: start the next walk from this room instead of the poster.
+        val here = styledButton(
+            ButtonStyle.TONAL,
+            getString(if (isOrigin) R.string.in_origin_here else R.string.in_im_here),
+            R.drawable.ic_my_location,
+        ).apply {
+            contentDescription = getString(R.string.in_im_here_description, placeTitle(p))
+            isEnabled = !isOrigin
+            setOnClickListener { setOrigin(p) }
+        }
+        if (isOrigin) {
+            directions.isEnabled = false
+            start.isEnabled = false
+            summary.setText(R.string.in_origin_summary)
+        }
         setSheet(
             text(Ui.TITLE, bold = true).apply {
                 text = placeTitle(p)
@@ -733,7 +818,8 @@ class IndoorNavActivity : ComponentActivity() {
                     start,
                     LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) }
                 )
-            }.withMargins(top = 16, bottom = 4),
+            }.withMargins(top = 16),
+            here.withMargins(top = 8, bottom = 4),
         )
     }
 
@@ -1078,10 +1164,23 @@ class IndoorNavActivity : ComponentActivity() {
     /** START: tap the corridor you face, on the map or in the list. Its bearing sets θ0. */
     private fun askFacing(again: Boolean) {
         val g = graph ?: return
-        val options = g.facingOptions(g.startNodeId)
+        val here = origin
+        val options = if (here == null) {
+            g.facingOptions(g.startNodeId)
+        } else {
+            g.facingOptions(
+                g.startNodeId,
+                here.label?.let { labelBoxes[it]?.center } ?: here.position,
+                placeTitle(here).replaceFirstChar { it.lowercase() },
+            )
+        }
         show(Screen.FACING)
         hintTitle.setText(R.string.in_facing_title)
-        hintBody.setText(if (again) R.string.in_facing_again else R.string.in_facing_body)
+        hintBody.text = when {
+            here != null -> getString(R.string.in_facing_body_here, placeTitle(here))
+            again -> getString(R.string.in_facing_again)
+            else -> getString(R.string.in_facing_body)
+        }
         map.setPuck(g.nodes.getValue(g.startNodeId).position)
         map.setHeading(null)
         map.facingChoices = options.map { it.bearingRad }
@@ -1706,8 +1805,18 @@ class IndoorNavActivity : ComponentActivity() {
         turnAround: Boolean = false,
     ) {
         val arrived = instruction.maneuver == Maneuver.ARRIVE && instruction.stepsUntil == 0
-        bannerIcon.maneuver = instruction.maneuver
-        bannerTitle.update(maneuverText(instruction.maneuver, instruction.stepsUntil))
+        // A long last stretch with no turn is "Walk straight", as in Google Maps; only the
+        // last few steps say the destination is ahead. The voice follows the same split.
+        val straight = instruction.maneuver == Maneuver.ARRIVE &&
+            instruction.stepsUntil > AnnouncerParams().prepareSteps
+        bannerIcon.maneuver = if (straight) Maneuver.STRAIGHT else instruction.maneuver
+        bannerTitle.update(
+            if (straight) {
+                getString(R.string.in_walk_straight)
+            } else {
+                maneuverText(instruction.maneuver, instruction.stepsUntil)
+            },
+        )
         val meters = NavMath.roundedMeters(instruction.stepsUntil * stride)
         val noDistance = arrived || turnAround
         bannerDistance.update(if (noDistance) "" else getString(R.string.in_step_distance, meters))
@@ -1719,7 +1828,12 @@ class IndoorNavActivity : ComponentActivity() {
                 place?.let { placeTitle(it) }
             } else {
                 val n = instruction.stepsUntil
-                resources.getQuantityString(R.plurals.in_banner_detail, n, instruction.detail, n)
+                val where = if (straight) {
+                    CueAnnouncer.towards(instruction.detail)
+                } else {
+                    instruction.detail
+                }
+                resources.getQuantityString(R.plurals.in_banner_detail, n, where, n)
             },
         )
         banner.contentDescription = "${bannerTitle.text}, ${bannerDetail.text}"
@@ -2141,6 +2255,7 @@ class IndoorNavActivity : ComponentActivity() {
                             dotIcon(IndoorMapView.PUCK_BLUE),
                             text(Ui.BODY).apply {
                                 setText(R.string.in_your_location)
+                                routeFrom = this
                             }
                         )
                     )
