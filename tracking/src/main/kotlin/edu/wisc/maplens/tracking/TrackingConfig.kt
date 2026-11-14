@@ -95,6 +95,19 @@ data class TrackingConfig(
     val gaitRhythmStartGapNs: Long = 1_300_000_000,
     /** A walk lasts while each footfall comes within this long of the last one passed. */
     val gaitRhythmKeepGapNs: Long = 1_500_000_000,
+    /**
+     * A walk that paused less than [gaitResumeWindowNs] ago (a corner, a door) restarts after
+     * this many footfalls instead of [gaitRhythmFootfalls]: the walker was just walking.
+     */
+    val gaitResumeFootfalls: Int = 2,
+    val gaitResumeWindowNs: Long = 5_000_000_000,
+    /**
+     * During a walk, a footfall that only fails [gaitMaxGyroRms] still counts: walking round a
+     * corner turns the phone. Field test, Nov 12: those footfalls were dropped, the walk broke,
+     * and the dot waited three fresh footfalls (about 2 s) after every turn. Turning on the
+     * spot doesn't bob, so the other checks still stop it.
+     */
+    val gaitTurnWhileWalking: Boolean = true,
     val particleCount: Int = 300,
     /** Per-particle step-length noise, as a fraction of k. */
     val stepLengthNoise: Double = 0.10,
@@ -171,8 +184,24 @@ data class TrackingConfig(
     val scanAcceptMinMeters: Double = 5.0,
     /** Weight kept on the old k when refining at a landmark. */
     val landmarkBlendOld: Double = 0.7,
-    /** A sign is accepted only if this share of the cloud's weight is already near its door. */
+    /**
+     * A sign counts as "where the cloud already is" when this share of the cloud's weight is
+     * near its door. Below that the sign is rejected ([signRelocates] false, the A5 gate) or
+     * moves the whole cloud to the door ([signRelocates] true).
+     */
     val signGateMinWeight: Double = 0.05,
+    /**
+     * A room number the walker stands at and points the camera at is better evidence than a
+     * drifted dead-reckoning cloud, so by default a readable sign always re-anchors, moving the
+     * cloud if it was elsewhere (never silently: the result says so). Field tests on EH3 had
+     * correct nearby signs rejected as "too far" once the cloud had drifted. False restores
+     * the A5 distance gate for evaluation runs.
+     */
+    val signRelocates: Boolean = true,
+    /** Door signs hang about this far from the corridor centreline (half a 2 m corridor). */
+    val signWallOffsetMeters: Double = 1.0,
+    /** A sign heading fix larger than this is distrusted (wrong side, misread) and skipped. */
+    val signHeadingMaxFixDeg: Double = 100.0,
     /** σ of the Gaussian the cloud is re-weighted with around a sign anchor... */
     val signAnchorSigmaMeters: Double = 1.5,
     /** ...widened to this share of the read distance (a distance read off text is rough). */

@@ -11,6 +11,7 @@ import edu.wisc.maplens.model.bearingOnEdge
 import edu.wisc.maplens.model.corridorsAt
 import edu.wisc.maplens.model.nearestEdge
 import edu.wisc.maplens.model.pointOnEdge
+import edu.wisc.maplens.model.wrapBearing
 import java.util.PriorityQueue
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -211,38 +212,38 @@ class ParticleTracker(
         )
         val w = weights()
         val points = particles.map { graph.pointOnEdge(it.edge.id, it.offsetPx) }
-        val (door, support) = doors.map { id ->
+        val scored = doors.map { id ->
             val at = graph.nodes.getValue(id).position
             id to particles.indices.sumOf { if (points[it].distanceTo(at) <= gate) w[it] else 0.0 }
-        }.maxBy { it.second }
-        if (support < config.signGateMinWeight) {
-            return SignResult(false, SignOutcome.TOO_FAR, door, support, spread, spread)
+        }
+        val (supported, support) = scored.maxBy { it.second }
+        val relocated = support < config.signGateMinWeight
+        if (relocated && !config.signRelocates) {
+            return SignResult(false, SignOutcome.TOO_FAR, supported, support, spread, spread)
                 .also { lastSign = it }
         }
-
-        // Where the camera puts the walker: back from the door along the line of sight.
-        val doorAt = graph.nodes.getValue(door).position
-        val bearing = sighting.bearingRad
-        val distance = sighting.distancePx
-            ?.takeIf { it.isFinite() && it > 0 }
-            ?.coerceAtMost(config.signMaxReadMeters * pxPerMeter)
-        val seen = if (bearing != null && distance != null) {
-            PixelPoint(doorAt.x - distance * cos(bearing), doorAt.y - distance * sin(bearing))
+        // Moving the cloud: of a room's several doors, the one nearest the current estimate.
+        val door = if (relocated) {
+            doors.minBy { graph.nodes.getValue(it).position.distanceTo(last.position) }
         } else {
-            doorAt
+            supported
         }
-        val target = graph.nearestEdge(seen)?.point ?: doorAt
+
+        val seen = signStand(door, sighting, pxPerMeter)
+        val target = graph.nearestEdge(seen.walker)?.point ?: graph.nodes.getValue(door).position
         val sigma = maxOf(
             config.signAnchorSigmaMeters * pxPerMeter,
-            config.signDistanceSigmaShare * (distance ?: 0.0),
+            config.signDistanceSigmaShare * (seen.alongPx),
         )
         for (i in particles.indices) {
             val d = points[i].distanceTo(target)
             particles[i].logWeight -= d * d / (2 * sigma * sigma)
         }
         normalise()
-        // Re-place the weakest share of the cloud around the anchor, on the corridors there.
-        val count = (config.signReinjectFraction * particles.size).toInt()
+        // Re-place the weakest share of the cloud around the anchor, on the corridors there;
+        // all of it when the cloud was somewhere else.
+        val share = if (relocated) 1.0 else config.signReinjectFraction
+        val count = (share * particles.size).toInt()
         val edgesById = graph.edges.associateBy { it.id }
         for (p in particles.sortedBy { it.logWeight }.take(count)) {
             val near = PixelPoint(
@@ -258,8 +259,60 @@ class ParticleTracker(
         resample()
         val refined = anchorAt(door, last.timestampNanos)
         last = estimate(last.timestampNanos, last.headingRad)
-        return SignResult(true, SignOutcome.ACCEPTED, door, support, spread, last.spreadPx, refined)
-            .also { lastSign = it }
+        return SignResult(
+            accepted = true,
+            reason = SignOutcome.ACCEPTED,
+            doorNodeId = door,
+            support = support,
+            spreadBeforePx = spread,
+            spreadAfterPx = last.spreadPx,
+            refinedStepLengthPx = refined,
+            relocated = relocated,
+            headingFixRad = seen.headingFixRad,
+        ).also { lastSign = it }
+    }
+
+    /** Where a sign puts the walker, and how far off the camera's bearing to it was. */
+    private class SignStand(val walker: PixelPoint, val alongPx: Double, val headingFixRad: Double?)
+
+    /**
+     * The walker stands in the corridor looking at the sign beside [door]. The sign hangs on
+     * the room's wall, [TrackingConfig.signWallOffsetMeters] off the centreline on the room's
+     * side (from [SignSighting.roomCenter], else from the bearing). A read distance d longer
+     * than that offset h puts the walker √(d² − h²) along the corridor, on the side the camera
+     * says the sign is not. The true bearing from there to the sign, minus the measured one,
+     * is the heading fix: after a scan the walker carries on with a corrected θ0.
+     */
+    private fun signStand(door: String, sighting: SignSighting, pxPerMeter: Double): SignStand {
+        val doorAt = graph.nodes.getValue(door).position
+        val corridor = graph.corridorsAt(door).firstOrNull()
+            ?: return SignStand(doorAt, 0.0, null)
+        val ux = cos(corridor.bearingRad)
+        val uy = sin(corridor.bearingRad)
+        val bearing = sighting.bearingRad
+        // Side of the corridor: + when the room is clockwise of u (y-down), − otherwise.
+        val side = sighting.roomCenter?.let { (it.x - doorAt.x) * -uy + (it.y - doorAt.y) * ux }
+            ?.takeIf { abs(it) > 1e-9 }
+            ?: bearing?.let { cos(it) * -uy + sin(it) * ux }?.takeIf { abs(it) > 1e-9 }
+        val wall = config.signWallOffsetMeters * pxPerMeter
+        val distance = sighting.distancePx
+            ?.takeIf { it.isFinite() && it > 0 }
+            ?.coerceAtMost(config.signMaxReadMeters * pxPerMeter)
+        val along = if (distance != null && distance > wall) {
+            sqrt(distance * distance - wall * wall)
+        } else {
+            0.0
+        }
+        // The sign lies ahead along u when the camera looks along u, so the walker is behind.
+        val ahead = bearing?.let { if (cos(it) * ux + sin(it) * uy >= 0) 1.0 else -1.0 } ?: 0.0
+        val walker = PixelPoint(doorAt.x - ahead * along * ux, doorAt.y - ahead * along * uy)
+        if (bearing == null || side == null) return SignStand(walker, along, null)
+        val n = if (side > 0) 1.0 else -1.0
+        val toSignX = ahead * along * ux + wall * n * -uy
+        val toSignY = ahead * along * uy + wall * n * ux
+        val fix = wrapBearing(atan2(toSignY, toSignX) - bearing)
+        val trusted = abs(fix) <= Math.toRadians(config.signHeadingMaxFixDeg)
+        return SignStand(walker, along, fix.takeIf { trusted })
     }
 
     /**
@@ -519,6 +572,8 @@ class ParticleTracker(
         val k = particles.indices.sumOf { w[it] * particles[it].stepLengthPx }
         val radius = config.clusterRadiusMeters * k / config.nominalStrideMeters
         // Greedy clustering, heaviest particles first, so each group grows around a strong seed.
+        // Its heaviest group is the reported position: the local mode, not the middle of a
+        // cloud stretched along the corridor.
         val seeds = mutableListOf<PixelPoint>()
         val members = mutableListOf<MutableList<Int>>()
         for (i in particles.indices.sortedByDescending { w[it] }) {
@@ -531,13 +586,27 @@ class ParticleTracker(
             }
         }
         val top = members.maxBy { group -> group.sumOf { w[it] } }
-        val topWeight = top.sumOf { w[it] }
+        // The confidence "group split" check needs separate hypotheses, not pieces of one: a
+        // cloud stretched along a corridor by stride noise is cut into 2 m seeds above, which
+        // reported a false split on every long straight walk (EH3 field test, Nov 12). So the
+        // weight reported is that of the single-linkage group (particles chained within the
+        // radius) holding the position; other corridors or far-apart hypotheses stay separate.
+        val linked = linkedGroups(points, radius)
+        val hypothesis = linked.first { top.first() in it }
+        val hypothesisWeight = hypothesis.sumOf { w[it] }
+        // The position is that hypothesis' weighted mean. The heaviest 2 m seed alone hopped
+        // between neighbouring seeds of one stretched cloud, so the dot jumped ahead by up to
+        // 3 steps at a time on straight walks (EH3 field test, Nov 12: 1207 → 1259 px in one
+        // step). Separate hypotheses are still never averaged: chains break past the radius.
         val centre = PixelPoint(
-            top.sumOf { w[it] * points[it].x } / topWeight,
-            top.sumOf { w[it] * points[it].y } / topWeight,
+            hypothesis.sumOf { w[it] * points[it].x } / hypothesisWeight,
+            hypothesis.sumOf { w[it] * points[it].y } / hypothesisWeight,
         )
-        // The mean of a group rounding a corner can sit off the corridor; snap it back on.
-        val snapped = graph.nearestEdge(centre)
+        // Near a junction the mean can sit between branches; snap it onto a corridor the
+        // heaviest group is on.
+        val topEdges = top.map { particles[it].edge.id }.toSet()
+        val onTop = graph.copy(edges = graph.edges.filter { it.id in topEdges })
+        val snapped = onTop.nearestEdge(centre) ?: graph.nearestEdge(centre)
         val meanX = particles.indices.sumOf { w[it] * points[it].x }
         val meanY = particles.indices.sumOf { w[it] * points[it].y }
         val spread = sqrt(
@@ -553,9 +622,35 @@ class ParticleTracker(
             headingRad = heading,
             edgeId = snapped?.edgeId,
             spreadPx = spread,
-            topClusterWeight = topWeight,
+            topClusterWeight = hypothesisWeight,
             stepLengthPx = k,
         )
+    }
+
+    /** Indices of [points] grouped by chains of neighbours at most [radius] apart. */
+    private fun linkedGroups(points: List<PixelPoint>, radius: Double): List<List<Int>> {
+        val parent = IntArray(points.size) { it }
+        fun find(i: Int): Int {
+            var r = i
+            while (parent[r] != r) r = parent[r]
+            var j = i
+            while (parent[j] != r) {
+                val next = parent[j]
+                parent[j] = r
+                j = next
+            }
+            return r
+        }
+        // Sweep along x so only neighbours within the radius are compared.
+        val order = points.indices.sortedBy { points[it].x }
+        for ((a, i) in order.withIndex()) {
+            for (b in a + 1 until order.size) {
+                val j = order[b]
+                if (points[j].x - points[i].x > radius) break
+                if (points[i].distanceTo(points[j]) <= radius) parent[find(i)] = find(j)
+            }
+        }
+        return points.indices.groupBy(::find).values.toList()
     }
 
     /** Standard normal sample (Box–Muller); kotlin.random has no Gaussian. */

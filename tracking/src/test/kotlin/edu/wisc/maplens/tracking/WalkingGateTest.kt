@@ -192,6 +192,38 @@ class WalkingGateTest {
     }
 
     @Test
+    fun `walking round a corner keeps every footfall, though the phone turns fast`() {
+        val gate = WalkingGate()
+        run(gate, seconds = 4.0, vertical = 2.0, sideways = 1.0, spin = 0.5)
+        // Same gait, but turning as fast as rotating the phone in place (see that test).
+        val turning = run(
+            gate,
+            seconds = 1.8,
+            vertical = 2.0,
+            sideways = 1.0,
+            spin = 4.0,
+            startNs = 5_000_000_000L,
+        )
+        assertEquals(3, turning.size)
+        assertEquals(GaitVerdict.WALKING, gate.lastVerdict)
+    }
+
+    @Test
+    fun `a short pause, like at a corner, resumes on the second footfall`() {
+        val gate = WalkingGate()
+        run(gate, seconds = 4.0, vertical = 2.0, sideways = 1.0, spin = 0.5)
+        val resumed = run(
+            gate,
+            seconds = 1.2,
+            vertical = 2.0,
+            sideways = 1.0,
+            spin = 0.5,
+            startNs = 7_000_000_000L,
+        )
+        assertEquals(listOf(7_600_000_000L, 8_200_000_000L), resumed.map { it.timestampNanos })
+    }
+
+    @Test
     fun `turned off, the gate passes every step`() {
         val gate = WalkingGate(TrackingConfig(gaitGateEnabled = false))
         val steps =

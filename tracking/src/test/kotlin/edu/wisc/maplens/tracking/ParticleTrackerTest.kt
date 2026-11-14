@@ -72,6 +72,30 @@ class ParticleTrackerTest {
     }
 
     @Test
+    fun `the estimate advances smoothly on a long straight walk, never jumping ahead`() {
+        // A long corridor and real stride noise stretch the cloud over several 2 m groups.
+        val long =
+            graph(mapOf("S" to PixelPoint(0.0, 0.0), "E" to PixelPoint(2000.0, 0.0)), "S" to "E")
+        for (seed in 1..5) {
+            val tracker = ParticleTracker(random = Random(seed))
+            tracker.start(long, "S", right, stepLengthPx = 17.0)
+            var previous = tracker.pose.position.x
+            for (step in 1..60) {
+                val x = tracker.onMotion(
+                    MotionEvent.Step(step.toLong(), right, StepSource.STEP_DETECTOR),
+                ).position.x
+                // Field test (Nov 12): the heaviest 2 m group hopped 51 px (3 steps) at once.
+                assertTrue(
+                    x - previous < 1.6 * 17.0,
+                    "seed $seed step $step jumped ${x - previous}"
+                )
+                previous = x
+            }
+            assertEquals(60 * 17.0, previous, 0.15 * 60 * 17.0)
+        }
+    }
+
+    @Test
     fun `a turn at a junction puts the estimate on the branch that matches the heading`() {
         val tracker = ParticleTracker(random = Random(2))
         tracker.start(tee, "S", right, stepLengthPx = 10.0)
@@ -125,7 +149,7 @@ class ParticleTrackerTest {
 
     @Test
     fun `turn events and signs leave the estimate where it is`() {
-        val tracker = ParticleTracker(random = Random(6))
+        val tracker = ParticleTracker(TrackingConfig(signRelocates = false), Random(6))
         tracker.start(corridor, "S", right, 10.0)
         val before = walk(tracker, List(5) { right })
         val after = tracker.onMotion(MotionEvent.Turn(99, PI / 2))

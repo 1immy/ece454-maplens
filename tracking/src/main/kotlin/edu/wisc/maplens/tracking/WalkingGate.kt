@@ -181,7 +181,8 @@ class WalkingGate(private val config: TrackingConfig = TrackingConfig()) {
         val t = step.timestampNanos
         val previous = held.lastOrNull()?.timestampNanos ?: lastAcceptedNs
         val tooSoon = previous?.let { t - it < config.gaitMinIntervalNs } == true
-        val verdict = if (tooSoon) GaitVerdict.TOO_SOON else check(t)
+        val inWalk = lastAcceptedNs?.let { t - it <= config.gaitRhythmKeepGapNs } == true
+        val verdict = (if (tooSoon) GaitVerdict.TOO_SOON else check(t, turnAllowed = inWalk))
         if (verdict != null) {
             rejected++
             lastVerdict = verdict
@@ -189,13 +190,14 @@ class WalkingGate(private val config: TrackingConfig = TrackingConfig()) {
             if (verdict != GaitVerdict.TOO_SOON) dropHeld()
             return emptyList()
         }
-        val walking = lastAcceptedNs?.let { t - it <= config.gaitRhythmKeepGapNs } == true
-        if (walking) return accept(listOf(step))
+        if (inWalk) return accept(listOf(step))
         if (held.isNotEmpty() && t - held.last().timestampNanos > config.gaitRhythmStartGapNs) {
             dropHeld()
         }
         held += step
-        if (held.size < config.gaitRhythmFootfalls) {
+        val resuming = lastAcceptedNs?.let { t - it <= config.gaitResumeWindowNs } == true
+        val needed = if (resuming) config.gaitResumeFootfalls else config.gaitRhythmFootfalls
+        if (held.size < needed) {
             lastVerdict = GaitVerdict.AWAITING_RHYTHM
             return emptyList()
         }
@@ -216,7 +218,7 @@ class WalkingGate(private val config: TrackingConfig = TrackingConfig()) {
     }
 
     /** The first check this footfall's window fails, or null if it looks like walking. */
-    private fun check(t: Long): GaitVerdict? {
+    private fun check(t: Long, turnAllowed: Boolean = false): GaitVerdict? {
         val from = t - config.gaitWindowNs
         val spin = turn.filter { it.timeNs in (from + 1)..t }
         val moved = motion.filter { it.timeNs in (from + 1)..t }
@@ -227,7 +229,8 @@ class WalkingGate(private val config: TrackingConfig = TrackingConfig()) {
             return GaitVerdict.INSUFFICIENT_DATA
         }
         val rotationRms = sqrt(spin.sumOf { it.squaredRate } / spin.size)
-        if (rotationRms > config.gaitMaxGyroRms) return GaitVerdict.TOO_MUCH_TURN
+        val turnOk = turnAllowed && config.gaitTurnWhileWalking
+        if (rotationRms > config.gaitMaxGyroRms && !turnOk) return GaitVerdict.TOO_MUCH_TURN
         val mean = moved.sumOf { it.vertical } / moved.size
         val vertical =
             sqrt(moved.sumOf { (it.vertical - mean) * (it.vertical - mean) } / moved.size)
