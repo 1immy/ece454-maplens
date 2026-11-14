@@ -46,6 +46,12 @@ class PosterParserChecks : Instrumentation() {
     /** `-e threads N`: OpenCV worker threads for a probe run, to time the parse with each. */
     private var threads: Int? = null
 
+    /** `-e only settledDoubts`: runs that one synthetic check. */
+    private var only: String? = null
+
+    /** `-e all true`: parses every fixture photo and writes each graph and its readings. */
+    private var all = false
+
     /** `-e warm true`: a probe parses after [PosterWarmup], as it does behind the camera. */
     private var warm = false
 
@@ -62,6 +68,8 @@ class PosterParserChecks : Instrumentation() {
         compare = arguments?.getString("compare")
         threads = arguments?.getString("threads")?.toIntOrNull()
         warm = arguments?.getString("warm") == "true"
+        all = arguments?.getString("all") == "true"
+        only = arguments?.getString("only")
         start()
     }
 
@@ -76,6 +84,24 @@ class PosterParserChecks : Instrumentation() {
         }
         compare?.let { path ->
             runCompare(path)
+            return
+        }
+        if (all) {
+            runAll()
+            return
+        }
+        if (only == "settledDoubts") {
+            val outcome = runCatching { checkSettledDoubts() }
+            finish(
+                if (outcome.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString(
+                        "stream",
+                        outcome.exceptionOrNull()?.let(Log::getStackTraceString)
+                            ?: "Settled doubts check passed",
+                    )
+                },
+            )
             return
         }
         try {
@@ -102,6 +128,7 @@ class PosterParserChecks : Instrumentation() {
             checkWallFringe()
             checkUnsupportedDoorDetour()
             checkSeparateDoorways()
+            checkSettledDoubts()
             checkFrames()
             checkRectified("eh-3-elevators-evac")
             checkRectified("eh-3-stair3424-evac")
@@ -599,6 +626,66 @@ class PosterParserChecks : Instrumentation() {
         check(warnings.isEmpty())
     }
 
+    /**
+     * A doubtful room the parser does not send for a second opinion must come out the same
+     * whether or not that opinion would have agreed: random posters of room numbers in runs,
+     * some doubtful, some marked possible, some out of their run, tried with and without
+     * agreement on every read that was skipped.
+     */
+    private fun checkSettledDoubts() {
+        val random = java.util.Random(454)
+        var skipped = 0
+        var asked = 0
+        repeat(300) {
+            val readings = mutableListOf<PosterReading>()
+            for (row in 0 until 2 + random.nextInt(3)) {
+                val run = 3400 + 10 * random.nextInt(30)
+                for (column in 0 until 1 + random.nextInt(6)) {
+                    val stray = random.nextInt(6) == 0
+                    val number = if (stray) 3100 + random.nextInt(800) else run + column
+                    val left = 100 + column * (90 + random.nextInt(200))
+                    val top = 100 + row * (60 + random.nextInt(300))
+                    val confidence = listOf(0.55f, 0.7f, 0.85f, 0.92f, 0.99f)[random.nextInt(5)]
+                    readings += PosterReading(
+                        number.toString(),
+                        android.graphics.Rect(left, top, left + 60, top + 24),
+                        confidence,
+                        possible = confidence < 0.8f && random.nextBoolean(),
+                    )
+                    // Now and then a second read at the same box, as overlapping lines give.
+                    if (random.nextInt(8) == 0) {
+                        readings += readings.last().copy(
+                            text = (number + 1).toString(),
+                            confidence = 0.6f,
+                            possible = random.nextBoolean(),
+                        )
+                    }
+                }
+            }
+            readings += PosterReading("EXIT", android.graphics.Rect(5, 5, 60, 30), 0.6f)
+            val sharp = if (random.nextBoolean()) {
+                listOf(PosterReading("3411", android.graphics.Rect(300, 130, 360, 154), 0.95f))
+            } else {
+                emptyList()
+            }
+            val doubtful = readings.filter {
+                normalizeRoom(it.text) != null && it.confidence < 0.9f
+            }
+            val open = PosterMlKit.unsettledDoubts(doubtful, readings, readings + sharp)
+            val settled = doubtful.filter { it !in open }.map { it.box }.toSet()
+            skipped += settled.size
+            asked += open.size
+            val agreedOpen = open.filter { random.nextBoolean() }.map { it.box }.toSet()
+            val without = PosterMlKit.sureRooms(readings, sharp, agreedOpen)
+            check(without == PosterMlKit.sureRooms(readings, sharp, agreedOpen + settled))
+            for (box in settled) {
+                check(without == PosterMlKit.sureRooms(readings, sharp, agreedOpen + box))
+            }
+        }
+        // The posters must exercise both outcomes, or the check proves nothing.
+        check(skipped > 100 && asked > 100) { "skipped $skipped, asked $asked" }
+    }
+
     private fun checkFrames() {
         val results = JSONObject()
         val photos = context.assets.list("").orEmpty().filter {
@@ -933,8 +1020,48 @@ class PosterParserChecks : Instrumentation() {
         }
     }
 
+    /**
+     * Each fixture photo's graph and readings to files/poster-eval/all, or the retake message:
+     * a before-and-after diff of that folder shows whether a change altered any parse.
+     */
+    private fun runAll() {
+        val result = Bundle()
+        try {
+            requireOpenCv()
+            val folder = File(output, "all").apply {
+                deleteRecursively()
+                mkdirs()
+            }
+            val photos = checkNotNull(context.assets.list("")).filter {
+                it.endsWith(".jpg") && Regex("-\\d\\d-").containsMatchIn(it)
+            }.sorted()
+            for (photo in photos) {
+                val name = photo.removeSuffix(".jpg")
+                val bitmap = load(photo, 3200)
+                ParseDebug.readings = null
+                try {
+                    val parsed = OfflineMapParser().parse(bitmap)
+                    File(folder, "$name.graph.json").writeText(FloorGraphJson.encode(parsed.graph))
+                    File(folder, "$name.warnings.json")
+                        .writeText(JSONArray(parsed.warnings).toString(1))
+                    writeProbeReadings(File(folder, "$name.readings.json"))
+                    parsed.rectified.recycle()
+                } catch (failure: PosterRetakeException) {
+                    File(folder, "$name.retake.txt").writeText(failure.message.orEmpty())
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+            result.putString("stream", "Parsed ${photos.size} photos to ${folder.absolutePath}")
+            finish(Activity.RESULT_OK, result)
+        } catch (failure: Exception) {
+            result.putString("stream", Log.getStackTraceString(failure))
+            finish(Activity.RESULT_CANCELED, result)
+        }
+    }
+
     /** Every reading the probe's parse used, to tell whether an OCR change altered any. */
-    private fun writeProbeReadings() {
+    private fun writeProbeReadings(file: File = File(output, "probe.readings.json")) {
         val readings = ParseDebug.readings ?: return
         val rows = JSONArray(
             readings.map {
@@ -946,7 +1073,7 @@ class PosterParserChecks : Instrumentation() {
                     )
             },
         )
-        File(output, "probe.readings.json").writeText(rows.toString(1))
+        file.writeText(rows.toString(1))
     }
 
     private fun runProbe(path: String) {

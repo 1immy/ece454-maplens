@@ -158,38 +158,68 @@ internal fun recheckRegions(bgr: Mat, regions: List<Rect>): List<PosterReading> 
 
 /** [recheckRegions] keeping each region's reads apart, with the networks loaded once. */
 internal fun recheckEach(bgr: Mat, regions: List<Rect>): List<List<PosterReading>> {
-    if (regions.isEmpty()) return emptyList()
-    // A few recognizers side by side, each on its own thread and slice of the regions: each
-    // read is small, so they don't compete much. No more copies than regions: loading one
-    // costs about as much as four reads.
-    val slices = regions.indices.groupBy { it % minOf(RECHECK_THREADS, regions.size) }
-        .values.toList()
-    val bySlice = slices.parallelMap { slice ->
-        Recognizers.use { ocr ->
-            fun quad(i: Int) = regions[i].let { region ->
-                arrayOf(
-                    Point(region.left.toDouble(), region.top.toDouble()),
-                    Point(region.right.toDouble(), region.top.toDouble()),
-                    Point(region.right.toDouble(), region.bottom.toDouble()),
-                    Point(region.left.toDouble(), region.bottom.toDouble()),
-                )
-            }
-            fun marked(reads: List<PosterReading>) =
-                reads.map { it.copy(possible = it.confidence < OcrParams.SUPPLEMENTAL_CONFIDENCE) }
-            // Two words per pass where they fit side by side; a long one is read alone.
-            slice.chunked(2).flatMap { pair ->
-                val both = pair.takeIf { it.size == 2 }
-                    ?.let { (a, b) -> ocr.readPair(bgr, quad(a), quad(b)) }
-                if (both != null) {
-                    listOf(pair[0] to marked(both.first), pair[1] to marked(both.second))
-                } else {
-                    pair.map { i -> i to marked(ocr.readQuad(bgr, quad(i))) }
-                }
-            }
-        }
+    val recheck = Recheck(bgr, regions)
+    recheck.read(regions.indices)
+    return regions.indices.map(recheck::reads)
+}
+
+/**
+ * The recognizer's reads of word-sized [regions], asked for a few at a time. The regions are
+ * dealt to recognizer passes once, up front and by position alone: a few recognizers side by
+ * side, each with its own slice of the regions, two regions to a pass where they fit. A read
+ * depends a little on the word sharing its pass, so a region must always share with the same
+ * one for its read to come out the same whichever regions are asked for and in what order.
+ * [read] runs every pass holding a region asked for; a pass none of whose regions is ever
+ * asked for is never run.
+ */
+internal class Recheck(private val bgr: Mat, private val regions: List<Rect>) {
+    // No more recognizer copies than regions: loading one costs about as much as four reads.
+    private val slices: List<List<List<Int>>> = if (regions.isEmpty()) {
+        emptyList()
+    } else {
+        regions.indices.groupBy { it % minOf(RECHECK_THREADS, regions.size) }
+            .values.map { it.chunked(2) }
     }
-    val reads = bySlice.flatten().toMap()
-    return regions.indices.map { reads.getValue(it) }
+    private val done = java.util.concurrent.ConcurrentHashMap<Int, List<PosterReading>>()
+
+    /** Region [index]'s reads. It must have been asked for with [read]. */
+    fun reads(index: Int): List<PosterReading> = done.getValue(index)
+
+    /** Reads the regions at [indexes] not read yet; returns how many passes that took. */
+    fun read(indexes: Iterable<Int>): Int {
+        val wanted = indexes.filter { !done.containsKey(it) }.toSet()
+        val work = slices.map { slice -> slice.filter { pair -> pair.any { it in wanted } } }
+            .filter { it.isNotEmpty() }
+        return work.parallelMap { pairs ->
+            Recognizers.use { ocr -> pairs.sumOf { pair -> readPass(ocr, pair, wanted) } }
+        }.sum()
+    }
+
+    /** One pair's reads: together if they fit one pass, else each one asked for on its own. */
+    private fun readPass(ocr: PosterOcr, pair: List<Int>, wanted: Set<Int>): Int {
+        val both = pair.takeIf { it.size == 2 }
+            ?.let { (a, b) -> ocr.readPair(bgr, quad(a), quad(b)) }
+        if (both != null) {
+            done[pair[0]] = marked(both.first)
+            done[pair[1]] = marked(both.second)
+            return 1
+        }
+        val alone = pair.filter { it in wanted }
+        for (i in alone) done[i] = marked(ocr.readQuad(bgr, quad(i)))
+        return alone.size
+    }
+
+    private fun quad(i: Int) = regions[i].let { region ->
+        arrayOf(
+            Point(region.left.toDouble(), region.top.toDouble()),
+            Point(region.right.toDouble(), region.top.toDouble()),
+            Point(region.right.toDouble(), region.bottom.toDouble()),
+            Point(region.left.toDouble(), region.bottom.toDouble()),
+        )
+    }
+
+    private fun marked(reads: List<PosterReading>) =
+        reads.map { it.copy(possible = it.confidence < OcrParams.SUPPLEMENTAL_CONFIDENCE) }
 }
 
 /**
