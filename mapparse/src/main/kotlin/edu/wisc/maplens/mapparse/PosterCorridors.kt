@@ -311,7 +311,7 @@ internal class PosterCorridors {
         val stride = mask.cols() + 2
         val pixels = ByteArray(stride * (mask.rows() + 2))
         padded.get(0, 0, pixels)
-        trace(thin(pixels, stride), stride)
+        trace(thin(pixels, stride).toIntArray(), stride, pixels.size)
         prune(stars, spur)
         merge(mergeRadius)
         contract()
@@ -488,7 +488,13 @@ internal class PosterCorridors {
         Core.bitwise_and(clean, sign, clean)
     }
 
-    private fun trace(skeleton: Set<Int>, stride: Int) {
+    /**
+     * The skeleton's junctions and ends become nodes, the runs between them paths. [skeleton]
+     * holds its pixels in index order (as [thin] returns them) on a grid of [size] cells.
+     * Membership is plain arrays, not sets of boxed indices: the same walk in the same order,
+     * but the hashing took ~0.6 s of a parse (Pixel 7a, Nov 14).
+     */
+    private fun trace(skeleton: IntArray, stride: Int, size: Int) {
         val offsets = intArrayOf(
             -stride - 1,
             -stride,
@@ -499,24 +505,40 @@ internal class PosterCorridors {
             stride,
             stride + 1
         )
-        fun neighbours(pixel: Int) = offsets.map { pixel + it }.filter { it in skeleton }
+        val on = BooleanArray(size)
+        for (pixel in skeleton) on[pixel] = true
+        val near = IntArray(8)
+
+        // Skeleton neighbours of [pixel] into [near], in [offsets] order; returns how many.
+        fun neighbours(pixel: Int): Int {
+            var c = 0
+            for (o in offsets) if (on[pixel + o]) near[c++] = pixel + o
+            return c
+        }
         fun point(pixel: Int) = PixelPoint(
             (pixel % stride - 1).toDouble(),
             (pixel / stride - 1).toDouble()
         )
 
         // Resolve competing spur/merge candidates in a stable bottom-to-top order.
-        val special = skeleton.filter { neighbours(it).size != 2 }.sortedDescending().toSet()
-        val owners = hashMapOf<Int, Int>()
+        val isSpecial = BooleanArray(size)
+        val special = skeleton.filter { neighbours(it) != 2 }.sortedDescending()
+        for (pixel in special) isSpecial[pixel] = true
+        val owner = IntArray(size) { -1 }
         for (pixel in special) {
-            if (pixel in owners) continue
+            if (owner[pixel] >= 0) continue
             val id = nodes.size
             val group = mutableListOf(pixel)
-            owners[pixel] = id
+            owner[pixel] = id
             var index = 0
             while (index < group.size) {
-                for (other in neighbours(group[index++])) {
-                    if (other in special && owners.putIfAbsent(other, id) == null) group += other
+                val c = neighbours(group[index++])
+                for (t in 0 until c) {
+                    val other = near[t]
+                    if (isSpecial[other] && owner[other] < 0) {
+                        owner[other] = id
+                        group += other
+                    }
                 }
             }
             nodes[id] = PixelPoint(
@@ -524,35 +546,51 @@ internal class PosterCorridors {
                 group.map(::point).map { it.y }.average()
             )
         }
-        val visited = hashSetOf<Pair<Int, Int>>()
-        val traced = special.toMutableSet()
+        val visited = HashSet<Long>()
+        val traced = BooleanArray(size)
+        for (pixel in special) traced[pixel] = true
+        fun key(a: Int, b: Int) = (a.toLong() shl 32) or (b.toLong() and 0xFFFFFFFFL)
 
         fun walk(start: Int, first: Int) {
-            if (owners[start] == owners[first] || !visited.add(start to first)) return
+            if (owner[start] == owner[first] || !visited.add(key(start, first))) return
             var previous = start
             var current = first
             val points = mutableListOf(point(start), point(first))
-            while (current !in owners) {
-                traced += current
-                val next = neighbours(current).first { it != previous }
+            while (owner[current] < 0) {
+                traced[current] = true
+                val c = neighbours(current)
+                var next = -1
+                for (t in 0 until c) {
+                    if (near[t] != previous) {
+                        next = near[t]
+                        break
+                    }
+                }
+                if (next < 0) throw NoSuchElementException("skeleton run ends without a node")
                 previous = current
                 current = next
                 points += point(current)
             }
-            visited += current to previous
-            val a = owners.getValue(start)
-            val b = owners.getValue(current)
+            visited += key(current, previous)
+            val a = owner[start]
+            val b = owner[current]
             if (a != b || points.size >= 10) paths += CorridorPath(a, b, points)
         }
 
-        for (pixel in special) for (next in neighbours(pixel)) walk(pixel, next)
+        for (pixel in special) {
+            val c = neighbours(pixel)
+            val starts = near.copyOf(c)
+            for (next in starts) walk(pixel, next)
+        }
         // An isolated all-degree-two loop has no natural junction.
         for (pixel in skeleton) {
-            if (!traced.add(pixel)) continue
+            if (traced[pixel]) continue
+            traced[pixel] = true
             val id = nodes.size
             nodes[id] = point(pixel)
-            owners[pixel] = id
-            walk(pixel, neighbours(pixel).first())
+            owner[pixel] = id
+            neighbours(pixel)
+            walk(pixel, near[0])
         }
     }
 

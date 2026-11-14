@@ -86,8 +86,15 @@ class OfflineMapParser(
         }
     }
 
-    internal fun parseRectified(rectified: Bitmap, flat: Mat): ParseResult = Mats().use { mats ->
+    internal fun parseRectified(rectified: Bitmap, flat: Mat): ParseResult = try {
+        parseFlat(rectified, flat)
+    } finally {
+        Recognizers.release()
+    }
+
+    private fun parseFlat(rectified: Bitmap, flat: Mat): ParseResult = Mats().use { mats ->
         checkCancellation()
+        val started = SystemClock.elapsedRealtime()
         onProgress(ParseProgress(ParseStage.CORRIDORS))
         val timer = StageTimer()
         // Reading the print doesn't depend on the corridors, so it runs alongside them, on its
@@ -164,6 +171,7 @@ class OfflineMapParser(
             floor,
         ).filter { weak -> rooms.none { it.text == weak.text } }
             .map { RoomPreview(it.text, it.box, null, it.confidence, possible = true) }
+        Log.i("MapLensParse", "total ${SystemClock.elapsedRealtime() - started} ms")
         ParseResult(graph, rectified, warnings, labeled.rooms + possible)
     }
 }

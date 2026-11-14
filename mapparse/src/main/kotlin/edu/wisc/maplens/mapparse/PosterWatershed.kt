@@ -105,8 +105,8 @@ internal fun watershedDoors(
     ParseDebug.relief = relief
 
     // Corridor floor actually joined to a traced corridor over open floor. Unnamed spaces (the
-    // big unlabelled room in EH3's middle) end up in the corridor region through their walls
-    // at the end of the flood; a room bordering one does not open onto the corridor there.
+    // big unlabelled room in EH3's middle) can join the corridor region at a clash-free neck;
+    // a room bordering one does not open onto the corridor there.
     val reach = BooleanArray(n)
     // Each reachable corridor cell's step back toward the nearest traced line (-1 on it), so a
     // doorway's way to the corridor is a walk down these pointers, not a search per room.
@@ -312,11 +312,22 @@ internal fun priorityFlood(seeds: IntArray, relief: ByteArray, width: Int, heigh
     val n = seeds.size
     val label = seeds.copyOf()
     val queued = BooleanArray(n)
-    val buckets = Array(256) { IntArrayList() }
+    val buckets = Array(WALL) { IntArrayList() }
     val near = IntArray(4)
+    // With the whole image border seeded (the parser seeds it as outside), no pixel the flood
+    // reaches is on the border, so its four neighbours need no bounds checks.
+    val framed = (0 until width).all { label[it] > 0 && label[n - width + it] > 0 } &&
+        (0 until height).all { label[it * width] > 0 && label[it * width + width - 1] > 0 }
 
     // Neighbours of [i] into [near]; returns how many (image edges have fewer).
     fun neighbours(i: Int): Int {
+        if (framed && label[i] <= 0) {
+            near[0] = i - 1
+            near[1] = i + 1
+            near[2] = i - width
+            near[3] = i + width
+            return 4
+        }
         val x = i % width
         var c = 0
         if (x > 0) near[c++] = i - 1
@@ -325,18 +336,20 @@ internal fun priorityFlood(seeds: IntArray, relief: ByteArray, width: Int, heigh
         if (i < n - width) near[c++] = i + width
         return c
     }
+
+    // Walls are never flooded: a region can't leak through one, and no door test reads them.
+    fun queue(j: Int, level: Int) {
+        val r = relief[j].toInt() and 0xFF
+        if (r >= WALL || queued[j] || label[j] != 0) return
+        queued[j] = true
+        buckets[maxOf(r, level)].add(j)
+    }
     for (i in 0 until n) {
         if (label[i] <= 0) continue
         val c = neighbours(i)
-        for (t in 0 until c) {
-            val j = near[t]
-            if (!queued[j] && label[j] == 0) {
-                queued[j] = true
-                buckets[relief[j].toInt() and 0xFF].add(j)
-            }
-        }
+        for (t in 0 until c) queue(near[t], 0)
     }
-    for (lv in 0 until 256) {
+    for (lv in 0 until WALL) {
         val bucket = buckets[lv]
         var k = 0
         while (k < bucket.size) {
@@ -356,18 +369,15 @@ internal fun priorityFlood(seeds: IntArray, relief: ByteArray, width: Int, heigh
             }
             if (found == 0) continue
             label[i] = found
-            for (t in 0 until c) {
-                val j = near[t]
-                if (!queued[j] && label[j] == 0) {
-                    queued[j] = true
-                    buckets[maxOf(relief[j].toInt() and 0xFF, lv)].add(j)
-                }
-            }
+            for (t in 0 until c) queue(near[t], lv)
         }
         bucket.clear()
     }
     return label
 }
+
+/** Relief of a wall pixel. */
+private const val WALL = 255
 
 /** A growable int list for the flood buckets, without boxing. */
 internal class IntArrayList {

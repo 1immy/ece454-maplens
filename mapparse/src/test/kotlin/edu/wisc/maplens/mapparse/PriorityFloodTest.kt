@@ -31,7 +31,7 @@ class PriorityFloodTest {
     }
 
     @Test
-    fun `walls flood last, so a region does not leak through them`() {
+    fun `walls are never flooded, so a region does not leak through them`() {
         val w = 20
         val h = 5
         // A wall column at x = 10 (relief 255) with open floor on both sides.
@@ -43,6 +43,7 @@ class PriorityFloodTest {
         for (y in 0 until h) {
             for (x in 0 until 10) assertEquals(3, region[y * w + x])
             for (x in 11 until w) assertEquals(2, region[y * w + x])
+            assertEquals(0, region[y * w + 10])
         }
     }
 }
