@@ -114,6 +114,14 @@ internal class IndoorMapView(context: Context) : View(context) {
             invalidate()
         }
 
+    /** Pins for places to choose between, e.g. every elevator on the floor. */
+    var choicePins: List<PixelPoint> = emptyList()
+        set(value) {
+            if (value != field) pinDropStart = SystemClock.uptimeMillis()
+            field = value
+            invalidate()
+        }
+
     /** The room picked on the map, tinted like a selected place. */
     var highlight: RoomArea? = null
         set(value) {
@@ -233,6 +241,25 @@ internal class IndoorMapView(context: Context) : View(context) {
     private var puckY = 0.0
     private var headingTarget: Double? = null
     private var headingShown: Double? = null
+
+    /**
+     * The direction a heading-up camera points: the walking course, not the raw compass. A
+     * held phone sways several degrees with every step, and turning the map with each sway
+     * shook the whole screen (EH3 walk, Nov 12). The course holds through sway within
+     * [COURSE_TURN_RAD], drifting slowly onto a lasting offset, and jumps on a real turn.
+     */
+    private var courseRad: Double? = null
+
+    private fun course(heading: Double, dt: Double): Double {
+        val held = courseRad
+        val next = if (held == null || abs(NavMath.wrap(heading - held)) > COURSE_TURN_RAD) {
+            heading
+        } else {
+            NavMath.lerpAngle(held, heading, NavMath.approach(dt, COURSE_DRIFT_SECONDS))
+        }
+        courseRad = next
+        return next
+    }
     private var accuracyTarget = 0.0
     private var accuracyShown = 0.0
 
@@ -420,6 +447,7 @@ internal class IndoorMapView(context: Context) : View(context) {
             )
         }
         val t = if (mode == Follow.HEADING) navTilt else 0.0
+        courseRad = null
         val up = if (mode == Follow.HEADING) headingShown ?: upRad else upRad
         moveTo(puckX, puckY, z, up, t, animate = true, durationMs = 900)
     }
@@ -512,6 +540,7 @@ internal class IndoorMapView(context: Context) : View(context) {
             if (facingChoices.isNotEmpty()) drawFacing(canvas)
             drawPuck(canvas)
         }
+        for (choice in choicePins) moving = drawPin(canvas, choice, now, label = null) || moving
         pin?.let { moving = drawPin(canvas, it, now) || moving }
 
         onRotationChanged?.invoke(rotationDeg)
@@ -557,7 +586,7 @@ internal class IndoorMapView(context: Context) : View(context) {
                 NavMath.lerpAngle(
                     shown,
                     target,
-                    NavMath.approach(dt, 0.08)
+                    NavMath.approach(dt, 0.15)
                 )
             }
             if (abs(NavMath.wrap(target - next)) > 1e-3) moving = true
@@ -576,7 +605,7 @@ internal class IndoorMapView(context: Context) : View(context) {
             if (follow != Follow.NONE && hasPuck) {
                 goal[0] = puckX
                 goal[1] = puckY
-                if (follow == Follow.HEADING) headingShown?.let { goal[3] = it }
+                if (follow == Follow.HEADING) headingShown?.let { goal[3] = course(it, dt) }
             }
             cx = tr.from[0] + (goal[0] - tr.from[0]) * t
             cy = tr.from[1] + (goal[1] - tr.from[1]) * t
@@ -590,7 +619,8 @@ internal class IndoorMapView(context: Context) : View(context) {
             cx = puckX
             cy = puckY
             if (follow == Follow.HEADING) {
-                headingShown?.let { h ->
+                headingShown?.let { shown ->
+                    val h = course(shown, dt)
                     val next = if (snap) {
                         h
                     } else {
@@ -901,7 +931,12 @@ internal class IndoorMapView(context: Context) : View(context) {
     }
 
     /** Teardrop pin with its tip on [at]; it drops in with a small bounce. Returns true while animating. */
-    private fun drawPin(canvas: Canvas, at: PixelPoint, now: Long): Boolean {
+    private fun drawPin(
+        canvas: Canvas,
+        at: PixelPoint,
+        now: Long,
+        label: String? = pinLabel,
+    ): Boolean {
         val (x, tipY) = screen(at.x, at.y)
         val u = density
         val elapsed = (now - pinDropStart).toFloat()
@@ -920,10 +955,10 @@ internal class IndoorMapView(context: Context) : View(context) {
         shape.close()
         canvas.drawPath(shape, pinRed)
         canvas.drawCircle(x, cyPin, 4.5f * u, pinDark)
-        pinLabel?.let { label ->
+        label?.let { text ->
             val base = tipY + 20 * u
-            canvas.drawText(label, x, base, labelHalo)
-            canvas.drawText(label, x, base, labelText)
+            canvas.drawText(text, x, base, labelHalo)
+            canvas.drawText(text, x, base, labelText)
         }
         return raw < 1f
     }
@@ -1095,6 +1130,12 @@ internal class IndoorMapView(context: Context) : View(context) {
 
         private const val HIGHLIGHT = 0x40EA4335
         private const val NAV_ANCHOR = 0.70
+
+        /** Heading changes beyond this are turns the camera follows at once. */
+        private val COURSE_TURN_RAD = Math.toRadians(20.0)
+
+        /** Time constant for the course to settle onto a small lasting offset. */
+        private const val COURSE_DRIFT_SECONDS = 2.5
         private const val BEAM_HALF_DEG = 34f
         private const val FACING_DISTANCE = 78f
         private const val FACING_RADIUS = 20f

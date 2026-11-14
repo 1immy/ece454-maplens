@@ -44,6 +44,8 @@
   <string name="in_map_description_generic">Indoor floor map</string>
   <string name="in_exit_title">Exit</string>
   <string name="in_elevator_title">Elevator</string>
+  <string name="in_choose_elevator">%1$d elevators</string>
+  <string name="in_choose_elevator_body">Tap a pin or pick one below.</string>
   <string name="in_aed_title">AED (defibrillator)</string>
   <string name="in_near_room">%1$s · near room %2$s</string>
   <string name="in_feature_kind">Engineering Hall, floor 3</string>
@@ -159,9 +161,9 @@
   <string name="conf_scan_action">Scan a sign</string>
   <string name="conf_tap_to_scan">Double tap to check your position with a room sign</string>
   <string name="sign_scan_title">Find a room sign</string>
-  <string name="sign_scan_subtitle">Point your camera at a room number near you to fix your position.</string>
+  <string name="sign_scan_subtitle">Walk to the nearest door, hold the phone upright and point it at the room number. This fixes where you are and which way you face.</string>
   <string name="sign_scan_looking">Looking for room numbers…</string>
-  <string name="sign_scan_looking_body">Hold the phone upright, a few steps from a door sign.</string>
+  <string name="sign_scan_looking_body">Hold the phone upright and aim at a door sign close to you.</string>
   <string name="sign_scan_reading">Reading %1$s…</string>
   <string name="sign_scan_hold_steady">Hold steady</string>
   <string name="sign_scan_checking">Checking %1$s against the map…</string>
@@ -174,6 +176,8 @@
   <string name="sign_scan_tag_unknown">%1$s · not on map</string>
   <string name="sign_scan_anchored">Position updated from room %1$s, about %2$.0f m away</string>
   <string name="sign_scan_anchored_near">Position updated from room %1$s</string>
+  <string name="sign_scan_anchored_facing">Position and direction updated from room %1$s</string>
+  <string name="sign_scan_moved">Your position had drifted. Moved you to room %1$s</string>
   <string name="sign_scan_camera_needed">MapLens needs the camera to read room signs</string>
   <string name="sign_scan_live_only">Sign scan works while walking with Live sensors</string>
   <!-- Off route and rerouting (#80). -->
@@ -216,8 +220,8 @@
   <string name="in_dev_live_waiting">Live · k %1$.1f px/step · waiting for your first step</string>
   <string name="in_dev_live">k %1$.1f px/step · %2$d candidates (%3$s) · %4$d no heading · %5$d rejected by motion check</string>
   <string name="in_facing_title">Which way are you facing?</string>
-  <string name="in_facing_body">Stand on START, hold the phone flat in front of you, face down a corridor and tap its arrow.</string>
-  <string name="in_facing_again">Back at START? Face a corridor and tap its arrow.</string>
+  <string name="in_facing_body">Stand on START and hold the phone in front of you. Tap the arrow for the way you face: along the corridor, toward the map poster, or away from it.</string>
+  <string name="in_facing_again">Back at START? Tap the arrow for the way you face.</string>
   <string name="in_cancel">Cancel</string>
   <string name="in_checkpoint_title">Tap where you really are</string>
   <string name="in_checkpoint_body">Your answer is compared with the tracked position and logged.</string>
@@ -260,6 +264,9 @@
   <string name="checkpoint_result">%1$s: %2$.1f m off, %3$s</string>
   <string name="log_saved">Session log saved: %1$s</string>
   <string name="capture_poster">Capture evacuation poster</string>
+  <string name="poster_import">Use a photo you already took</string>
+  <string name="poster_import_description">Use a poster photo you took earlier, from your photos or files</string>
+  <string name="poster_import_unreadable">MapLens couldn\'t open that file as a photo. Pick another or capture the poster.</string>
   <string name="poster_ready">Include the entire blue frame and hold the phone steady.</string>
   <string name="poster_opening">Opening camera…</string>
   <string name="poster_permission">Allow camera access to photograph the poster.</string>
@@ -399,6 +406,16 @@
   <string name="home_map_detail">%1$d rooms · saved %2$s</string>
   <string name="home_map_delete_title">Delete %1$s?</string>
   <string name="home_map_delete">Delete</string>
+  <string name="home_map_delete_body">The map and its photo are removed from this phone.</string>
+  <string name="home_map_actions">More options for %1$s</string>
+  <string name="home_map_rename">Rename</string>
+  <string name="home_map_rename_save">Save</string>
+  <string name="home_map_name_hint">Map name, e.g. EH 3rd floor</string>
+  <string name="home_map_pin">Pin to top</string>
+  <string name="home_map_unpin">Unpin</string>
+  <string name="home_pinned">Pinned</string>
+  <string name="home_other_maps">Other maps</string>
+  <string name="home_pick_map">Pick a map to find your way, or scan a new poster.</string>
   <string name="in_voice_mute">Mute voice guidance</string>
   <string name="in_voice_unmute">Turn on voice guidance</string>
   <string name="in_voice_on">Voice guidance on</string>

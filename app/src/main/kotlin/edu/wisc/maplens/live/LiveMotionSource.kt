@@ -167,14 +167,17 @@ class LiveMotionSource(
 
     /**
      * Offers a room sign the camera read to the tracker, on the worker thread that owns it
-     * (#19). [done] gets the tracker's answer and, if it re-anchored, the new pose, on the main
-     * thread; both are null when nothing is being tracked.
+     * (#19), and turns θ0 by the heading fix it measured, so the walk continues facing the
+     * right way without another START check. [done] gets the tracker's answer and, if it
+     * re-anchored, the new pose, on the main thread; both are null when nothing is tracked.
      */
     fun sign(sighting: SignSighting, done: (SignResult?, PoseEstimate?) -> Unit) {
         val h = worker ?: return done(null, null)
         h.post {
             val t = tracker as? ParticleTracker
             val result = t?.onSighting(sighting)
+            // The scan also measured which way the phone points: carry on with that θ0.
+            result?.headingFixRad?.let { processor.rotate(it) }
             val pose = if (result?.accepted == true) t.pose else null
             main.post { done(result, pose) }
         }

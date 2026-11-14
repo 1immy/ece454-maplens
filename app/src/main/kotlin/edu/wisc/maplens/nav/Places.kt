@@ -98,7 +98,7 @@ class PlaceSearch(
 
     /**
      * Feature kinds with at least one reachable place, so a shortcut is only offered when it
-     * leads somewhere. A scanned poster has none yet: the parser marks no exits, elevators or AEDs.
+     * leads somewhere. A poster scanned before exits, elevators and AEDs were detected has none.
      */
     fun available(): Set<PlaceKind> =
         places.filter { it.kind != PlaceKind.ROOM && walkPx(it) != null }.map { it.kind }.toSet()

@@ -31,7 +31,7 @@ internal object MapRooms {
     /**
      * Where room numbers are printed on the map, read on-device with ML Kit. Blocks, so call
      * it off the UI thread. The whole map is read once, then in enlarged tiles so the small
-     * numbers in narrow rooms are read too; the first box per label is kept.
+     * numbers in narrow rooms are read too; per label, the box nearest its door is kept.
      *
      * Besides the [known] rooms of the graph it keeps any other number of the same floor
      * standing alone on its line, so a room the traced graph lacks can still be named when
@@ -54,7 +54,7 @@ internal object MapRooms {
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         val found = LinkedHashMap<String, LabelBox>()
         try {
-            read(recognizer, image, 0, 0, 1f, accept, found, known)
+            read(recognizer, image, 0, 0, 1f, accept, found, known, doors)
             val tile = TILE_PX
             var top = 0
             while (top < image.height) {
@@ -69,7 +69,7 @@ internal object MapRooms {
                         (h * TILE_ZOOM).toInt(),
                         true,
                     )
-                    read(recognizer, big, left, top, TILE_ZOOM, accept, found, known)
+                    read(recognizer, big, left, top, TILE_ZOOM, accept, found, known, doors)
                     big.recycle()
                     piece.recycle()
                     left += tile - TILE_OVERLAP_PX
@@ -112,13 +112,20 @@ internal object MapRooms {
                     (h * CLOSE_ZOOM).toInt(),
                     true,
                 )
-                read(recognizer, big, left, top, CLOSE_ZOOM, missing, found, known)
+                read(recognizer, big, left, top, CLOSE_ZOOM, missing, found, known, doors)
                 big.recycle()
                 piece.recycle()
             }
         }
     }
 
+    /**
+     * Reads one image (a tile [zoom]ed from [left], [top] of the map) into [found].
+     *
+     * A suffix letter read as its own element ("3540" "B") joins its number, so "3540B" is
+     * never taken for room 3540. When a label is read twice, the box nearer one of the room's
+     * [doors] wins over the first one read, so a pin lands on the room's own number.
+     */
     private fun read(
         recognizer: com.google.mlkit.vision.text.TextRecognizer,
         image: Bitmap,
@@ -128,40 +135,98 @@ internal object MapRooms {
         accept: (String, Boolean) -> Boolean,
         found: MutableMap<String, LabelBox>,
         candidates: Collection<String>,
+        doors: Map<String, List<PixelPoint>>,
     ) {
         val text = Tasks.await(recognizer.process(InputImage.fromBitmap(image, 0)))
         for (block in text.textBlocks) {
             for (line in block.lines) {
-                for (element in line.elements) {
-                    val label = normalizeLabel(element.text)
-                    val box = element.boundingBox ?: continue
+                for (word in joinSuffixes(line.elements.mapNotNull(::wordOf))) {
+                    val label = word.text
                     fun keep(part: String, from: Int, to: Int, length: Int) {
                         // Digits are near enough equal width to place a part by its characters.
                         // A part cut from a run keeps only its middle, so the box a room grows
                         // from starts inside that room, not on the thin wall beside it.
                         val trim = if (to - from < length) PART_TRIM * (to - from) else 0.0
-                        val x0 = box.left + box.width() * (from + trim) / length
-                        val x1 = box.left + box.width() * (to - trim) / length
-                        found[part] = LabelBox(
+                        val width = word.right - word.left
+                        val x0 = word.left + width * (from + trim) / length
+                        val x1 = word.left + width * (to - trim) / length
+                        val candidate = LabelBox(
                             part,
                             left + x0 / zoom,
-                            top + box.top / zoom.toDouble(),
+                            top + word.top / zoom.toDouble(),
                             left + x1 / zoom,
-                            top + box.bottom / zoom.toDouble(),
+                            top + word.bottom / zoom.toDouble(),
                         )
+                        val old = found[part]
+                        if (old == null || closer(candidate, old, doors[part].orEmpty())) {
+                            found[part] = candidate
+                        }
                     }
-                    if (label !in found && accept(label, line.elements.size == 1)) {
+                    if (accept(label, line.elements.size == 1 || word.joined)) {
                         keep(label, 0, label.length, label.length)
                         continue
                     }
                     // Numbers in narrow neighbouring rooms, split only by a thin wall, come back
                     // run together ("343834363434"): cut the run back into room numbers.
                     for ((part, from, to) in splitRun(label, candidates)) {
-                        if (part !in found && accept(part, true)) keep(part, from, to, label.length)
+                        if (accept(part, true)) keep(part, from, to, label.length)
                     }
                 }
             }
         }
+    }
+
+    /** One recognised word: normalised text and its box in the read image. */
+    data class Word(
+        val text: String,
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+        val joined: Boolean = false,
+    )
+
+    private fun wordOf(element: com.google.mlkit.vision.text.Text.Element): Word? =
+        element.boundingBox?.let {
+            Word(normalizeLabel(element.text), it.left, it.top, it.right, it.bottom)
+        }
+
+    /**
+     * Joins a lone letter to the room number just left of it on the same line ("3540" "B" →
+     * "3540B"), when the gap between them is under one character height.
+     */
+    fun joinSuffixes(words: List<Word>): List<Word> {
+        val out = mutableListOf<Word>()
+        var i = 0
+        while (i < words.size) {
+            val word = words[i]
+            val next = words.getOrNull(i + 1)
+            val gap = next?.let { it.left - word.right }
+            if (next != null && gap != null && next.text.length == 1 && next.text[0].isLetter() &&
+                gap <= word.bottom - word.top && ROOM.matches(word.text + next.text)
+            ) {
+                out += Word(
+                    word.text + next.text,
+                    minOf(word.left, next.left),
+                    minOf(word.top, next.top),
+                    maxOf(word.right, next.right),
+                    maxOf(word.bottom, next.bottom),
+                    joined = true,
+                )
+                i += 2
+            } else {
+                out += word
+                i++
+            }
+        }
+        return out
+    }
+
+    /** True when [candidate] sits nearer the room's nearest door than [old] does. */
+    fun closer(candidate: LabelBox, old: LabelBox, doors: List<PixelPoint>): Boolean {
+        if (doors.isEmpty()) return false
+        fun reach(box: LabelBox) = doors.minOf { it.distanceTo(box.center) }
+        return reach(candidate) + SAME_PLACE_PX < reach(old)
     }
 
     /**
@@ -188,6 +253,9 @@ internal object MapRooms {
     }
 
     private val ROOM = Regex("""\d{3,4}[A-Z]?""")
+
+    /** Two reads of a label this close are the same print; the first one stays. */
+    private const val SAME_PLACE_PX = 20.0
     private const val TILE_PX = 700
     private const val TILE_OVERLAP_PX = 120
     private const val TILE_ZOOM = 1.8f

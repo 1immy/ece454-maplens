@@ -5,10 +5,14 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -66,6 +70,7 @@ class PosterCaptureActivity : ComponentActivity() {
     private lateinit var details: Button
     private lateinit var cancel: Button
     private lateinit var save: Button
+    private lateinit var importButton: Button
     private var camera: ProcessCameraProvider? = null
     private var preview: Preview? = null
     private var capture: ImageCapture? = null
@@ -80,6 +85,11 @@ class PosterCaptureActivity : ComponentActivity() {
     private val requestCamera = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> if (granted) startCamera() else showPermission() }
+
+    /** A poster photo taken earlier: from the photo library, Files or Drive. */
+    private val pickPhoto = registerForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri -> uri?.let(::importPhoto) }
 
     /** Back clears the mark, then returns to the full map, and only then leaves the screen. */
     private val reviewBack = object : OnBackPressedCallback(false) {
@@ -174,6 +184,16 @@ class PosterCaptureActivity : ComponentActivity() {
             visibility = View.GONE
             setOnClickListener { resetCapture() }
         }
+        // The second way in, spelled out on its own full-width row just above capture, so
+        // it reads as "or use a photo you already have" and capture keeps a single line.
+        importButton = styledButton(
+            ButtonStyle.SECONDARY,
+            getString(R.string.poster_import),
+            R.drawable.ic_photo_library,
+        ).apply {
+            contentDescription = getString(R.string.poster_import_description)
+            setOnClickListener { if (!busy) pickPhoto.launch("image/*") }
+        }
         val buttons = LinearLayout(this).apply {
             setPadding(0, pad, 0, pad)
             // An 8 dp gap between visible buttons only; hidden ones get no divider.
@@ -228,6 +248,7 @@ class PosterCaptureActivity : ComponentActivity() {
             addView(roomPanel, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(progress)
             addView(save, LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad })
+            addView(importButton, LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad })
             addView(buttons)
         }
         setContentView(root)
@@ -251,6 +272,7 @@ class PosterCaptureActivity : ComponentActivity() {
 
     private fun showPermission() {
         status.setText(R.string.poster_permission)
+        importButton.visibility = View.VISIBLE
         action.setText(R.string.poster_grant_permission)
         action.isEnabled = true
         action.setOnClickListener {
@@ -261,6 +283,7 @@ class PosterCaptureActivity : ComponentActivity() {
     private fun startCamera(message: CharSequence? = null) {
         status.text = message ?: getString(R.string.poster_opening)
         action.visibility = View.VISIBLE
+        importButton.visibility = View.VISIBLE
         action.isEnabled = false
         cancel.visibility = View.GONE
         progress.visibility = View.GONE
@@ -322,17 +345,7 @@ class PosterCaptureActivity : ComponentActivity() {
     private fun takePhoto() {
         val photo = capture ?: return
         if (busy) return
-        val id = synchronized(workLock) { ++generation }
-        busy = true
-        status.text = SpannableStringBuilder(getString(R.string.poster_parsing_title)).apply {
-            setSpan(StyleSpan(Typeface.BOLD), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            setSpan(RelativeSizeSpan(1.25f), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
-        progress.show(ParseProgress(ParseStage.STRAIGHTEN))
-        progress.visibility = View.VISIBLE
-        cancel.setText(android.R.string.cancel)
-        cancel.visibility = View.VISIBLE
-        action.visibility = View.GONE
+        val id = startParsing()
         cameraView.display?.let { photo.targetRotation = it.rotation }
         photo.takePicture(
             cameraCallbacks,
@@ -344,7 +357,7 @@ class PosterCaptureActivity : ComponentActivity() {
                     }
                     // The live preview would compete with the parser for CPU.
                     stopCamera()
-                    worker.execute { parse(id, image) }
+                    worker.execute { parse(id) { image.use(::upright) } }
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -352,6 +365,7 @@ class PosterCaptureActivity : ComponentActivity() {
                         Log.w(TAG, "Capture failed", exception)
                         progress.visibility = View.GONE
                         action.visibility = View.VISIBLE
+                        importButton.visibility = View.VISIBLE
                         ready(getString(R.string.poster_capture_failed))
                     }
                 }
@@ -359,16 +373,80 @@ class PosterCaptureActivity : ComponentActivity() {
         )
     }
 
-    private fun parse(id: Int, image: ImageProxy) {
-        synchronized(workLock) {
-            if (id != generation) {
-                image.close()
-                return
+    /** Shows the parsing state and returns this attempt's generation. */
+    private fun startParsing(): Int {
+        val id = synchronized(workLock) { ++generation }
+        busy = true
+        status.text = SpannableStringBuilder(getString(R.string.poster_parsing_title)).apply {
+            setSpan(StyleSpan(Typeface.BOLD), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            setSpan(RelativeSizeSpan(1.25f), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        progress.show(ParseProgress(ParseStage.STRAIGHTEN))
+        progress.visibility = View.VISIBLE
+        cancel.setText(android.R.string.cancel)
+        cancel.visibility = View.VISIBLE
+        action.visibility = View.GONE
+        importButton.visibility = View.GONE
+        return id
+    }
+
+    /** Parses a saved photo of a poster exactly like a fresh capture. */
+    private fun importPhoto(uri: Uri) {
+        if (busy || review != null) return
+        val id = startParsing()
+        // The live preview would compete with the parser for CPU.
+        stopCamera()
+        worker.execute { parse(id) { decodePhoto(uri) } }
+    }
+
+    /**
+     * Decodes [uri] upright (EXIF rotation applied) and no larger than a capture
+     * ([MAX_PHOTO_SIDE]), in a software bitmap the parser can read.
+     */
+    private fun decodePhoto(uri: Uri): Bitmap {
+        if (Build.VERSION.SDK_INT >= 28) {
+            val source = ImageDecoder.createSource(contentResolver, uri)
+            return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                val side = maxOf(info.size.width, info.size.height)
+                if (side > MAX_PHOTO_SIDE) {
+                    val scale = MAX_PHOTO_SIDE.toFloat() / side
+                    decoder.setTargetSize(
+                        (info.size.width * scale).roundToInt(),
+                        (info.size.height * scale).roundToInt(),
+                    )
+                }
             }
+        }
+        // Android 8 has no ImageDecoder: the photo is decoded as stored (no EXIF turn).
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAX_PHOTO_SIDE) {
+            sample *= 2
+        }
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bitmap = contentResolver.openInputStream(uri).use {
+            BitmapFactory.decodeStream(it, null, options)
+        } ?: throw PosterRetakeException(getString(R.string.poster_import_unreadable))
+        val scale = minOf(1f, MAX_PHOTO_SIDE.toFloat() / maxOf(bitmap.width, bitmap.height))
+        if (scale == 1f) return bitmap
+        return Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * scale).roundToInt(),
+            (bitmap.height * scale).roundToInt(),
+            true,
+        ).also { if (it !== bitmap) bitmap.recycle() }
+    }
+
+    /** Parses the photo [load] gives, on the worker, unless a newer attempt replaced [id]. */
+    private fun parse(id: Int, load: () -> Bitmap) {
+        synchronized(workLock) {
+            if (id != generation) return
             parsingThread = Thread.currentThread()
         }
         val result = try {
-            val photo = image.use(::upright)
+            val photo = load()
             val shown = Bitmap.createScaledBitmap(
                 photo,
                 photo.width * PHOTO_VIEW_SIDE / maxOf(photo.width, photo.height),
@@ -382,13 +460,16 @@ class PosterCaptureActivity : ComponentActivity() {
                     cameraView.visibility = View.GONE
                 }
             }
+            val began = android.os.SystemClock.elapsedRealtime()
             val parser = OfflineMapParser { update ->
                 runOnUiThread {
                     if (id == generation && !isDestroyed) progress.show(update)
                 }
             }
             try {
-                Result.success(parser.parse(photo))
+                Result.success(parser.parse(photo)).also {
+                    Log.i(TAG, "parsed in ${android.os.SystemClock.elapsedRealtime() - began} ms")
+                }
             } finally {
                 photo.recycle()
             }
@@ -418,7 +499,7 @@ class PosterCaptureActivity : ComponentActivity() {
         require(maxOf(image.width, image.height) <= MAX_CAPTURE_SIDE)
         val bitmap = image.toBitmap()
         val rotation = image.imageInfo.rotationDegrees
-        val scale = minOf(1f, 3200f / maxOf(bitmap.width, bitmap.height))
+        val scale = minOf(1f, MAX_PHOTO_SIDE.toFloat() / maxOf(bitmap.width, bitmap.height))
         val matrix = Matrix().apply {
             postRotate(rotation.toFloat())
             postScale(scale, scale)
@@ -476,6 +557,7 @@ class PosterCaptureActivity : ComponentActivity() {
         photoView.setImageDrawable(null)
         progress.visibility = View.GONE
         cancel.visibility = View.GONE
+        importButton.visibility = View.GONE
         action.visibility = View.VISIBLE
         val start = graph.nodes[graph.startNodeId]?.takeIf { it.type == NodeType.START }
         val rooms = reviewRooms(result)
@@ -668,6 +750,9 @@ class PosterCaptureActivity : ComponentActivity() {
 
     private companion object {
         const val MAX_CAPTURE_SIDE = 4096
+
+        /** Longest side handed to the parser, for captures and imported photos alike. */
+        const val MAX_PHOTO_SIDE = 3200
         const val PHOTO_VIEW_SIDE = 1280
         const val TAG = "PosterCapture"
     }

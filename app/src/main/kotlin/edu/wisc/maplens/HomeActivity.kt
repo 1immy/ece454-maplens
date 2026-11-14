@@ -7,9 +7,13 @@ import android.content.Intent
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
 import java.text.DateFormat
@@ -17,9 +21,10 @@ import java.text.NumberFormat
 import java.util.Date
 
 /**
- * The app's entry. Scanning a poster is the one primary action, in the thumb zone. Maps saved
- * after a scan are listed under Your maps and open in [IndoorNavActivity]; the bundled EH3 map
- * and the debug recorder sit under Developer.
+ * The app's entry. Scanning a poster is the one primary action, in the thumb zone. Saved maps
+ * come first once there are any (pinned ones on top), each with a menu to rename, pin or
+ * delete it; the introduction shows only before the first map. An unfinished scan, the bundled
+ * EH3 map and the debug tools sit under Developer.
  */
 class HomeActivity : Activity() {
     // Built on resume so a map saved in the capture screen shows when the user comes back.
@@ -33,25 +38,50 @@ class HomeActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), dp(24), dp(24), dp(24))
             addView(brand())
-            addView(
-                text(Ui.TITLE, bold = true).apply {
-                    setText(R.string.home_title)
-                    markHeading()
-                },
-                spaced(top = 24),
-            )
-            addView(
-                text(Ui.BODY, Ui.INK_SECONDARY).apply { setText(R.string.home_intro) },
-                spaced(top = 12),
-            )
-            addView(offlinePill(), spaced(top = 16, wrap = true))
-            addView(steps(), spaced(top = 24))
             val saved = MapAssets.savedMaps(this@HomeActivity).list()
-            val unfinished = DraftStore.of(this@HomeActivity).exists
-            if (saved.isNotEmpty() || unfinished) {
-                addView(sectionTitle(R.string.home_maps), spaced(top = 32))
+            if (saved.isEmpty()) {
+                // First run: explain the flow before the camera.
+                addView(
+                    text(Ui.TITLE, bold = true).apply {
+                        setText(R.string.home_title)
+                        markHeading()
+                    },
+                    spaced(top = 24),
+                )
+                addView(
+                    text(Ui.BODY, Ui.INK_SECONDARY).apply { setText(R.string.home_intro) },
+                    spaced(top = 12),
+                )
+                addView(offlinePill(), spaced(top = 16, wrap = true))
+                addView(steps(), spaced(top = 24))
+            } else {
+                // Returning: the maps are what people came for.
+                addView(
+                    text(Ui.BODY, Ui.INK_SECONDARY).apply { setText(R.string.home_pick_map) },
+                    spaced(top = 16),
+                )
+                val (pinned, others) = saved.partition { it.pinned }
+                if (pinned.isNotEmpty()) {
+                    addView(sectionTitle(R.string.home_pinned), spaced(top = 24))
+                    pinned.forEachIndexed { i, map ->
+                        addView(savedRow(map), spaced(top = if (i == 0) 12 else 8))
+                    }
+                }
+                if (others.isNotEmpty()) {
+                    addView(
+                        sectionTitle(
+                            if (pinned.isEmpty()) R.string.home_maps else R.string.home_other_maps,
+                        ),
+                        spaced(top = 24),
+                    )
+                    others.forEachIndexed { i, map ->
+                        addView(savedRow(map), spaced(top = if (i == 0) 12 else 8))
+                    }
+                }
             }
-            if (unfinished) {
+            addView(sectionTitle(R.string.home_developer), spaced(top = 32))
+            // A scan left mid-check: picked up from here, not mixed in with finished maps.
+            if (DraftStore.of(this@HomeActivity).exists) {
                 addView(
                     devRow(R.drawable.ic_edit, R.string.home_draft, R.string.home_draft_detail) {
                         startActivity(Intent(this@HomeActivity, GraphEditorActivity::class.java))
@@ -59,10 +89,6 @@ class HomeActivity : Activity() {
                     spaced(top = 12),
                 )
             }
-            saved.forEachIndexed { i, map ->
-                addView(savedRow(map), spaced(top = if (i == 0 && !unfinished) 12 else 8))
-            }
-            addView(sectionTitle(R.string.home_developer), spaced(top = 32))
             addView(
                 devRow(
                     R.drawable.ic_navigation,
@@ -234,33 +260,111 @@ class HomeActivity : Activity() {
             markHeading()
         }
 
-    /** A saved map: tap to navigate on it, long-press to delete it. */
+    /**
+     * A saved map: tap to navigate on it. Its ⋮ button (or a long press) offers Rename,
+     * Pin / Unpin and Delete.
+     */
     private fun savedRow(map: SavedMap): View {
         val date = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
             .format(Date(map.savedAtMillis))
         val detail = getString(R.string.home_map_detail, map.rooms, date)
-        return devRow(R.drawable.ic_map, map.name, detail) {
+        val icon = if (map.pinned) R.drawable.ic_push_pin else R.drawable.ic_map
+        lateinit var row: View
+        val more = ImageButton(this).apply {
+            setImageDrawable(icon(R.drawable.ic_more_vert, Ui.INK_SECONDARY))
+            background = pressable(rounded(android.graphics.Color.TRANSPARENT, radiusDp = 24))
+            contentDescription = getString(R.string.home_map_actions, map.name)
+            setOnClickListener { showMapMenu(it, map) }
+        }
+        row = devRow(icon, map.name, detail, trailing = more) {
             startActivity(IndoorNavActivity.open(this, map.id))
         }.apply {
             setOnLongClickListener {
-                AlertDialog.Builder(this@HomeActivity)
-                    .setTitle(getString(R.string.home_map_delete_title, map.name))
-                    .setPositiveButton(R.string.home_map_delete) { _, _ ->
-                        MapAssets.savedMaps(this@HomeActivity).delete(map.id)
-                        setContentView(buildLayout())
-                    }
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show()
+                showMapMenu(more, map)
                 true
             }
         }
+        return row
+    }
+
+    private fun showMapMenu(anchor: View, map: SavedMap) {
+        val menu = PopupMenu(this, anchor)
+        menu.menu.add(0, MENU_RENAME, 0, R.string.home_map_rename)
+        menu.menu.add(
+            0,
+            MENU_PIN,
+            1,
+            if (map.pinned) R.string.home_map_unpin else R.string.home_map_pin,
+        )
+        menu.menu.add(0, MENU_DELETE, 2, R.string.home_map_delete)
+        menu.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                MENU_RENAME -> rename(map)
+                MENU_PIN -> {
+                    MapAssets.savedMaps(this).setPinned(map.id, !map.pinned)
+                    setContentView(buildLayout())
+                }
+                MENU_DELETE -> confirmDelete(map)
+            }
+            true
+        }
+        menu.show()
+    }
+
+    private fun rename(map: SavedMap) {
+        val field = EditText(this).apply {
+            setText(map.name)
+            setSelectAllOnFocus(true)
+            isSingleLine = true
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            hint = getString(R.string.home_map_name_hint)
+        }
+        val box = FrameLayout(this).apply {
+            setPadding(dp(24), dp(8), dp(24), 0)
+            addView(field)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.home_map_rename)
+            .setView(box)
+            .setPositiveButton(R.string.home_map_rename_save) { _, _ ->
+                val name = field.text.toString().trim()
+                if (name.isNotEmpty()) {
+                    MapAssets.savedMaps(this).rename(map.id, name)
+                    setContentView(buildLayout())
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.window?.setSoftInputMode(
+            android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE,
+        )
+        dialog.show()
+        field.requestFocus()
+    }
+
+    private fun confirmDelete(map: SavedMap) {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.home_map_delete_title, map.name))
+            .setMessage(R.string.home_map_delete_body)
+            .setPositiveButton(R.string.home_map_delete) { _, _ ->
+                MapAssets.savedMaps(this).delete(map.id)
+                setContentView(buildLayout())
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun devRow(iconId: Int, title: Int, detail: Int, onTap: () -> Unit): View =
-        devRow(iconId, getString(title), getString(detail), onTap)
+        devRow(iconId, getString(title), getString(detail), onTap = onTap)
 
-    /** A full-width tappable row: icon tile, title and detail, chevron. */
-    private fun devRow(iconId: Int, title: String, detail: String, onTap: () -> Unit): View =
+    /** A full-width tappable row: icon tile, title and detail, then [trailing] or a chevron. */
+    private fun devRow(
+        iconId: Int,
+        title: String,
+        detail: String,
+        trailing: View? = null,
+        onTap: () -> Unit,
+    ): View =
         LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = dp(72)
@@ -291,7 +395,8 @@ class HomeActivity : Activity() {
                     addView(
                         text(Ui.BODY, bold = true).apply {
                             text = title
-                            maxLines = 1
+                            // Saved maps keep their whole name: two lines before it is cut.
+                            maxLines = if (trailing != null) 2 else 1
                             ellipsize = TextUtils.TruncateAt.END
                         },
                     )
@@ -306,13 +411,17 @@ class HomeActivity : Activity() {
                 },
                 LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(16) },
             )
-            addView(
-                ImageView(context).apply {
-                    setImageDrawable(icon(R.drawable.ic_chevron_right, Ui.INK_SECONDARY))
-                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                },
-                LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginStart = dp(8) },
-            )
+            if (trailing != null) {
+                addView(trailing, LinearLayout.LayoutParams(dp(48), dp(48)))
+            } else {
+                addView(
+                    ImageView(context).apply {
+                        setImageDrawable(icon(R.drawable.ic_chevron_right, Ui.INK_SECONDARY))
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    },
+                    LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginStart = dp(8) },
+                )
+            }
         }
 
     /** A debug-only screen, when this build has it (they live in the debug source set). */
@@ -329,5 +438,8 @@ class HomeActivity : Activity() {
         const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
         const val RECORDER = "edu.wisc.maplens.debug.RecorderActivity"
         const val FIXTURE_EDITOR = "edu.wisc.maplens.debug.EditFixtureActivity"
+        const val MENU_RENAME = 1
+        const val MENU_PIN = 2
+        const val MENU_DELETE = 3
     }
 }

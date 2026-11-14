@@ -84,6 +84,23 @@ class MapStoreTest {
     }
 
     @Test
+    fun `maps can be renamed, and pinned ones list first`() {
+        store.save(graph, "older", nowMillis = 1L, writeImage = ::image)
+        store.save(graph, "newer", nowMillis = 2L, writeImage = ::image)
+        assertEquals(listOf("newer", "older"), store.list().map { it.name })
+        assertTrue(store.setPinned("map-1", true))
+        assertTrue(store.rename("map-1", "  EH3 elevators  "))
+        assertEquals(listOf("EH3 elevators", "newer"), store.list().map { it.name })
+        assertTrue(store.list().first().pinned)
+        // A fresh store reads the same from disk.
+        assertEquals("EH3 elevators", MapStore(root).get("map-1")?.name)
+        assertTrue(store.setPinned("map-1", false))
+        assertEquals(listOf("newer", "EH3 elevators"), store.list().map { it.name })
+        assertFailsWith<IllegalArgumentException> { store.rename("map-1", " ") }
+        assertEquals(false, store.rename("map-404", "gone"))
+    }
+
+    @Test
     fun `incomplete folders are skipped and maps can be deleted`() {
         File(root, "map-9").mkdirs()
         val saved = store.save(graph, "kept", nowMillis = 10L, writeImage = ::image)
