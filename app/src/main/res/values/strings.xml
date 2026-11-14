@@ -408,6 +408,7 @@
   <string name="map_save_title">Save this map?</string>
   <string name="map_save_message">Rooms marked to check: %1$d. They are saved as read. To correct them, cancel and choose Edit map.</string>
   <string name="map_default_name">Poster scan, %1$s</string>
+  <string name="map_suggested_name">%1$s · Rooms %2$d–%3$d</string>
   <string name="map_save_failed">Could not save the map: %1$s</string>
   <string name="home_maps">Your maps</string>
   <string name="home_map_detail">%1$d rooms · saved %2$s</string>
@@ -423,6 +424,27 @@
   <string name="home_pinned">Pinned</string>
   <string name="home_other_maps">Other maps</string>
   <string name="home_pick_map">Pick a map to find your way, or scan a new poster.</string>
+  <string name="home_select">Select</string>
+  <string name="home_select_all">Select all</string>
+  <string name="home_deselect_all">Deselect all</string>
+  <string name="home_selection_close">Done selecting</string>
+  <string name="home_selected_count">%1$d selected</string>
+  <string name="home_selection_pin">Pin selected maps</string>
+  <string name="home_selection_unpin">Unpin selected maps</string>
+  <string name="home_selection_delete">Delete selected maps</string>
+  <string name="home_swipe_pin">Pin</string>
+  <string name="home_swipe_unpin">Unpin</string>
+  <string name="home_undo">Undo</string>
+  <string name="home_map_row_detail">%1$d rooms · %2$s</string>
+  <string name="home_map_selected">%1$s, selected</string>
+  <plurals name="home_map_count">
+    <item quantity="one">%d map</item>
+    <item quantity="other">%d maps</item>
+  </plurals>
+  <plurals name="home_deleted">
+    <item quantity="one">Map deleted</item>
+    <item quantity="other">%d maps deleted</item>
+  </plurals>
   <string name="in_voice_mute">Mute voice guidance</string>
   <string name="in_voice_unmute">Turn on voice guidance</string>
   <string name="in_voice_on">Voice guidance on</string>

@@ -53,8 +53,6 @@ import edu.wisc.maplens.mapparse.PosterRetakeException
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.routing.AStarRouter
-import java.text.DateFormat
-import java.util.Date
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
@@ -710,9 +708,7 @@ class PosterCaptureActivity : ComponentActivity() {
     private fun saveAndNavigate(graph: FloorGraph, image: Bitmap) {
         save.isEnabled = false
         action.isEnabled = false
-        val stamp = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
-            .format(Date())
-        val name = getString(R.string.map_default_name, stamp)
+        val name = suggestedMapName(graph)
         val store = MapAssets.savedMaps(this)
         worker.execute {
             val saved = runCatching {
