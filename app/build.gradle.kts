@@ -21,6 +21,14 @@ android {
         release {
             isMinifyEnabled = false
         }
+        // Debug-signed but not debuggable: ART runs the parser's pixel loops about 1.5 times
+        // faster than in a debug build (Pixel 7a, Nov 14). Install with :app:installFast.
+        create("fast") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = false
+            matchingFallbacks += "release"
+        }
     }
 
     compileOptions {
