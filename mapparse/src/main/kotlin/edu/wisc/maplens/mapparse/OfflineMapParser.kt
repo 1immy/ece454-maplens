@@ -121,17 +121,29 @@ class OfflineMapParser(
                 ocrImage.release()
             }
         }
+        // Door ink reads only the image, so it is ready before the rooms that need it.
+        val ink = Background { doorInk(flat) }
         val hsv = mats.mat()
         val routes = mats.mat()
         val stars: List<PixelPoint>
+        var icons: Background<List<PosterFeature>>? = null
         val corridors = try {
             Imgproc.cvtColor(flat, hsv, Imgproc.COLOR_BGR2HSV)
-            routeMask(hsv, routes, mats)
-            stars = detectStars(hsv)
+            // Icons and the star are colour blobs: found beside the route mask.
+            val found = Background { elevatorIcons(hsv) + aedIcons(hsv) }
+            icons = found
+            val starsFound = Background { detectStars(hsv) }
+            val planes = try {
+                PosterPlanes(hsv, mats).also { routeMask(hsv, routes, mats, it) }
+            } catch (failure: Throwable) {
+                starsFound.stop()
+                throw failure
+            }
+            stars = starsFound.await()
             timer.mark("route mask + stars")
-            val extracted = PosterCorridors().extract(routes, stars, flat)
+            val extracted = PosterCorridors().extract(routes, stars, flat, planes)
             timer.mark("extract")
-            recoverMarkerCorridor(hsv, routes, extracted, stars, flat).let { traced ->
+            recoverMarkerCorridor(hsv, routes, extracted, stars, flat, planes).let { traced ->
                 // The trace bends into the gold star: straighten it there before rooms attach.
                 (stars.singleOrNull()?.let(traced::straightenedAround) ?: traced).withoutBumps()
             }.also {
@@ -143,6 +155,8 @@ class OfflineMapParser(
             }
         } catch (failure: Throwable) {
             ocr.cancel()
+            ink.stop()
+            icons?.stop()
             throw failure
         }
         timer.mark("corridors")
@@ -152,6 +166,10 @@ class OfflineMapParser(
         } catch (_: CvException) {
             warnings += "Room recognition failed. Check or enter room labels in review."
             emptyList()
+        } catch (failure: Throwable) {
+            ink.stop()
+            icons?.stop()
+            throw failure
         }
         timer.mark("ocr")
         checkCancellation()
@@ -170,12 +188,12 @@ class OfflineMapParser(
             RoomAttachments(corridors, emptyList())
         } else {
             val walls = wallMask(flat, routes, readings)
-            val ink = doorInk(flat)
             timer.mark("wall mask")
-            corridors.attachRooms(rooms, walls, flat.cols(), warnings, ink)
+            corridors.attachRooms(rooms, walls, flat.cols(), warnings, ink.await())
         }
         timer.mark("attach rooms")
-        val features = exitSigns(readings) + elevatorIcons(hsv) + aedIcons(hsv)
+        ink.stop()
+        val features = exitSigns(readings) + checkNotNull(icons).await()
         timer.mark("features")
         val graph = resolveStart(labeled.graph, stars, warnings).attachFeatures(features)
             .let { if (floor != null) it.copy(floor = floor.toString()) else it }

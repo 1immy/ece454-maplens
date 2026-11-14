@@ -46,7 +46,7 @@ class PosterParserChecks : Instrumentation() {
     /** `-e threads N`: OpenCV worker threads for a probe run, to time the parse with each. */
     private var threads: Int? = null
 
-    /** `-e only settledDoubts`: runs that one synthetic check. */
+    /** `-e only settledDoubts` or `reachedTargets`: runs that one synthetic check. */
     private var only: String? = null
 
     /** `-e all true`: parses every fixture photo and writes each graph and its readings. */
@@ -90,15 +90,22 @@ class PosterParserChecks : Instrumentation() {
             runAll()
             return
         }
-        if (only == "settledDoubts") {
-            val outcome = runCatching { checkSettledDoubts() }
+        if (only != null) {
+            val outcome = runCatching {
+                requireOpenCv()
+                when (only) {
+                    "settledDoubts" -> checkSettledDoubts()
+                    "reachedTargets" -> checkReachedTargets()
+                    else -> error("no check named $only")
+                }
+            }
             finish(
                 if (outcome.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED,
                 Bundle().apply {
                     putString(
                         "stream",
                         outcome.exceptionOrNull()?.let(Log::getStackTraceString)
-                            ?: "Settled doubts check passed",
+                            ?: "Check $only passed",
                     )
                 },
             )
@@ -129,6 +136,7 @@ class PosterParserChecks : Instrumentation() {
             checkUnsupportedDoorDetour()
             checkSeparateDoorways()
             checkSettledDoubts()
+            checkReachedTargets()
             checkFrames()
             checkRectified("eh-3-elevators-evac")
             checkRectified("eh-3-stair3424-evac")
@@ -684,6 +692,55 @@ class PosterParserChecks : Instrumentation() {
         }
         // The posters must exercise both outcomes, or the check proves nothing.
         check(skipped > 100 && asked > 100) { "skipped $skipped, asked $asked" }
+    }
+
+    /**
+     * [keepWhereReached] must give exactly `targets AND dilate(source, kernel)`: random sparse
+     * images, targets on the borders included, with the route mask's disc and smaller shapes.
+     */
+    private fun checkReachedTargets() = Mats().use { mats ->
+        val random = java.util.Random(454)
+        val kernels = listOf(
+            mats.kernel(61, shape = Imgproc.MORPH_ELLIPSE),
+            mats.kernel(9, shape = Imgproc.MORPH_ELLIPSE),
+            mats.kernel(15, 5),
+            mats.kernel(1, 1),
+        )
+        var cleared = 0
+        var kept = 0
+        repeat(40) { round ->
+            val width = 40 + random.nextInt(260)
+            val height = 40 + random.nextInt(200)
+            val size = width * height
+            val source = ByteArray(size)
+            repeat(1 + random.nextInt(12)) { source[random.nextInt(size)] = -1 }
+            val targets = ByteArray(size)
+            repeat(size / 20) { targets[random.nextInt(size)] = -1 }
+            for (x in 0 until width step 3) {
+                targets[x] = -1
+                targets[size - 1 - x] = -1
+            }
+            val kernel = kernels[round % kernels.size]
+            val sourceMat = mats.own(Mat(height, width, CvType.CV_8U))
+            sourceMat.put(0, 0, source)
+            val grown = mats.mat()
+            Imgproc.dilate(sourceMat, grown, kernel)
+            val reach = ByteArray(size).also { grown.get(0, 0, it) }
+            val expected = ByteArray(size) { i ->
+                if (targets[i] != 0.toByte() && reach[i] != 0.toByte()) -1 else 0
+            }
+            check(keepWhereReached(targets, source, width, kernel))
+            check(targets.contentEquals(expected)) { "round $round" }
+            cleared += expected.count { it == 0.toByte() }
+            kept += expected.count { it != 0.toByte() }
+        }
+        check(kept > 1000 && cleared > 1000) { "kept $kept, cleared $cleared" }
+        // Too many targets, or a kernel whose rows are not single runs: left to the caller.
+        val ring = mats.own(Mat.ones(3, 3, CvType.CV_8U))
+        ring.put(1, 1, byteArrayOf(0))
+        val few = ByteArray(100).also { it[5] = -1 }
+        check(!keepWhereReached(few.copyOf(), ByteArray(100), 10, ring))
+        check(!keepWhereReached(ByteArray(100) { -1 }, ByteArray(100), 10, kernels[0]))
     }
 
     private fun checkFrames() {

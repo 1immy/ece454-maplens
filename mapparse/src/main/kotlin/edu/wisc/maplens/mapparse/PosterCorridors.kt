@@ -24,9 +24,9 @@ private fun redHue(hsv: Mat, minS: Double, out: Mat, mats: Mats, wrapHue: Double
     Core.bitwise_or(out, upper, out)
 }
 
-internal fun routeMask(hsv: Mat, mask: Mat, mats: Mats) {
+internal fun routeMask(hsv: Mat, mask: Mat, mats: Mats, planes: PosterPlanes? = null) {
     redHue(hsv, 71.0, mask, mats)
-    val notWalls = dropWallFringe(hsv, mask, mats)
+    val notWalls = dropWallFringe(hsv, mask, mats, planes)
     addFaintPaint(hsv, mask, notWalls, mats)
 }
 
@@ -35,15 +35,14 @@ internal fun routeMask(hsv: Mat, mask: Mat, mats: Mats) {
  * Walls are dark and colourless, unlike paint. A streak on a wall goes only when solid paint runs
  * beside it, so a faint corridor with nothing stronger nearby survives. Returns what isn't wall.
  */
-private fun dropWallFringe(hsv: Mat, mask: Mat, mats: Mats): Mat {
+private fun dropWallFringe(hsv: Mat, mask: Mat, mats: Mats, planes: PosterPlanes?): Mat {
     val dark = mats.mat()
     Core.inRange(hsv, Scalar(0.0, 0.0, 0.0), Scalar(179.0, 69.0, 109.0), dark)
     // A phone photo can leave walls lighter than that, so a wall may also be grey and dark for its
     // surroundings.
     val v = mats.mat()
-    val local = mats.mat()
     Core.extractChannel(hsv, v, 2)
-    Imgproc.medianBlur(v, local, 31)
+    val local = planes?.localValue ?: mats.mat().also { Imgproc.medianBlur(v, it, LOCAL_VALUE) }
     val s = mats.mat()
     Core.extractChannel(hsv, s, 1)
     val size = hsv.rows() * hsv.cols()
@@ -66,12 +65,97 @@ private fun dropWallFringe(hsv: Mat, mask: Mat, mats: Mats): Mat {
     Core.bitwise_not(walls, notWalls)
     val nearPaint = mats.mat()
     Core.bitwise_and(mask, notWalls, nearPaint)
-    Imgproc.dilate(nearPaint, nearPaint, mats.kernel(PAINT_REACH, shape = Imgproc.MORPH_ELLIPSE))
-    Core.bitwise_and(walls, nearPaint, walls)
-    Core.bitwise_not(walls, walls)
-    Core.bitwise_and(mask, walls, mask)
+    // Only route colour that lies on a wall can go, so paint's reach is only looked up there.
+    val onWall = mats.mat()
+    Core.bitwise_and(mask, walls, onWall)
+    val kernel = mats.kernel(PAINT_REACH, shape = Imgproc.MORPH_ELLIPSE)
+    val fringe = ByteArray(size).also { onWall.get(0, 0, it) }
+    val paint = ByteArray(size).also { nearPaint.get(0, 0, it) }
+    if (keepWhereReached(fringe, paint, hsv.cols(), kernel)) {
+        val solid = ByteArray(size).also { mask.get(0, 0, it) }
+        for (i in 0 until size) if (fringe[i] != 0.toByte()) solid[i] = 0
+        mask.put(0, 0, solid)
+    } else {
+        Imgproc.dilate(nearPaint, nearPaint, kernel)
+        Core.bitwise_and(walls, nearPaint, walls)
+        Core.bitwise_not(walls, walls)
+        Core.bitwise_and(mask, walls, mask)
+    }
     return notWalls
 }
+
+/**
+ * Clears every pixel of [targets] that [source] dilated by [kernel] does not reach: the same
+ * as `targets AND dilate(source, kernel)`, but worked out only at the target pixels, each a
+ * few row lookups, where the dilation costs the kernel's height at every pixel of the image
+ * (0.3 s for the 61 px disc on a poster, Pixel 7a, Nov 14). Like OpenCV's dilate, nothing
+ * outside the image counts. Returns false, with [targets] untouched, when that would not be
+ * cheaper or the kernel's rows are not single runs; the caller then dilates.
+ */
+internal fun keepWhereReached(
+    targets: ByteArray,
+    source: ByteArray,
+    width: Int,
+    kernel: Mat,
+): Boolean {
+    val height = source.size / width
+    val rows = kernel.rows()
+    val cols = kernel.cols()
+    val shape = ByteArray(rows * cols).also { kernel.get(0, 0, it) }
+    // Each kernel row as the run of columns it covers, relative to the centre.
+    val first = IntArray(rows)
+    val last = IntArray(rows)
+    for (r in 0 until rows) {
+        var from = -1
+        var to = -1
+        var count = 0
+        for (c in 0 until cols) {
+            if (shape[r * cols + c] == 0.toByte()) continue
+            if (from < 0) from = c
+            to = c
+            count++
+        }
+        if (count != 0 && count != to - from + 1) return false
+        first[r] = from - cols / 2
+        last[r] = if (count == 0) first[r] - 1 else to - cols / 2
+    }
+    var wanted = 0
+    for (t in targets) if (t != 0.toByte()) wanted++
+    if (wanted > targets.size / SPARSE_SHARE) return false
+    // Source pixels before each column of each row, so a run's count is one subtraction.
+    val stride = width + 1
+    val before = IntArray(height * stride)
+    for (y in 0 until height) {
+        var sum = 0
+        val at = y * stride
+        for (x in 0 until width) {
+            if (source[y * width + x] != 0.toByte()) sum++
+            before[at + x + 1] = sum
+        }
+    }
+    for (y in 0 until height) {
+        for (x in 0 until width) {
+            val i = y * width + x
+            if (targets[i] == 0.toByte()) continue
+            var reached = false
+            for (r in 0 until rows) {
+                val sy = y + r - rows / 2
+                if (sy !in 0 until height) continue
+                val from = maxOf(x + first[r], 0)
+                val to = minOf(x + last[r], width - 1)
+                if (from <= to && before[sy * stride + to + 1] - before[sy * stride + from] > 0) {
+                    reached = true
+                    break
+                }
+            }
+            if (!reached) targets[i] = 0
+        }
+    }
+    return true
+}
+
+/** [keepWhereReached] is only worth it when fewer than one pixel in this many is a target. */
+private const val SPARSE_SHARE = 8
 
 /**
  * Faint paint reads under the solid cutoff in stretches. It never counts beside a wall, where it
@@ -100,6 +184,24 @@ private fun addFaintPaint(hsv: Mat, mask: Mat, notWalls: Mat, mats: Mats) {
     mask.put(0, 0, solid)
 }
 
+/** Window of the median that gives each pixel its surrounding paper's brightness. */
+internal const val LOCAL_VALUE = 31
+
+/**
+ * Planes of the straightened poster that more than one stage reads, each worked out once: the
+ * route mask and the wall finder both compare brightness with the same 31 px median of it.
+ * Read-only; a stage that changes a plane copies it first.
+ */
+internal class PosterPlanes(val hsv: Mat, mats: Mats) {
+    val localValue: Mat = mats.mat()
+
+    init {
+        val value = mats.mat()
+        Core.extractChannel(hsv, value, 2)
+        Imgproc.medianBlur(value, localValue, LOCAL_VALUE)
+    }
+}
+
 private const val FAINT_S = 45
 private const val FAINT_RUN = 31
 private const val FAINT_LINK = 15
@@ -124,9 +226,8 @@ private const val PAINT_REACH = 61
  * Share of route colour inside filled patches. Paint is thin lines. A camera can push pink room
  * fills into the route colour, and those fill most of the area around them.
  */
-internal fun inFills(bgr: Mat, routes: Mat, mats: Mats): Double {
-    val hsv = mats.mat()
-    Imgproc.cvtColor(bgr, hsv, Imgproc.COLOR_BGR2HSV)
+internal fun inFills(bgr: Mat, routes: Mat, mats: Mats, planes: PosterPlanes? = null): Double {
+    val hsv = planes?.hsv ?: mats.mat().also { Imgproc.cvtColor(bgr, it, Imgproc.COLOR_BGR2HSV) }
     val reddish = mats.mat()
     redHue(hsv, FILL_S + 1.0, reddish, mats, wrapHue = 161.0)
     val cover = mats.mat()
@@ -156,6 +257,7 @@ internal fun recoverMarkerCorridor(
     graph: FloorGraph,
     stars: List<PixelPoint>,
     bgr: Mat? = null,
+    planes: PosterPlanes? = null,
 ): FloorGraph = Mats().use { mats ->
     val star = stars.singleOrNull() ?: return graph
     if ((graph.nearestEdge(star)?.distancePx ?: Double.POSITIVE_INFINITY) <= 40.0) return graph
@@ -169,7 +271,7 @@ internal fun recoverMarkerCorridor(
     val repaired = mats.own(routes.clone())
     val destination = mats.own(repaired.submat(top, bottom, left, right))
     Core.bitwise_or(destination, faint, destination)
-    val candidate = PosterCorridors().extract(repaired, stars, bgr)
+    val candidate = PosterCorridors().extract(repaired, stars, bgr, planes)
     val distance = candidate.nearestEdge(star)?.distancePx ?: Double.POSITIVE_INFINITY
     if (distance <= 25.0 &&
         candidate.copy(startNodeId = candidate.nodes.keys.first()).validate().isEmpty()
@@ -224,21 +326,57 @@ internal class PosterCorridors {
         routes: Mat,
         stars: List<PixelPoint> = emptyList(),
         bgr: Mat? = null,
+        planes: PosterPlanes? = null,
     ): FloorGraph = Mats().use { mats ->
         val timer = StageTimer()
-        var mask = corridorMask(routes, mats)
-        timer.mark("corridor mask")
-        traced(mask, stars, params.spurLength, params.mergeRadius, mats)
+        // Neither needs the trace, so both are worked out beside it: how much of the route
+        // colour is room fill, and where the poster's paper ends.
+        val fills = bgr?.let {
+            Background {
+                Mats().use { own ->
+                    inFills(
+                        it,
+                        routes,
+                        own,
+                        planes
+                    )
+                }
+            }
+        }
+        val edge = bgr?.let { Background { offPaperMask(it, planes?.hsv) } }
+        var mask = try {
+            corridorMask(routes, mats).also {
+                timer.mark("corridor mask")
+                traced(it, stars, params.spurLength, params.mergeRadius, mats)
+            }
+        } catch (failure: Throwable) {
+            fills?.stop()
+            edge?.stop()
+            throw failure
+        }
         var corridorWidth = 0.0
-        if (bgr != null) {
+        if (bgr != null && fills != null && edge != null) {
             val lengths = networks(nodes, paths).second.values
             val total = lengths.sum()
+            val fillShare = try {
+                fills.await()
+            } catch (failure: Throwable) {
+                edge.stop()
+                throw failure
+            }
             val painted = total >= params.minRouteLength &&
                 (lengths.maxOrNull() ?: 0.0) >= params.paintShare * total &&
-                inFills(bgr, routes, mats) < params.fillShare
+                fillShare < params.fillShare
             timer.mark("painted check")
-            val space =
-                freeSpace(bgr, if (painted) mask else null, if (painted) routes else null, mats)
+            val outside = mats.own(edge.await())
+            val space = freeSpace(
+                bgr,
+                if (painted) mask else null,
+                if (painted) routes else null,
+                mats,
+                planes,
+                outside,
+            )
             timer.mark("free space")
             corridorWidth = space.width.toDouble()
             if (!painted) {
