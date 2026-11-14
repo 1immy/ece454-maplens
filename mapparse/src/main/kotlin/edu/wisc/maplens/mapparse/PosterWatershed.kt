@@ -352,6 +352,10 @@ internal fun priorityFlood(seeds: IntArray, relief: ByteArray, width: Int, heigh
         val c = neighbours(i)
         for (t in 0 until c) queue(near[t], 0)
     }
+    if (framed) {
+        floodFramed(label, relief, queued, buckets, width)
+        return label
+    }
     for (lv in 0 until WALL) {
         val bucket = buckets[lv]
         var k = 0
@@ -377,6 +381,70 @@ internal fun priorityFlood(seeds: IntArray, relief: ByteArray, width: Int, heigh
         bucket.clear()
     }
     return label
+}
+
+/**
+ * The flood of [priorityFlood] once the seeds' neighbours are queued, for an image whose whole
+ * border is seeded: no queued pixel is then on the border, so the four neighbours are read
+ * straight from the arrays. The same pixels in the same order as the general loop, without
+ * its calls per pixel; it is the parser's case, and a third of a second of every parse.
+ */
+private fun floodFramed(
+    label: IntArray,
+    relief: ByteArray,
+    queued: BooleanArray,
+    buckets: Array<IntArrayList>,
+    width: Int,
+) {
+    for (lv in 0 until WALL) {
+        val bucket = buckets[lv]
+        var k = 0
+        while (k < bucket.size) {
+            val i = bucket[k++]
+            val left = i - 1
+            val right = i + 1
+            val up = i - width
+            val down = i + width
+            var found = 0
+            var clash = false
+            var l = label[left]
+            if (l > 0) found = l
+            l = label[right]
+            if (l > 0) {
+                if (found == 0) found = l else if (found != l) clash = true
+            }
+            l = label[up]
+            if (l > 0) {
+                if (found == 0) found = l else if (found != l) clash = true
+            }
+            l = label[down]
+            if (l > 0) {
+                if (found == 0) found = l else if (found != l) clash = true
+            }
+            if (clash) {
+                label[i] = -1
+                continue
+            }
+            if (found == 0) continue
+            label[i] = found
+            var j = left
+            for (t in 0 until 4) {
+                if (!queued[j] && label[j] == 0) {
+                    val r = relief[j].toInt() and 0xFF
+                    if (r < WALL) {
+                        queued[j] = true
+                        buckets[if (r > lv) r else lv].add(j)
+                    }
+                }
+                j = when (t) {
+                    0 -> right
+                    1 -> up
+                    else -> down
+                }
+            }
+        }
+        bucket.clear()
+    }
 }
 
 /** Relief of a wall pixel. */

@@ -30,6 +30,98 @@ class PriorityFloodTest {
         assertTrue(neck.contains(2) || neck.contains(-1))
     }
 
+    /**
+     * The parser seeds the whole border, which takes the flood's fast loop. It must label
+     * every pixel as the general loop does: here the general loop is kept as written before
+     * the fast one existed, and both run on random reliefs with walls, seeds and a border.
+     */
+    @Test
+    fun `a framed image floods exactly as the general loop does`() {
+        val random = java.util.Random(454)
+        var meetings = 0
+        repeat(200) {
+            val w = 8 + random.nextInt(40)
+            val h = 8 + random.nextInt(40)
+            val levels = intArrayOf(4, 4, 60, 120, 200, 254, 255)
+            val relief = ByteArray(w * h) { levels[random.nextInt(levels.size)].toByte() }
+            val seeds = IntArray(w * h)
+            for (x in 0 until w) {
+                seeds[x] = 1
+                seeds[(h - 1) * w + x] = 1
+            }
+            for (y in 0 until h) {
+                seeds[y * w] = 1
+                seeds[y * w + w - 1] = 1
+            }
+            repeat(1 + random.nextInt(6)) { k ->
+                seeds[(1 + random.nextInt(h - 2)) * w + 1 + random.nextInt(w - 2)] = 2 + k
+            }
+            val expected = referenceFlood(seeds, relief, w, h)
+            val flooded = priorityFlood(seeds, relief, w, h)
+            assertTrue(expected.contentEquals(flooded), "poster $it, $w x $h")
+            meetings += flooded.count { it == -1 }
+        }
+        assertTrue(meetings > 200, "regions met at only $meetings pixels")
+    }
+
+    /** [priorityFlood]'s general loop, as it was when it was the only one. */
+    private fun referenceFlood(
+        seeds: IntArray,
+        relief: ByteArray,
+        width: Int,
+        height: Int
+    ): IntArray {
+        val n = seeds.size
+        val label = seeds.copyOf()
+        val queued = BooleanArray(n)
+        val buckets = Array(255) { mutableListOf<Int>() }
+
+        fun neighbours(i: Int): List<Int> {
+            val x = i % width
+            return buildList {
+                if (x > 0) add(i - 1)
+                if (x < width - 1) add(i + 1)
+                if (i >= width) add(i - width)
+                if (i < n - width) add(i + width)
+            }
+        }
+
+        fun queue(j: Int, level: Int) {
+            val r = relief[j].toInt() and 0xFF
+            if (r >= 255 || queued[j] || label[j] != 0) return
+            queued[j] = true
+            buckets[maxOf(r, level)].add(j)
+        }
+        for (i in 0 until n) {
+            if (label[i] > 0) neighbours(i).forEach { queue(it, 0) }
+        }
+        for (lv in 0 until 255) {
+            val bucket = buckets[lv]
+            var k = 0
+            while (k < bucket.size) {
+                val i = bucket[k++]
+                val near = neighbours(i)
+                var found = 0
+                var clash = false
+                for (j in near) {
+                    val l = label[j]
+                    if (l > 0) {
+                        if (found == 0) found = l else if (found != l) clash = true
+                    }
+                }
+                if (clash) {
+                    label[i] = -1
+                    continue
+                }
+                if (found == 0) continue
+                label[i] = found
+                near.forEach { queue(it, lv) }
+            }
+        }
+        check(height * width == n)
+        return label
+    }
+
     @Test
     fun `walls are never flooded, so a region does not leak through them`() {
         val w = 20
