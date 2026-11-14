@@ -1,5 +1,6 @@
 package edu.wisc.maplens
 
+import edu.wisc.maplens.mapparse.DoorIds
 import edu.wisc.maplens.mapparse.ParseResult
 import edu.wisc.maplens.mapparse.RoomPreview
 import edu.wisc.maplens.model.FloorGraph
@@ -125,7 +126,9 @@ internal fun reviewRooms(result: ParseResult): List<ReviewRoom> {
     val graph = result.graph
     val shared = graph.landmarks.groupingBy { it.nodeId }.eachCount()
     return result.rooms.map { room ->
-        val own = room.entranceNodeId in graph.nodes && shared[room.entranceNodeId] == 1
+        // A door the fallback search placed is a guess: the review asks for a look.
+        val own = room.entranceNodeId in graph.nodes && shared[room.entranceNodeId] == 1 &&
+            room.entranceNodeId?.let(DoorIds::needsReview) != true
         ReviewRoom(room, roomCheck(room.confidence, room.possible, own))
     }.sortedWith(compareBy({ it.check }, { it.preview.label }))
 }

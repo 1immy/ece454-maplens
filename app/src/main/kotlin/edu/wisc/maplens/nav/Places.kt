@@ -1,5 +1,6 @@
 package edu.wisc.maplens.nav
 
+import edu.wisc.maplens.mapparse.DoorIds
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
@@ -22,13 +23,25 @@ data class Place(
     val nodeIds: List<String>,
     /** Where the pin goes: the room's first door, or the feature node. */
     val position: PixelPoint,
+    /**
+     * The parser found no clear doorway, only the corridor beside the room: arriving there
+     * means "near the room, check the door sign".
+     */
+    val approximate: Boolean = false,
 )
 
 /** Every room with a door on the graph, then each exit, elevator and AED node. */
 fun FloorGraph.places(): List<Place> {
     val rooms = roomDestinations().map { label ->
         val doors = nodesForLabel(label)
-        Place("room:$label", PlaceKind.ROOM, label, doors, nodes.getValue(doors.first()).position)
+        Place(
+            "room:$label",
+            PlaceKind.ROOM,
+            label,
+            doors,
+            nodes.getValue(doors.first()).position,
+            approximate = doors.all(DoorIds::isApproximate),
+        )
     }
     val features = nodes.values
         .mapNotNull { node ->

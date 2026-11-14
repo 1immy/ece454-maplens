@@ -79,6 +79,19 @@ internal fun FloorGraph.straightenedAround(
     return copy(nodes = newNodes, edges = newEdges)
 }
 
+/**
+ * Takes the skeleton's bumps out of the corridors before rooms and features attach. Thinning
+ * bends the centre line toward a side opening or a stair lobby for a few tens of pixels and
+ * back (EH3 by 3425: 16 px up toward the stair exit over 80 px, then down again; by n28 9 px
+ * toward the east branch), and exits and doors attached there sat on the bump, so a route
+ * along a straight corridor zig-zagged. A bump under [tolerancePx] is about a third of a
+ * corridor's width; real corners are far larger.
+ */
+internal fun FloorGraph.withoutBumps(tolerancePx: Double = BUMP_PX): FloorGraph =
+    simplifiedEdges(tolerancePx)
+
+internal const val BUMP_PX = 18.0
+
 private fun FloorGraph.edgePoints(edgeId: String): List<PixelPoint> {
     val edge = edges.first { it.id == edgeId }
     return edge.polyline.ifEmpty {

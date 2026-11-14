@@ -40,6 +40,32 @@ class PosterStraightenTest {
         ),
     )
 
+    /** EH3 by 3425: the y = 1214 hall bumps 16 px up toward the stair exit and back. */
+    @Test
+    fun `a bump in a straight corridor is flattened, a corner is kept`() {
+        val a = Node("A", p(1428.0, 1207.0), NodeType.JUNCTION)
+        val b = Node("B", p(924.0, 1214.0), NodeType.JUNCTION)
+        val c = Node("C", p(924.0, 600.0), NodeType.DEAD_END)
+        val g = graph(
+            listOf(a, b, c),
+            listOf(
+                edge(
+                    "hall",
+                    a,
+                    b,
+                    p(1366.0, 1219.0),
+                    p(1074.0, 1214.0),
+                    p(1015.0, 1198.0),
+                    p(990.0, 1213.0)
+                ),
+                edge("corner", a, c, p(1428.0, 600.0)),
+            ),
+        ).withoutBumps()
+        assertEquals(listOf(a.position, b.position), g.edges.single { it.id == "hall" }.polyline)
+        assertEquals(3, g.edges.single { it.id == "corner" }.polyline.size)
+        assertTrue(g.validate().isEmpty())
+    }
+
     @Test
     fun `the bend into the star is pulled onto the corridor line`() {
         val g = scanned.straightenedAround(star)

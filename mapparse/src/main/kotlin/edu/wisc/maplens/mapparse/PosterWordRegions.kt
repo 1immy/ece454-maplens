@@ -56,3 +56,22 @@ internal fun darkInk(bgr: Mat, mats: Mats): Mat {
     )
     return dark
 }
+
+/**
+ * Real ink on the poster for the door finder: a doorway with ink across it is a symbol (a
+ * column ring, text, an arrow), not a door. Hatching dots that fill corridors are dropped.
+ */
+internal fun doorInk(bgr: Mat): ByteArray = Mats().use { mats ->
+    val dark = darkInk(bgr, mats)
+    val labels = mats.mat()
+    val stats = mats.mat()
+    val count = Imgproc.connectedComponentsWithStats(dark, labels, stats, mats.mat(), 8)
+    val small = BooleanArray(count) { i ->
+        i > 0 && stats.get(i, Imgproc.CC_STAT_AREA)[0] < SPECK_PX
+    }
+    val ids = IntArray(dark.cols() * dark.rows()).also { labels.get(0, 0, it) }
+    ByteArray(ids.size) { if (ids[it] != 0 && !small[ids[it]]) -1 else 0 }
+}
+
+/** Ink blobs smaller than this are hatching dots or noise, not marks across a doorway. */
+private const val SPECK_PX = 15

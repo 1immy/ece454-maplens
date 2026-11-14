@@ -113,7 +113,7 @@ class OfflineMapParser(
             timer.mark("extract")
             recoverMarkerCorridor(hsv, routes, extracted, stars, flat).let { traced ->
                 // The trace bends into the gold star: straighten it there before rooms attach.
-                stars.singleOrNull()?.let(traced::straightenedAround) ?: traced
+                (stars.singleOrNull()?.let(traced::straightenedAround) ?: traced).withoutBumps()
             }.also {
                 if (it.edges.sumOf { edge -> edge.lengthPx } < MIN_CORRIDOR_LENGTH) {
                     throw PosterRetakeException(
@@ -146,8 +146,9 @@ class OfflineMapParser(
             RoomAttachments(corridors, emptyList())
         } else {
             val walls = wallMask(flat, routes, readings)
+            val ink = doorInk(flat)
             timer.mark("wall mask")
-            corridors.attachRooms(rooms, walls, flat.cols(), warnings)
+            corridors.attachRooms(rooms, walls, flat.cols(), warnings, ink)
         }
         timer.mark("attach rooms")
         val features = exitSigns(readings) + elevatorIcons(hsv) + aedIcons(hsv)

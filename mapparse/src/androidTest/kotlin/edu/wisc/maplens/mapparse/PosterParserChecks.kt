@@ -927,6 +927,12 @@ class PosterParserChecks : Instrumentation() {
                 File(output, "probe.warnings.json").writeText(
                     JSONArray(parsed.warnings).toString(2),
                 )
+                ParseDebug.regions?.let { r ->
+                    val buf = java.nio.ByteBuffer.allocate(r.size * 4)
+                    buf.asIntBuffer().put(r)
+                    File(output, "probe.regions.bin").writeBytes(buf.array())
+                }
+                ParseDebug.relief?.let { File(output, "probe.relief.bin").writeBytes(it) }
             }
             result.putString("stream", "Probe written to ${output.absolutePath}")
             finish(Activity.RESULT_OK, result)

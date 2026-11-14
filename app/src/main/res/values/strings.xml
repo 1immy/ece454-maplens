@@ -77,6 +77,9 @@
   <string name="in_turn_around">Turn around</string>
   <string name="in_destination_ahead">Destination ahead</string>
   <string name="in_arrived">You\'ve arrived</string>
+  <string name="in_arrived_near">You\'re near the room</string>
+  <string name="in_arrived_near_detail">The map shows no clear doorway here. Check the door sign to find the entrance.</string>
+  <string name="in_room_approximate">%1$s · approximate entrance</string>
   <plurals name="in_banner_detail">
     <item quantity="one">%1$s · %2$d step</item>
     <item quantity="other">%1$s · %2$d steps</item>
