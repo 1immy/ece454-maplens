@@ -382,6 +382,9 @@ class IndoorNavActivity : ComponentActivity() {
             runOnUiThread {
                 finder.labels = boxes
                 labelBoxes = boxes.associateBy { it.label }
+                // A room picked before the numbers were read: move its pin onto its number.
+                val picked = place?.label?.let { labelBoxes[it] }
+                if (screen == Screen.PLACE && picked != null) map.pin = picked.center
             }
         }
         return g to image
@@ -639,13 +642,17 @@ class IndoorNavActivity : ComponentActivity() {
 
     // ---- Place ----
 
-    /** Selects [p]: pin on its printed number (or door) and its card. */
-    private fun openPlace(p: Place, moveCamera: Boolean = true) {
+    /**
+     * Selects [p]: pin on its printed number and its card. Until the numbers are read (a few
+     * seconds after a map opens) the pin goes where the user tapped ([tap]), else on the door,
+     * and moves onto the number once it is read.
+     */
+    private fun openPlace(p: Place, moveCamera: Boolean = true, tap: PixelPoint? = null) {
         stopNavigation(toBrowse = false)
         place = p
         map.choicePins = emptyList()
         val box = p.label?.let { labelBoxes[it] }
-        val at = box?.center ?: p.position
+        val at = box?.center ?: tap ?: p.position
         map.route = emptyList()
         clearRoomTint()
         map.pin = at
@@ -723,7 +730,7 @@ class IndoorNavActivity : ComponentActivity() {
         val hit = finder.roomAt(tap, map.mapDistance(dpf(TAP_DOOR_DP)))
         val target = hit?.let { h -> places.firstOrNull { it.label == h.label } }
         when {
-            target != null -> openPlace(target, moveCamera = false)
+            target != null -> openPlace(target, moveCamera = false, tap = tap)
             hit != null -> openUnmapped(hit.label)
             screen == Screen.PLACE -> clearPlace(moveCamera = false)
         }
@@ -764,7 +771,13 @@ class IndoorNavActivity : ComponentActivity() {
         val g = graph ?: return false
         val next = NavigationSession(router)
         next.onMapCaptured(g)
-        next.onGraphVerified(g)
+        // A map that fails the checks gets a message, never a crash.
+        val verified = runCatching { next.onGraphVerified(g) }
+        if (verified.isFailure) {
+            android.util.Log.e(PERF_TAG, "map failed its checks", verified.exceptionOrNull())
+            showSnack(getString(R.string.no_route, placeTitle(p)))
+            return false
+        }
         val ok = if (p.label != null) {
             next.onCalibratedToRoom(Demo.STEP_LENGTH_PX, p.label)
         } else {
@@ -1862,13 +1875,22 @@ class IndoorNavActivity : ComponentActivity() {
                 )
                 addView(
                     text(Ui.TITLE, bold = true).apply {
-                        setText(R.string.in_arrived)
+                        // An approximate end is beside the room, not at its door.
+                        val near = p?.approximate == true
+                        setText(if (near) R.string.in_arrived_near else R.string.in_arrived)
                         markHeading()
                     },
                     LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(12) },
                 )
             },
             text(Ui.HEADING).apply { text = p?.let { placeTitle(it) } }.withMargins(top = 8),
+            *listOfNotNull(
+                p?.takeIf { it.approximate }?.let {
+                    text(Ui.BODY, Ui.INK_SECONDARY).apply {
+                        setText(R.string.in_arrived_near_detail)
+                    }.withMargins(top = 4)
+                },
+            ).toTypedArray(),
             text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
                 text = resources
                     .getQuantityString(R.plurals.in_arrived_detail, steps, steps, elapsed)
@@ -2655,7 +2677,13 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun placeKind(p: Place): String {
-        if (p.kind == PlaceKind.ROOM) return roomKind()
+        if (p.kind == PlaceKind.ROOM) {
+            return if (p.approximate) {
+                getString(R.string.in_room_approximate, roomKind())
+            } else {
+                roomKind()
+            }
+        }
         val near = graph?.nearestRoomLabel(p.position)
         val base = mapName ?: getString(R.string.in_feature_kind)
         return if (near == null) base else getString(R.string.in_near_room, base, near)
