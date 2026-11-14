@@ -97,9 +97,12 @@ class OfflineMapParser(
     internal fun parseRectified(rectified: Bitmap, flat: Mat): ParseResult = try {
         parseFlat(rectified, flat)
     } finally {
-        val timer = StageTimer()
-        Recognizers.release()
-        timer.mark("release recognizers")
+        // A warm-up keeps the networks for the next photo and frees them when the screen closes.
+        if (!Recognizers.kept) {
+            val timer = StageTimer()
+            Recognizers.release()
+            timer.mark("release recognizers")
+        }
     }
 
     private fun parseFlat(rectified: Bitmap, flat: Mat): ParseResult = Mats().use { mats ->

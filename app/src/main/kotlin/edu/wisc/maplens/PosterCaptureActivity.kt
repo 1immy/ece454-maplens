@@ -50,6 +50,7 @@ import edu.wisc.maplens.mapparse.ParseProgress
 import edu.wisc.maplens.mapparse.ParseResult
 import edu.wisc.maplens.mapparse.ParseStage
 import edu.wisc.maplens.mapparse.PosterRetakeException
+import edu.wisc.maplens.mapparse.PosterWarmup
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.routing.AStarRouter
@@ -229,6 +230,7 @@ class PosterCaptureActivity : ComponentActivity() {
             contentDescription = getString(R.string.poster_fast_description)
             setOnCheckedChangeListener { _, checked ->
                 fastMode = checked
+                if (checked && review == null) PosterWarmup.start() else PosterWarmup.release()
                 Toast.makeText(
                     context,
                     if (checked) R.string.poster_fast_on else R.string.poster_fast_off,
@@ -290,6 +292,7 @@ class PosterCaptureActivity : ComponentActivity() {
     override fun onDestroy() {
         invalidateCapture()
         stopCamera()
+        PosterWarmup.release()
         worker.shutdown()
         super.onDestroy()
     }
@@ -317,6 +320,8 @@ class PosterCaptureActivity : ComponentActivity() {
         photoView.visibility = View.GONE
         photoView.setImageDrawable(null)
         cameraView.visibility = View.VISIBLE
+        // Load the Fast parser's models while the poster is being framed.
+        if (fastMode) PosterWarmup.start()
         val pending = ProcessCameraProvider.getInstance(this)
         pending.addListener({
             if (isDestroyed || isFinishing || review != null) return@addListener
@@ -591,6 +596,7 @@ class PosterCaptureActivity : ComponentActivity() {
         review = result
         busy = false
         fastSwitch.isEnabled = true
+        PosterWarmup.release()
         stopCamera()
         cameraView.visibility = View.GONE
         photoView.visibility = View.GONE

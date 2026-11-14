@@ -228,6 +228,17 @@ internal object PosterMlKit {
         }
     }
 
+    /** Loads ML Kit's model by reading a blank image, so a parse's first read doesn't. */
+    fun warm() {
+        val blank = Bitmap.createBitmap(WARM_SIDE, WARM_SIDE, Bitmap.Config.ARGB_8888)
+        try {
+            blank.eraseColor(android.graphics.Color.WHITE)
+            read(blank)
+        } finally {
+            blank.recycle()
+        }
+    }
+
     fun read(poster: Bitmap): List<PosterReading> {
         checkCancellation()
         val text = Tasks.await(recognizer.process(InputImage.fromBitmap(poster, 0)))
@@ -326,6 +337,9 @@ internal object PosterMlKit {
     private fun Float.orSure(): Float = if (this > 0f) this else DEFAULT_CONFIDENCE
 
     private const val DEFAULT_CONFIDENCE = 0.95f
+
+    /** Side of the blank image [warm] reads. */
+    private const val WARM_SIDE = 64
 
     /** Neighbour check: digits shared, how near, how many looked at, how many must match. */
     private const val RUN_DIGITS = 3

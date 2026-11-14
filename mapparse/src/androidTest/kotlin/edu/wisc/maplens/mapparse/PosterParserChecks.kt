@@ -46,12 +46,22 @@ class PosterParserChecks : Instrumentation() {
     /** `-e threads N`: OpenCV worker threads for a probe run, to time the parse with each. */
     private var threads: Int? = null
 
+    /** `-e warm true`: a probe parses after [PosterWarmup], as it does behind the camera. */
+    private var warm = false
+
+    private fun warmUp() {
+        if (!warm) return
+        PosterWarmup.start()
+        PosterWarmup.await()
+    }
+
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         probe = arguments?.getString("probe")
         photo = arguments?.getString("photo")
         compare = arguments?.getString("compare")
         threads = arguments?.getString("threads")?.toIntOrNull()
+        warm = arguments?.getString("warm") == "true"
         start()
     }
 
@@ -876,7 +886,9 @@ class PosterParserChecks : Instrumentation() {
                 (raw.height * scale).toInt(),
                 true,
             )
+            warmUp()
             val parsed = OfflineMapParser().parse(bitmap)
+            PosterWarmup.release()
             writeGraph("probe", parsed.graph)
             writeProbeReadings()
             File(output, "probe.warnings.json").writeText(JSONArray(parsed.warnings).toString(2))
@@ -945,7 +957,9 @@ class PosterParserChecks : Instrumentation() {
             Mats().use { mats ->
                 val bgr = bitmapBgr(bitmap, mats)
                 threads?.let(org.opencv.core.Core::setNumThreads)
+                warmUp()
                 val parsed = OfflineMapParser().parseRectified(bitmap, bgr)
+                PosterWarmup.release()
                 writeGraph("probe", parsed.graph)
                 writeProbeReadings()
                 File(output, "probe.warnings.json").writeText(

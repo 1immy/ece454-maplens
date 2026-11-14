@@ -194,16 +194,20 @@ internal fun recheckEach(bgr: Mat, regions: List<Rect>): List<List<PosterReading
 
 /**
  * Recognizers loaded during one parse, lent out by [recheckEach] and kept until [release], so
- * a later pass (the cut-number reread) doesn't load the 21 MB network again.
+ * a later pass (the cut-number reread) doesn't load the 21 MB network again. [PosterWarmup]
+ * loads them ahead of the parse and keeps them across parses while the capture screen is open.
  */
 internal object Recognizers {
-    private val idle = java.util.concurrent.ConcurrentLinkedQueue<PosterOcr>()
+    private val idle = java.util.concurrent.LinkedBlockingQueue<PosterOcr>()
+
+    /** Recognizers a warm-up is still loading. */
+    private val warming = java.util.concurrent.atomic.AtomicInteger()
+
+    /** True while [PosterWarmup] owns the networks: a parse then leaves them loaded. */
+    @Volatile var kept = false
 
     fun <T> use(block: (PosterOcr) -> T): T {
-        val ocr = idle.poll() ?: run {
-            val timer = StageTimer()
-            PosterOcr {}.also { timer.mark("load recognizer") }
-        }
+        val ocr = take()
         try {
             return block(ocr)
         } finally {
@@ -211,12 +215,83 @@ internal object Recognizers {
         }
     }
 
-    /** Frees the networks at the end of a parse: holding them through navigation costs more. */
+    /** An idle recognizer, one the warm-up is about to deliver, or else a new one. */
+    private fun take(): PosterOcr {
+        while (true) {
+            idle.poll()?.let { return it }
+            if (warming.get() == 0) break
+            try {
+                idle.poll(WARM_POLL_MS, java.util.concurrent.TimeUnit.MILLISECONDS)?.let {
+                    return it
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                checkCancellation()
+            }
+        }
+        return idle.poll() ?: loaded()
+    }
+
+    private fun loaded(): PosterOcr {
+        val timer = StageTimer()
+        return PosterOcr {}.also { timer.mark("load recognizer") }
+    }
+
+    /** Loads the recognizers a parse runs side by side and runs each once, ahead of a parse. */
+    fun warm() {
+        warming.set(RECHECK_THREADS)
+        try {
+            repeat(RECHECK_THREADS) {
+                checkCancellation()
+                if (!kept) return
+                val ocr = loaded()
+                ocr.warm()
+                idle.add(ocr)
+                warming.decrementAndGet()
+            }
+        } finally {
+            warming.set(0)
+        }
+    }
+
+    /** Frees the networks: holding them through navigation costs more than loading again. */
     fun release() {
         idle.clear()
+        OcrFiles.clear()
         System.gc()
         System.runFinalization()
     }
+
+    private const val WARM_POLL_MS = 20L
+}
+
+/** The recognizer's bundled files, read once for every copy loaded while they are held. */
+private object OcrFiles {
+    private var recognizer: ByteArray? = null
+    private var alphabet: List<String>? = null
+
+    @Synchronized
+    fun recognizer(): ByteArray = recognizer ?: resource("rec.onnx").use { it.readBytes() }
+        .also {
+            requireOcrModel(it)
+            recognizer = it
+        }
+
+    @Synchronized
+    fun alphabet(): List<String> = alphabet
+        ?: (listOf("") + resource("characters.txt").bufferedReader().use { it.readLines() } + " ")
+            .also { alphabet = it }
+
+    @Synchronized
+    fun clear() {
+        recognizer = null
+        alphabet = null
+    }
+
+    private fun resource(name: String) =
+        checkNotNull(javaClass.getResourceAsStream("/poster-ocr/$name")) {
+            "Bundled poster OCR asset missing: $name"
+        }
 }
 
 /** Recognizer copies run at once by [recheckEach]. */
@@ -232,9 +307,10 @@ internal fun posterTileOrigins(size: Int, span: Int): List<Int> {
 /** Native networks for one read. Reloading costs less than holding them through navigation. */
 internal class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
     private val detector by lazy { network("det.onnx") }
-    private val recognizer = network("rec.onnx")
-    private val alphabet =
-        listOf("") + resource("characters.txt").bufferedReader().use { it.readLines() } + " "
+    private val recognizer = Mats().use { mats ->
+        Dnn.readNetFromONNX(mats.own(MatOfByte(*OcrFiles.recognizer())))
+    }
+    private val alphabet = OcrFiles.alphabet()
 
     private fun resource(name: String) =
         checkNotNull(javaClass.getResourceAsStream("/poster-ocr/$name")) {
@@ -245,6 +321,19 @@ internal class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
         val bytes = resource(name).use { it.readBytes() }
         requireOcrModel(bytes)
         Dnn.readNetFromONNX(mats.own(MatOfByte(*bytes)))
+    }
+
+    /** One read of a blank word, so the network's first, slower pass is not a real one. */
+    fun warm() = Mats().use { mats ->
+        val width = OcrParams.RECOGNIZER_WIDTH.toDouble()
+        val height = OcrParams.RECOGNIZER_HEIGHT.toDouble()
+        val blank = mats.own(
+            Mat(height.toInt(), width.toInt(), CvType.CV_8UC3, Scalar.all(255.0)),
+        )
+        readQuad(
+            blank,
+            arrayOf(Point(), Point(width, 0.0), Point(width, height), Point(0.0, height))
+        )
     }
 
     /** One recognizer read of [quad], for [recheckRegions]. */
