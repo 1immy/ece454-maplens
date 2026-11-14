@@ -94,8 +94,12 @@ class PosterCaptureActivity : ComponentActivity() {
      * kept side by side for comparison. Remembered between scans.
      */
     private val prefs by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
+
+    /** Developer mode: Edit map, Details and the parser switch. User mode: scan and save. */
+    private val developer by lazy { AppMode.isDeveloper(this) }
     private var fastMode: Boolean
-        get() = prefs.getBoolean(PREF_FAST, true)
+        // User mode always reads with the Fast parser; the switch is a developer tool.
+        get() = !developer || prefs.getBoolean(PREF_FAST, true)
         set(value) = prefs.edit().putBoolean(PREF_FAST, value).apply()
     private var camera: ProcessCameraProvider? = null
     private var preview: Preview? = null
@@ -291,7 +295,7 @@ class PosterCaptureActivity : ComponentActivity() {
                 },
                 LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4) },
             )
-            addView(fastSwitch, LinearLayout.LayoutParams(-2, dp(Ui.TOUCH_DP)))
+            if (developer) addView(fastSwitch, LinearLayout.LayoutParams(-2, dp(Ui.TOUCH_DP)))
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -661,7 +665,7 @@ class PosterCaptureActivity : ComponentActivity() {
                 result.getOrNull()?.rectified?.recycle()
                 return@runOnUiThread
             }
-            result.onSuccess(::showReview).onFailure {
+            result.onSuccess { if (developer) showReview(it) else saveForUser(it) }.onFailure {
                 Log.w(TAG, "Poster processing failed", it)
                 val message = (it as? PosterRetakeException)?.message
                 busy = false
@@ -724,6 +728,23 @@ class PosterCaptureActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * User mode: no checking screen. A map that navigation accepts is saved and opened at
+     * once; one it can't use (no START, crossing corridors) sends the user back to retake.
+     */
+    private fun saveForUser(result: ParseResult) {
+        val verified = verifiedOrNull(result.graph)
+        if (verified == null) {
+            result.rectified.recycle()
+            busy = false
+            startCamera(getString(R.string.poster_user_blocked))
+            return
+        }
+        status.setText(R.string.poster_user_saving)
+        cancel.visibility = View.GONE
+        saveAndNavigate(verified, result.rectified)
+    }
+
     private fun showReview(result: ParseResult) {
         session.onMapCaptured(result.graph)
         val graph = checkNotNull(session.graph)
@@ -762,7 +783,7 @@ class PosterCaptureActivity : ComponentActivity() {
         updateMapButton()
         val issues = result.warnings + reviewProblems(graph)
         status.text = reviewSummary(rooms.count { it.check != RoomCheck.CLEAR }, start != null)
-        details.visibility = View.VISIBLE
+        details.visibility = if (developer) View.VISIBLE else View.GONE
         details.text = getString(R.string.poster_review_details, issues.size)
         details.setOnClickListener {
             AlertDialog.Builder(this)
@@ -773,17 +794,17 @@ class PosterCaptureActivity : ComponentActivity() {
         }
         cancel.setText(R.string.poster_retake)
         cancel.visibility = View.VISIBLE
+        // Saving needs a graph NavigationSession accepts: a real START and validate() clean.
+        val verified = verifiedOrNull(result.graph)
+        val toCheck = rooms.count { it.check != RoomCheck.CLEAR }
         action.isEnabled = true
         action.setText(R.string.poster_edit)
         action.setOnClickListener { openEditor(result, graph) }
-        // Saving needs a graph NavigationSession accepts: a real START and validate() clean.
-        val verified = verifiedOrNull(result.graph)
         save.visibility = View.VISIBLE
         save.isEnabled = verified != null
         save.text = getString(
             if (verified != null) R.string.map_save else R.string.map_save_blocked,
         )
-        val toCheck = rooms.count { it.check != RoomCheck.CLEAR }
         save.setOnClickListener { verified?.let { confirmSave(it, result.rectified, toCheck) } }
     }
 
@@ -867,6 +888,10 @@ class PosterCaptureActivity : ComponentActivity() {
                     Log.w(TAG, "Saving the map failed", it)
                     save.isEnabled = true
                     action.isEnabled = true
+                    if (!developer) {
+                        busy = false
+                        startCamera()
+                    }
                     Toast.makeText(
                         this,
                         getString(R.string.map_save_failed, it.message.orEmpty()),

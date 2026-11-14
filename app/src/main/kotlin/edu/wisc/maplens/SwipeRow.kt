@@ -164,9 +164,11 @@ internal class SwipeRow(
         if (!armed) performHapticFeedback(HapticFeedbackConstants.CONFIRM)
         if (action.removes) {
             card.animate().translationX(if (dx > 0) width.toFloat() else -width.toFloat())
-                .setDuration(ANIMATION_MS).withEndAction { action.run() }.start()
+                .setDuration(ANIMATION_MS).setInterpolator(EASE).withLayer()
+                .withEndAction { action.run() }.start()
         } else {
-            card.animate().translationX(0f).setDuration(ANIMATION_MS)
+            card.animate().translationX(0f).setDuration(ANIMATION_MS).setInterpolator(EASE)
+                .withLayer()
                 .withEndAction {
                     back.visibility = View.INVISIBLE
                     action.run()
@@ -183,7 +185,8 @@ internal class SwipeRow(
                 scaleY = 1f
             }
         }
-        card.animate().translationX(0f).setDuration(ANIMATION_MS)
+        card.animate().translationX(0f).setDuration(ANIMATION_MS).setInterpolator(EASE)
+            .withLayer()
             .withEndAction { back.visibility = View.INVISIBLE }.start()
     }
 
@@ -195,6 +198,9 @@ internal class SwipeRow(
         const val ICON_MS = 120L
         const val ARMED_SCALE = 1.3f
         const val ICON_TAG = "swipe-icon"
+
+        /** Material's standard decelerate: starts at the finger's speed, settles softly. */
+        val EASE = android.view.animation.PathInterpolator(0f, 0f, 0.2f, 1f)
 
         // Android 14 has haptics made for crossing a gesture's threshold; before it, a tick.
         val ARM_HAPTIC = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {

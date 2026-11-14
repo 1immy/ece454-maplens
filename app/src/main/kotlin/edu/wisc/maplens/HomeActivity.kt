@@ -10,9 +10,17 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
+import android.transition.ChangeBounds
+import android.transition.Fade
+import android.transition.TransitionManager
+import android.transition.TransitionSet
+import android.transition.TransitionValues
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.ViewGroup
+import android.view.ViewTreeObserver
+import android.view.animation.PathInterpolator
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -22,6 +30,7 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import java.text.DateFormat
@@ -33,7 +42,8 @@ import java.util.concurrent.Executors
  * The app's entry. Scanning a poster is the one primary action, in the thumb zone. Saved maps
  * come first once there are any (pinned ones on top), each with a menu to rename, pin or
  * delete it; the introduction shows only before the first map. An unfinished scan, the bundled
- * EH3 map and the debug tools sit under Developer.
+ * EH3 map and the debug tools sit under Developer, shown only in developer mode (the switch at
+ * the top right, behind a password).
  */
 class HomeActivity : ComponentActivity() {
     /** Maps picked in selection mode (Gmail-style); empty when not selecting. */
@@ -64,7 +74,7 @@ class HomeActivity : ComponentActivity() {
     // Built on resume so a map saved in the capture screen shows when the user comes back.
     override fun onResume() {
         super.onResume()
-        refresh()
+        refresh(animate = false)
     }
 
     override fun onPause() {
@@ -78,18 +88,69 @@ class HomeActivity : ComponentActivity() {
         thumbLoader.shutdownNow()
     }
 
-    /** Rebuilds the screen, keeping the scroll position. */
-    private fun refresh() {
+    /**
+     * Rebuilds the screen, keeping the scroll position. [animate]: cards, headers and bars
+     * glide from where they were (matched by transition name), so a pinned map moves up into
+     * Pinned and the cards under a deleted one close the gap, instead of the list jumping.
+     */
+    private fun refresh(animate: Boolean = true) {
         val y = scroll?.scrollY ?: 0
+        val root = findViewById<ViewGroup>(android.R.id.content)
+        if (animate && root.childCount > 0) {
+            TransitionManager.beginDelayedTransition(root, listTransition())
+        }
         setContentView(buildLayout())
-        scroll?.post { scroll?.scrollTo(0, y) }
+        // Before the first frame, not after it: a posted scroll draws one frame at the top.
+        scroll?.let { view ->
+            view.viewTreeObserver.addOnPreDrawListener(
+                object : ViewTreeObserver.OnPreDrawListener {
+                    override fun onPreDraw(): Boolean {
+                        view.viewTreeObserver.removeOnPreDrawListener(this)
+                        view.scrollTo(0, y)
+                        return true
+                    }
+                },
+            )
+        }
         leaveSelection.isEnabled = selected.isNotEmpty()
+    }
+
+    private fun listTransition() = TransitionSet().apply {
+        ordering = TransitionSet.ORDERING_TOGETHER
+        addTransition(NamedFade(Fade.OUT))
+        addTransition(NamedBounds())
+        addTransition(NamedFade(Fade.IN))
+        duration = LIST_MS
+        interpolator = PathInterpolator(0.2f, 0f, 0f, 1f)
+    }
+
+    /** Moves only named views; the rest of a rebuilt screen is drawn where it was. */
+    private class NamedBounds : ChangeBounds() {
+        override fun captureStartValues(values: TransitionValues) {
+            if (values.view.transitionName != null) super.captureStartValues(values)
+        }
+
+        override fun captureEndValues(values: TransitionValues) {
+            if (values.view.transitionName != null) super.captureEndValues(values)
+        }
+    }
+
+    /** Fades named views in or out, so a card's own text and image don't flicker. */
+    private class NamedFade(mode: Int) : Fade(mode) {
+        override fun captureStartValues(values: TransitionValues) {
+            if (values.view.transitionName != null) super.captureStartValues(values)
+        }
+
+        override fun captureEndValues(values: TransitionValues) {
+            if (values.view.transitionName != null) super.captureEndValues(values)
+        }
     }
 
     private fun buildLayout(): View {
         val saved = MapAssets.savedMaps(this).list().filter { it.id !in pendingDelete }
         selected.retainAll(saved.map { it.id }.toSet())
         val selecting = selected.isNotEmpty()
+        val developer = AppMode.isDeveloper(this)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), dp(if (selecting) 8 else 24), dp(24), dp(24))
@@ -104,7 +165,10 @@ class HomeActivity : ComponentActivity() {
                     spaced(top = 24),
                 )
                 addView(
-                    text(Ui.BODY, Ui.INK_SECONDARY).apply { setText(R.string.home_intro) },
+                    text(Ui.BODY, Ui.INK_SECONDARY).apply {
+                        setText(R.string.home_intro)
+                        transitionName = "intro"
+                    },
                     spaced(top = 12),
                 )
                 addView(offlinePill(), spaced(top = 16, wrap = true))
@@ -113,7 +177,10 @@ class HomeActivity : ComponentActivity() {
                 // Returning: the maps are what people came for.
                 if (!selecting) {
                     addView(
-                        text(Ui.BODY, Ui.INK_SECONDARY).apply { setText(R.string.home_pick_map) },
+                        text(Ui.BODY, Ui.INK_SECONDARY).apply {
+                            setText(R.string.home_pick_map)
+                            transitionName = "pick"
+                        },
                         spaced(top = 16),
                     )
                 }
@@ -142,53 +209,65 @@ class HomeActivity : ComponentActivity() {
                     }
                 }
             }
-            addView(sectionTitle(R.string.home_developer), spaced(top = 32))
-            // A scan left mid-check: picked up from here, not mixed in with finished maps.
-            if (DraftStore.of(this@HomeActivity).exists) {
+            // The team's tools: only in developer mode.
+            if (developer) {
                 addView(
-                    devRow(R.drawable.ic_edit, R.string.home_draft, R.string.home_draft_detail) {
-                        startActivity(Intent(this@HomeActivity, GraphEditorActivity::class.java))
+                    sectionTitle(R.string.home_developer).apply { transitionName = "dev" },
+                    spaced(top = 32),
+                )
+                // A scan left mid-check: picked up from here, not mixed in with finished maps.
+                if (DraftStore.of(this@HomeActivity).exists) {
+                    addView(
+                        devRow(
+                            R.drawable.ic_edit,
+                            R.string.home_draft,
+                            R.string.home_draft_detail
+                        ) {
+                            startActivity(
+                                Intent(this@HomeActivity, GraphEditorActivity::class.java)
+                            )
+                        },
+                        spaced(top = 12),
+                    )
+                }
+                addView(
+                    devRow(
+                        R.drawable.ic_navigation,
+                        R.string.home_dev_nav,
+                        R.string.home_dev_nav_detail
+                    ) {
+                        startActivity(Intent(this@HomeActivity, IndoorNavActivity::class.java))
                     },
                     spaced(top = 12),
                 )
-            }
-            addView(
-                devRow(
-                    R.drawable.ic_navigation,
-                    R.string.home_dev_nav,
-                    R.string.home_dev_nav_detail
-                ) {
-                    startActivity(Intent(this@HomeActivity, IndoorNavActivity::class.java))
-                },
-                spaced(top = 12),
-            )
-            addView(
-                devRow(
-                    R.drawable.ic_robot,
-                    R.string.home_dev_temi,
-                    R.string.home_dev_temi_detail,
-                ) { startActivity(Intent(this@HomeActivity, TemiDevActivity::class.java)) },
-                spaced(top = 8),
-            )
-            debugIntent(FIXTURE_EDITOR)?.let { editor ->
                 addView(
                     devRow(
-                        R.drawable.ic_edit,
-                        R.string.home_dev_edit,
-                        R.string.home_dev_edit_detail,
-                    ) { startActivity(editor) },
+                        R.drawable.ic_robot,
+                        R.string.home_dev_temi,
+                        R.string.home_dev_temi_detail,
+                    ) { startActivity(Intent(this@HomeActivity, TemiDevActivity::class.java)) },
                     spaced(top = 8),
                 )
-            }
-            debugIntent(RECORDER)?.let { recorder ->
-                addView(
-                    devRow(
-                        R.drawable.ic_walk,
-                        R.string.home_dev_recorder,
-                        R.string.home_dev_recorder_detail,
-                    ) { startActivity(recorder) },
-                    spaced(top = 8),
-                )
+                debugIntent(FIXTURE_EDITOR)?.let { editor ->
+                    addView(
+                        devRow(
+                            R.drawable.ic_edit,
+                            R.string.home_dev_edit,
+                            R.string.home_dev_edit_detail,
+                        ) { startActivity(editor) },
+                        spaced(top = 8),
+                    )
+                }
+                debugIntent(RECORDER)?.let { recorder ->
+                    addView(
+                        devRow(
+                            R.drawable.ic_walk,
+                            R.string.home_dev_recorder,
+                            R.string.home_dev_recorder_detail,
+                        ) { startActivity(recorder) },
+                        spaced(top = 8),
+                    )
+                }
             }
         }
         val scroll = ScrollView(this).apply {
@@ -210,6 +289,7 @@ class HomeActivity : ComponentActivity() {
             }
         }
         val bottom = LinearLayout(this).apply {
+            transitionName = "scan"
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Ui.BACKGROUND)
             setPadding(dp(24), dp(12), dp(24), dp(16))
@@ -251,20 +331,103 @@ class HomeActivity : ComponentActivity() {
 
     private fun brand(): View = LinearLayout(this).apply {
         gravity = Gravity.CENTER_VERTICAL
+        transitionName = "brand"
         addView(
             // The launcher icon itself, so the brand mark matches the home-screen icon. The
             // adaptive icon draws through the device's own mask shape.
+            // Also the hidden way into developer mode: five quick taps, as Android's build
+            // number. Users see a plain logo; nothing hints at it until the third tap.
             ImageView(context).apply {
                 setImageResource(R.mipmap.ic_launcher)
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                setOnClickListener { logoTapped() }
             },
             LinearLayout.LayoutParams(dp(40), dp(40)),
         )
         addView(
             text(Ui.HEADING, bold = true).apply { setText(R.string.app_name) },
-            LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(12) },
+            LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) },
         )
+        // Only in developer mode, so it's never forgotten on, and one tap turns it off.
+        if (AppMode.isDeveloper(context)) {
+            addView(modeSwitch(), LinearLayout.LayoutParams(WRAP, dp(Ui.TOUCH_DP)))
+        }
+    }
+
+    private var logoTaps = 0
+    private var lastLogoTapMs = 0L
+    private var tapHint: Toast? = null
+
+    /** Counts quick taps on the logo; the fifth asks for the developer password. */
+    private fun logoTapped() {
+        if (AppMode.isDeveloper(this)) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        logoTaps = if (now - lastLogoTapMs <= LOGO_TAP_GAP_MS) logoTaps + 1 else 1
+        lastLogoTapMs = now
+        tapHint?.cancel()
+        val left = LOGO_TAPS - logoTaps
+        if (left <= 0) {
+            logoTaps = 0
+            askDeveloperPassword {
+                AppMode.setDeveloper(this, true)
+                Toast.makeText(this, R.string.mode_developer_on, Toast.LENGTH_SHORT).show()
+                refresh()
+            }
+        } else if (logoTaps >= 3) {
+            tapHint = Toast.makeText(
+                this,
+                resources.getQuantityString(R.plurals.mode_taps_left, left, left),
+                Toast.LENGTH_SHORT,
+            ).also { it.show() }
+        }
+    }
+
+    /**
+     * Top right in developer mode: a filled accent pill so nobody forgets it is on. Tapping it
+     * goes back to user mode at once. (User mode shows no pill; see [logoTapped].)
+     */
+    private fun modeSwitch(): View = TextView(this).apply {
+        val developer = AppMode.isDeveloper(context)
+        val ink = if (developer) Ui.ON_ACCENT else Ui.INK_SECONDARY
+        setText(if (developer) R.string.mode_developer else R.string.mode_user)
+        textSize = Ui.CAPTION
+        typeface = android.graphics.Typeface.create("sans-serif-medium", 0)
+        setTextColor(ink)
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(12), 0, dp(14), 0)
+        setCompoundDrawablesRelative(
+            icon(if (developer) R.drawable.ic_code else R.drawable.ic_person, ink, 18),
+            null,
+            null,
+            null,
+        )
+        compoundDrawablePadding = dp(6)
+        background = pressable(
+            if (developer) {
+                rounded(Ui.ACCENT, radiusDp = 24)
+            } else {
+                rounded(Ui.SURFACE, radiusDp = 24, stroke = Ui.BORDER)
+            },
+        )
+        isClickable = true
+        contentDescription = getString(
+            if (developer) R.string.mode_switch_to_user else R.string.mode_switch_to_developer,
+        )
+        tooltipText = contentDescription
+        setOnClickListener {
+            if (developer) {
+                AppMode.setDeveloper(context, false)
+                Toast.makeText(context, R.string.mode_user_on, Toast.LENGTH_SHORT).show()
+                refresh()
+            } else {
+                askDeveloperPassword {
+                    AppMode.setDeveloper(context, true)
+                    Toast.makeText(context, R.string.mode_developer_on, Toast.LENGTH_SHORT).show()
+                    refresh()
+                }
+            }
+        }
     }
 
     private fun offlinePill(): View = TextView(this).apply {
@@ -337,6 +500,7 @@ class HomeActivity : ComponentActivity() {
     /** A section title with its map count, and a Select action on the right. */
     private fun sectionHeader(title: Int, count: Int, select: Boolean): View =
         LinearLayout(this).apply {
+            transitionName = "header:$title"
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = dp(Ui.TOUCH_DP)
             addView(sectionTitle(title), LinearLayout.LayoutParams(WRAP, WRAP))
@@ -368,6 +532,7 @@ class HomeActivity : ComponentActivity() {
      * Pin and Delete for every selected map.
      */
     private fun selectionBar(saved: List<SavedMap>): View = LinearLayout(this).apply {
+        transitionName = "selection"
         gravity = Gravity.CENTER_VERTICAL
         setBackgroundColor(Ui.SURFACE)
         setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -431,6 +596,7 @@ class HomeActivity : ComponentActivity() {
 
     /** A dark bar above the scan button: what was deleted, and Undo while it still can be. */
     private fun undoBar(): View = LinearLayout(this).apply {
+        transitionName = "undo"
         gravity = Gravity.CENTER_VERTICAL
         background = rounded(Ui.INK, radiusDp = 12)
         setPadding(dp(16), dp(4), dp(4), dp(4))
@@ -566,7 +732,11 @@ class HomeActivity : ComponentActivity() {
             DELETE_RED,
             removes = true,
         ) { deleteWithUndo(listOf(map.id)) }
-        return SwipeRow(this, card, pinAction, deleteAction).apply { swipeEnabled = !selecting }
+        return SwipeRow(this, card, pinAction, deleteAction).apply {
+            swipeEnabled = !selecting
+            // The same map's card before and after a rebuild: it glides, not jumps.
+            transitionName = "map:${map.id}"
+        }
     }
 
     /** The poster's thumbnail, or a check mark while the map is selected. Tapping selects. */
@@ -730,6 +900,7 @@ class HomeActivity : ComponentActivity() {
         onTap: () -> Unit,
     ): View =
         LinearLayout(this).apply {
+            transitionName = "dev:$title"
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = dp(72)
             setPadding(dp(16), dp(12), dp(12), dp(12))
@@ -807,6 +978,13 @@ class HomeActivity : ComponentActivity() {
         const val MENU_DELETE = 3
         const val MENU_SELECT = 4
         const val UNDO_MS = 5000L
+
+        /** List changes (pin, delete, select): long enough to follow, short enough to feel quick. */
+        const val LIST_MS = 260L
+
+        /** Taps on the logo that open the developer password, each within the gap of the last. */
+        const val LOGO_TAPS = 5
+        const val LOGO_TAP_GAP_MS = 600L
         val DELETE_RED = android.graphics.Color.rgb(220, 38, 38)
     }
 }
