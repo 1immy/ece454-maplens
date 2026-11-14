@@ -3,7 +3,6 @@ package edu.wisc.maplens.mapparse
 import android.graphics.Rect
 import edu.wisc.maplens.model.PixelPoint
 import java.util.Locale
-import java.util.PriorityQueue
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.roundToInt
@@ -46,12 +45,41 @@ internal fun standaloneRoomTokens(text: String): List<String> {
     return rooms.takeIf { it.size >= 2 }.orEmpty()
 }
 
-internal fun distinctRooms(readings: List<PosterReading>): List<PosterReading> {
+/** Reads this sure, and at least this many of them, say which floor a poster shows. */
+private const val FLOOR_VOTE_CONFIDENCE = 0.9f
+private const val FLOOR_MIN_VOTES = 3
+
+/**
+ * The floor digit a poster's room numbers start with: the first digit most sure room reads
+ * share (EH: 1102 on the first floor, 3540 on the third). The legend lists other floors' rooms
+ * (AED "Outside Room 1224, 1412, 2239, …"), but a floor plan has far more of its own. Null when
+ * too few rooms were read to tell.
+ */
+internal fun posterFloor(readings: List<PosterReading>): Char? =
+    floorOf(
+        readings.filter { !it.possible && it.confidence >= FLOOR_VOTE_CONFIDENCE }.map { it.text },
+    )
+
+/** [posterFloor] on the sure reads' texts. */
+internal fun floorOf(texts: List<String>): Char? =
+    texts.mapNotNull { normalizeRoom(it)?.first() }
+        .groupingBy { it }.eachCount()
+        .maxByOrNull { it.value }
+        ?.takeIf { it.value >= FLOOR_MIN_VOTES }?.key
+
+/**
+ * Room reads, one per printed number, on [floor] only (a stray read of another floor's number
+ * is legend text or noise). A null floor keeps every room number.
+ */
+internal fun distinctRooms(
+    readings: List<PosterReading>,
+    floor: Char? = posterFloor(readings),
+): List<PosterReading> {
     val kept = mutableListOf<PosterReading>()
     val ranked = readings.mapNotNull { reading ->
         val label = normalizeRoom(reading.text)
-        // shortcut: assumes the third floor, read the floor from the poster when parsing others.
-        if (reading.possible || label?.startsWith("3") != true || reading.confidence < 0.5f) {
+        val onFloor = label != null && (floor == null || label.first() == floor)
+        if (reading.possible || !onFloor || reading.confidence < 0.5f) {
             null
         } else {
             reading.copy(text = label)
@@ -149,20 +177,20 @@ internal fun corridorPath(
     val goals = hashMapOf<Int, PixelPoint>()
     for (point in nearby) goals.putIfAbsent(cell(point), point)
 
-    data class Step(val cell: Int, val cost: Double)
-    val queue = PriorityQueue<Step> { a, b -> a.cost.compareTo(b.cost) }
-    val costs = DoubleArray(size) { Double.POSITIVE_INFINITY }
+    val queue = CellHeap()
+    val costs = DoubleArray(size).apply { fill(Double.POSITIVE_INFINITY) }
     val lengths = FloatArray(size)
     val crossings = IntArray(size)
     val start = cell(origin)
     costs[start] = 0.0
     crossings[start] = if (wall(start)) 1 else 0
-    queue += Step(start, 0.0)
+    queue.add(start, 0.0)
     var popped = 0
     var wallPath: CorridorConnector? = null
     while (queue.isNotEmpty()) {
         if (popped++ % 1024 == 0) checkCancellation()
-        val (index, cost) = queue.remove()
+        val cost = queue.peekCost()
+        val index = queue.poll()
         if (cost != costs[index]) continue
         val goal = goals[index]
         if (goal != null) {
@@ -187,7 +215,7 @@ internal fun corridorPath(
             costs[next] = total
             lengths[next] = lengths[index] + distance.toFloat()
             crossings[next] = crossings[index] + if (toWall) 1 else 0
-            queue += Step(next, total)
+            queue.add(next, total)
         }
     }
 
@@ -212,4 +240,61 @@ internal fun corridorPath(
         if (count <= directWallLimit) return CorridorConnector(target, distance)
     }
     return wallPath
+}
+
+/**
+ * A min-heap of (cell, cost) in primitive arrays. It runs java.util.PriorityQueue's own sift
+ * steps, so cells come out in exactly the order the boxed queue gave (ties included), and room
+ * attachment stays identical while skipping ~500k allocations per room.
+ */
+internal class CellHeap {
+    private var cells = IntArray(1024)
+    private var costs = DoubleArray(1024)
+    var size = 0
+        private set
+
+    fun isNotEmpty() = size > 0
+
+    fun add(cell: Int, cost: Double) {
+        if (size == cells.size) {
+            cells = cells.copyOf(size * 2)
+            costs = costs.copyOf(size * 2)
+        }
+        var k = size++
+        while (k > 0) {
+            val parent = (k - 1) ushr 1
+            if (cost.compareTo(costs[parent]) >= 0) break
+            cells[k] = cells[parent]
+            costs[k] = costs[parent]
+            k = parent
+        }
+        cells[k] = cell
+        costs[k] = cost
+    }
+
+    /** Cost of the cell [poll] returns next. */
+    fun peekCost(): Double = costs[0]
+
+    fun poll(): Int {
+        val result = cells[0]
+        val n = --size
+        val cell = cells[n]
+        val cost = costs[n]
+        if (n > 0) {
+            var k = 0
+            val half = n ushr 1
+            while (k < half) {
+                var child = 2 * k + 1
+                val right = child + 1
+                if (right < n && costs[child].compareTo(costs[right]) > 0) child = right
+                if (cost.compareTo(costs[child]) <= 0) break
+                cells[k] = cells[child]
+                costs[k] = costs[child]
+                k = child
+            }
+            cells[k] = cell
+            costs[k] = cost
+        }
+        return result
+    }
 }

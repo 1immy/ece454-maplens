@@ -27,6 +27,7 @@ import android.widget.Button
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -43,6 +44,7 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import edu.wisc.maplens.mapparse.MapParser
 import edu.wisc.maplens.mapparse.OfflineMapParser
 import edu.wisc.maplens.mapparse.ParseProgress
 import edu.wisc.maplens.mapparse.ParseResult
@@ -71,6 +73,16 @@ class PosterCaptureActivity : ComponentActivity() {
     private lateinit var cancel: Button
     private lateinit var save: Button
     private lateinit var importButton: Button
+    private lateinit var fastSwitch: Switch
+
+    /**
+     * Fast mode: the ML Kit parser (about 5 s). Off: the original parser (classic package),
+     * kept side by side for comparison. Remembered between scans.
+     */
+    private val prefs by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
+    private var fastMode: Boolean
+        get() = prefs.getBoolean(PREF_FAST, true)
+        set(value) = prefs.edit().putBoolean(PREF_FAST, value).apply()
     private var camera: ProcessCameraProvider? = null
     private var preview: Preview? = null
     private var capture: ImageCapture? = null
@@ -210,6 +222,22 @@ class PosterCaptureActivity : ComponentActivity() {
             // Through the dispatcher, so Back still clears a marked room or the zoom first.
             setOnClickListener { onBackPressedDispatcher.onBackPressed() }
         }
+        fastSwitch = Switch(this).apply {
+            setText(R.string.poster_fast)
+            textSize = Ui.CAPTION
+            setTextColor(Ui.INK_SECONDARY)
+            switchPadding = dp(8)
+            isChecked = fastMode
+            contentDescription = getString(R.string.poster_fast_description)
+            setOnCheckedChangeListener { _, checked ->
+                fastMode = checked
+                Toast.makeText(
+                    context,
+                    if (checked) R.string.poster_fast_on else R.string.poster_fast_off,
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
         val topBar = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(back, LinearLayout.LayoutParams(dp(Ui.TOUCH_DP), dp(Ui.TOUCH_DP)))
@@ -222,6 +250,7 @@ class PosterCaptureActivity : ComponentActivity() {
                 },
                 LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4) },
             )
+            addView(fastSwitch, LinearLayout.LayoutParams(-2, dp(Ui.TOUCH_DP)))
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -335,6 +364,7 @@ class PosterCaptureActivity : ComponentActivity() {
 
     private fun ready(message: CharSequence = getString(R.string.poster_ready)) {
         busy = false
+        fastSwitch.isEnabled = true
         status.text = message
         cancel.visibility = View.GONE
         action.setText(R.string.capture_poster)
@@ -377,6 +407,7 @@ class PosterCaptureActivity : ComponentActivity() {
     private fun startParsing(): Int {
         val id = synchronized(workLock) { ++generation }
         busy = true
+        fastSwitch.isEnabled = false
         status.text = SpannableStringBuilder(getString(R.string.poster_parsing_title)).apply {
             setSpan(StyleSpan(Typeface.BOLD), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             setSpan(RelativeSizeSpan(1.25f), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -461,14 +492,21 @@ class PosterCaptureActivity : ComponentActivity() {
                 }
             }
             val began = android.os.SystemClock.elapsedRealtime()
-            val parser = OfflineMapParser { update ->
+            val onProgress: (ParseProgress) -> Unit = { update ->
                 runOnUiThread {
                     if (id == generation && !isDestroyed) progress.show(update)
                 }
             }
+            val fast = fastMode
+            val parser: MapParser = if (fast) {
+                OfflineMapParser(onProgress)
+            } else {
+                edu.wisc.maplens.mapparse.classic.OfflineMapParser(onProgress)
+            }
             try {
                 Result.success(parser.parse(photo)).also {
-                    Log.i(TAG, "parsed in ${android.os.SystemClock.elapsedRealtime() - began} ms")
+                    val ms = android.os.SystemClock.elapsedRealtime() - began
+                    Log.i(TAG, "parsed (${if (fast) "fast" else "normal"}) in $ms ms")
                 }
             } finally {
                 photo.recycle()
@@ -490,6 +528,8 @@ class PosterCaptureActivity : ComponentActivity() {
                 Log.w(TAG, "Poster processing failed", it)
                 val message = (it as? PosterRetakeException)?.message
                 busy = false
+                fastSwitch.isEnabled = true
+                fastSwitch.isEnabled = true
                 startCamera(message ?: getString(R.string.poster_parse_failed))
             }
         }
@@ -522,6 +562,7 @@ class PosterCaptureActivity : ComponentActivity() {
     private fun resetCapture() {
         invalidateCapture()
         busy = false
+        fastSwitch.isEnabled = true
         if (review != null) {
             map.bitmap = null
             map.review = null
@@ -551,6 +592,7 @@ class PosterCaptureActivity : ComponentActivity() {
         val graph = checkNotNull(session.graph)
         review = result
         busy = false
+        fastSwitch.isEnabled = true
         stopCamera()
         cameraView.visibility = View.GONE
         photoView.visibility = View.GONE
@@ -750,6 +792,8 @@ class PosterCaptureActivity : ComponentActivity() {
 
     private companion object {
         const val MAX_CAPTURE_SIDE = 4096
+        const val PREFS = "poster_scan"
+        const val PREF_FAST = "fast"
 
         /** Longest side handed to the parser, for captures and imported photos alike. */
         const val MAX_PHOTO_SIDE = 3200

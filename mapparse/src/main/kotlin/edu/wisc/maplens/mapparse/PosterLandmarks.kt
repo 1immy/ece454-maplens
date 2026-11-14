@@ -30,9 +30,43 @@ internal fun FloorGraph.attachRooms(
     }
     val missed = mutableSetOf<String>()
     val detours = mutableSetOf<String>()
-    for (room in rooms) {
+    // Each room's search only reads the walls and the corridors as traced, so they run in
+    // parallel; the graph is then changed one room at a time, in order, as before.
+    // Doorways found the paint-bucket way (see roomEntrances): where they are clear, they say
+    // exactly where the room opens onto a corridor, and a room with two gets two doors.
+    val timer = StageTimer()
+    val grid = WallGrid(walls, width)
+    val doorways = rooms.parallelMap { roomEntrances(it.center, grid) }
+    timer.mark("doorways")
+    // The cheapest path out, only for rooms without a clear doorway near a corridor.
+    val needPath = rooms.indices.filter { i ->
+        doorways[i].orEmpty().none { at ->
+            (nearestEdge(at)?.distancePx ?: Double.MAX_VALUE) <= DOORWAY_REACH_PX
+        }
+    }
+    val paths = needPath.parallelMap { corridorPath(rooms[it].center, samples, walls, width) }
+    val connectors = arrayOfNulls<CorridorConnector>(rooms.size)
+    for ((k, i) in needPath.withIndex()) connectors[i] = paths[k]
+    timer.mark("paths for ${needPath.size} of ${rooms.size} rooms")
+    for ((index, room) in rooms.withIndex()) {
         checkCancellation()
-        val connector = corridorPath(room.center, samples, walls, width)
+        val connector = connectors[index]
+        val openings = doorways[index].orEmpty()
+            .mapNotNull { at ->
+                graph.nearestEdge(
+                    at
+                )?.takeIf { it.distancePx <= DOORWAY_REACH_PX }
+            }
+            .sortedBy { it.distancePx }
+            .take(MAX_DOORWAYS)
+        if (openings.isNotEmpty()) {
+            for (opening in openings) {
+                // The graph changed with the last door: find the corridor point again.
+                val hit = graph.nearestEdge(opening.point) ?: continue
+                graph = graph.withDoor(room, hit, previews)
+            }
+            continue
+        }
         val hit = connector?.let { graph.nearestEdge(it.target) }
         if (connector == null || hit == null) {
             previews += RoomPreview(room.text, Rect(room.box), null, room.confidence)
@@ -45,22 +79,7 @@ internal fun FloorGraph.attachRooms(
             detours += room.text
             continue
         }
-        val edge = graph.edge(hit.edgeId)
-        var node = graph.endpointNear(edge, hit.point, 8.0)
-        if (node == null) {
-            node = Node(graph.nextNodeId("ocrD"), hit.point, NodeType.DOOR)
-            graph = graph.split(edge, hit, node)
-        } else if (node.type == NodeType.DEAD_END) {
-            node = node.copy(type = NodeType.DOOR)
-            graph = graph.copy(nodes = graph.nodes + (node.id to node))
-        }
-        previews += RoomPreview(room.text, Rect(room.box), node.id, room.confidence)
-        if (graph.landmarks.none { it.nodeId == node.id && it.label == room.text }) {
-            graph = graph.copy(
-                landmarks = graph.landmarks +
-                    Landmark(room.text, node.id, room.confidence)
-            )
-        }
+        graph = graph.withDoor(room, hit, previews)
     }
     if (missed.isNotEmpty()) {
         warnings += "No wall-clear entrance found for ${missed.joinToString()}. Check these rooms."
@@ -74,6 +93,39 @@ internal fun FloorGraph.attachRooms(
     }
     return RoomAttachments(graph, previews)
 }
+
+/** A DOOR for [room] at corridor point [hit] (an end within 8 px is reused), and its label. */
+private fun FloorGraph.withDoor(
+    room: PosterReading,
+    hit: EdgePosition,
+    previews: MutableList<RoomPreview>,
+): FloorGraph {
+    var graph = this
+    val edge = graph.edge(hit.edgeId)
+    var node = graph.endpointNear(edge, hit.point, 8.0)
+    if (node == null) {
+        node = Node(graph.nextNodeId("ocrD"), hit.point, NodeType.DOOR)
+        graph = graph.split(edge, hit, node)
+    } else if (node.type == NodeType.DEAD_END) {
+        node = node.copy(type = NodeType.DOOR)
+        graph = graph.copy(nodes = graph.nodes + (node.id to node))
+    }
+    if (previews.none { it.label == room.text && it.entranceNodeId != null }) {
+        previews.removeAll { it.label == room.text }
+        previews += RoomPreview(room.text, Rect(room.box), node.id, room.confidence)
+    }
+    if (graph.landmarks.none { it.nodeId == node.id && it.label == room.text }) {
+        val label = Landmark(room.text, node.id, room.confidence)
+        graph = graph.copy(landmarks = graph.landmarks + label)
+    }
+    return graph
+}
+
+/** A doorway further than this from every traced corridor opens elsewhere (outside, a room). */
+private const val DOORWAY_REACH_PX = 70.0
+
+/** At most this many doorways per room become doors. */
+private const val MAX_DOORWAYS = 2
 
 internal fun resolveStart(
     graph: FloorGraph,
@@ -95,7 +147,7 @@ private fun attachStart(
     warnings: MutableList<String>,
 ): FloorGraph {
     val hit = graph.nearestEdge(marker)
-    if (hit == null || hit.distancePx > 40.0) {
+    if (hit == null || hit.distancePx > STAR_MAX_GAP_PX) {
         warnings += "The gold star is too far from the extracted corridors. Set START in review."
         return graph
     }
@@ -103,6 +155,10 @@ private fun attachStart(
         warnings += "Corridors are disconnected. Connect them before setting START."
         return graph
     }
+    // Most stars sit on the route paint; some sit beside it, by a stair door (EH3 stair 3542:
+    // 94 px off). The walker stands at the poster, so START goes exactly at the star, joined
+    // to the corridor by a short link, rather than slid along to the nearest corridor point.
+    if (hit.distancePx > STAR_ON_LINE_PX) return startBeside(graph, marker, hit)
     val edge = graph.edge(hit.edgeId)
     val endpoint = graph.endpointNear(edge, hit.point, 2.0) {
         it.position.distanceTo(marker) <= 100.0
@@ -123,6 +179,36 @@ private fun attachStart(
     }
     return result.copy(startNodeId = node.id)
 }
+
+/** The star counts as on the corridor within this; beyond it START is flagged for review. */
+private const val STAR_ON_LINE_PX = 40.0
+
+/** Past this the star is not by any traced corridor and START is left to the user. */
+private const val STAR_MAX_GAP_PX = 120.0
+
+/** START at [marker], linked straight to the corridor point [hit] (split there if needed). */
+private fun startBeside(graph: FloorGraph, marker: PixelPoint, hit: EdgePosition): FloorGraph {
+    val edge = graph.edge(hit.edgeId)
+    val near = graph.endpointNear(edge, hit.point, NODE_SNAP_PX)
+    val (joined, joint) = if (near != null) {
+        graph to near
+    } else {
+        val node = Node(graph.nextNodeId("j"), hit.point, NodeType.JUNCTION)
+        graph.split(edge, hit, node) to node
+    }
+    val start = Node(joined.nextNodeId("s"), marker, NodeType.START)
+    val linkId = generateSequence(1) { it + 1 }.map { "start$it" }
+        .first { id -> joined.edges.none { it.id == id } }
+    val link = Edge(linkId, joint.id, start.id, listOf(joint.position, marker), hit.distancePx)
+    return joined.copy(
+        nodes = joined.nodes + (start.id to start),
+        edges = joined.edges + link,
+        startNodeId = start.id,
+    )
+}
+
+/** A corridor end this close to where the star's link lands takes the link itself. */
+private const val NODE_SNAP_PX = 12.0
 
 fun FloorGraph.endpointNear(
     edge: Edge,

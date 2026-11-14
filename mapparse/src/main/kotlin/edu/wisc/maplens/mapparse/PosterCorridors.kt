@@ -669,7 +669,7 @@ internal class PosterCorridors {
 
 // scikit-image 0.26 _fast_skeletonize table, indexed clockwise from northwest.
 // A value of 1 or 2 removes a pixel in that phase; 3 removes it in either phase.
-private val thinningRules = intArrayOf(
+internal val thinningRules = intArrayOf(
     0, 0, 0, 1, 0, 0, 1, 3, 0, 0, 3, 1, 1, 0, 1, 3,
     0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 3, 0, 3, 3,
     0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0,
@@ -700,29 +700,39 @@ internal fun thin(pixels: ByteArray, stride: Int): Set<Int> {
         stride - 1,
         -1,
     )
-    val foreground = pixels.indices.filterTo(linkedSetOf()) { pixels[it] != 0.toByte() }
-    val remove = mutableListOf<Int>()
+    // Plain int arrays, not a set of boxed indices: the same pixels in the same order, but the
+    // set's hashing took ~3 s of a poster parse (Pixel 7a, Nov 13).
+    var foreground = IntArray(pixels.count { it != 0.toByte() })
+    var n = 0
+    for (i in pixels.indices) if (pixels[i] != 0.toByte()) foreground[n++] = i
+    val remove = IntArray(n)
     do {
         checkCancellation()
         var changed = false
         for (phase in 1..2) {
-            for (i in foreground) {
+            var removed = 0
+            for (k in 0 until n) {
+                val i = foreground[k]
                 var mask = 0
                 for (bit in offsets.indices) {
                     if (pixels[i + offsets[bit]] != 0.toByte()) mask = mask or (1 shl bit)
                 }
                 val rule = thinningRules[mask]
-                if (rule == phase || rule == 3) remove += i
+                if (rule == phase || rule == 3) remove[removed++] = i
             }
-            changed = changed || remove.isNotEmpty()
-            for (i in remove) {
-                pixels[i] = 0
-                foreground.remove(i)
+            if (removed == 0) continue
+            changed = true
+            for (r in 0 until removed) pixels[remove[r]] = 0
+            var kept = 0
+            for (k in 0 until n) {
+                val i = foreground[k]
+                if (pixels[i] != 0.toByte()) foreground[kept++] = i
             }
-            remove.clear()
+            n = kept
         }
     } while (changed)
-    return foreground
+    foreground = foreground.copyOf(n)
+    return foreground.toCollection(LinkedHashSet(n * 2))
 }
 
 internal fun pathLength(points: List<PixelPoint>): Double =

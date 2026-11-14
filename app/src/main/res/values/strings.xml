@@ -264,6 +264,10 @@
   <string name="checkpoint_result">%1$s: %2$.1f m off, %3$s</string>
   <string name="log_saved">Session log saved: %1$s</string>
   <string name="capture_poster">Capture evacuation poster</string>
+  <string name="poster_fast">Fast</string>
+  <string name="poster_fast_description">Fast mode: read the poster in about 5 seconds with on-device ML Kit. Turn off to use the original parser.</string>
+  <string name="poster_fast_on">Fast mode: reads the poster in about 5 seconds</string>
+  <string name="poster_fast_off">Normal mode: the original parser, slower</string>
   <string name="poster_import">Use a photo you already took</string>
   <string name="poster_import_description">Use a poster photo you took earlier, from your photos or files</string>
   <string name="poster_import_unreadable">MapLens couldn\'t open that file as a photo. Pick another or capture the poster.</string>

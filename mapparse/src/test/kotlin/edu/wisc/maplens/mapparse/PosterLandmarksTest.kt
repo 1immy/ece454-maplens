@@ -35,9 +35,22 @@ class PosterLandmarksTest {
     fun starCannotSnapAcrossAnUnsupportedGap() {
         val graph = corridor()
         val warnings = mutableListOf<String>()
-        val result = resolveStart(graph, listOf(PixelPoint(50.0, 80.0)), warnings)
+        val result = resolveStart(graph, listOf(PixelPoint(50.0, 150.0)), warnings)
         assertEquals(graph, result)
         assertTrue(warnings.single().contains("too far"))
+    }
+
+    @Test
+    fun aStarBesideTheCorridorPutsStartAtTheStarWithALink() {
+        // EH3 stair 3542: the star sits by the stair door, 94 px off the route paint.
+        val warnings = mutableListOf<String>()
+        val result = resolveStart(corridor(), listOf(PixelPoint(50.0, 94.0)), warnings)
+        assertEquals(PixelPoint(50.0, 94.0), result.nodes.getValue(result.startNodeId).position)
+        val link = result.edges.single { result.startNodeId in listOf(it.from, it.to) }
+        assertEquals(94.0, link.lengthPx, 1e-9)
+        assertEquals(PixelPoint(50.0, 0.0), result.nodes.getValue(link.from).position)
+        assertTrue(result.validate().isEmpty())
+        assertTrue(warnings.isEmpty())
     }
 
     @Test
