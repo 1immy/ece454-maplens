@@ -566,6 +566,8 @@ class IndoorNavActivity : ComponentActivity() {
         sheet.removeAllViews()
         sheet.addView(handle())
         for (v in views) sheet.addView(v)
+        // Each sheet brings its own rows; their cards' shadows must not be cut either.
+        letShadowsShow(sheet)
         sheet.alpha = 0f
         sheet.translationY = dpf(16f)
         sheet.animate().alpha(1f).translationY(0f).setDuration(220)
@@ -2512,7 +2514,9 @@ class IndoorNavActivity : ComponentActivity() {
         chips = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             clipToPadding = false
-            setPadding(0, dp(10), 0, dp(6))
+            // A scrolling row clips to itself: room on every side for the chips' shadows,
+            // reached over the top area's margin (see addView(chips)) so they stay in place.
+            setPadding(dp(12), dp(10), dp(12), dp(12))
             addView(
                 LinearLayout(context).apply {
                     listOf(
@@ -2773,7 +2777,14 @@ class IndoorNavActivity : ComponentActivity() {
             clipToPadding = false
             setPadding(dp(12), dp(8), dp(12), dp(8))
             addView(searchBar, LinearLayout.LayoutParams(MATCH, dp(56)))
-            addView(chips)
+            addView(
+                chips,
+                LinearLayout.LayoutParams(MATCH, WRAP).apply {
+                    marginStart = -dp(12)
+                    marginEnd = -dp(12)
+                    bottomMargin = -dp(6)
+                },
+            )
             addView(routeCard)
             addView(banner)
             addView(escortCard, wide().apply { topMargin = dp(8) })
@@ -2873,7 +2884,21 @@ class IndoorNavActivity : ComponentActivity() {
         }
         topArea.addOnLayoutChangeListener(relayout)
         bottomArea.addOnLayoutChangeListener(relayout)
+        letShadowsShow(root)
         return root
+    }
+
+    /**
+     * Cards and buttons float over the map with shadows, which a container would otherwise
+     * cut at its edges: none on this screen clips its children, so no shadow is cut off.
+     */
+    private fun letShadowsShow(view: View) {
+        if (view !is ViewGroup) return
+        // A scrolling list must still clip what is scrolled out of it; only its padding opens.
+        val scrolls = view is ScrollView || view is HorizontalScrollView
+        if (!scrolls) view.clipChildren = false
+        view.clipToPadding = false
+        for (i in 0 until view.childCount) letShadowsShow(view.getChildAt(i))
     }
 
     /** Bottom of the last visible card in the top area; the side buttons float over the map. */

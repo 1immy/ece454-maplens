@@ -28,8 +28,15 @@ private val STAGE_START = mapOf(
     ParseStage.PLACE_ROOMS to 0.85,
 )
 
-/** Shows the parser's real stage and counts. Nothing here advances on a timer. */
-internal class PosterProgressView(context: Context) : LinearLayout(context) {
+/**
+ * Shows the parser's real stage and counts; nothing here advances on a timer. Everyone sees
+ * one line saying what is happening now, in a soft shimmer, and a slim rounded bar.
+ * [developer] mode also keeps the list of stages, each ticked as it finishes.
+ */
+internal class PosterProgressView(
+    context: Context,
+    private val developer: Boolean = false,
+) : LinearLayout(context) {
     private inner class Row(stage: ParseStage, val label: String) {
         val mark = TextView(context).apply {
             gravity = Gravity.CENTER
@@ -84,10 +91,33 @@ internal class PosterProgressView(context: Context) : LinearLayout(context) {
 
     private val bar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
         max = BAR_MAX
-        progressTintList = ColorStateList.valueOf(POSTER_ACCENT)
-        progressBackgroundTintList = ColorStateList.valueOf(TRACK)
+        // Rounded track and fill, like a modern linear indicator.
+        progressDrawable = android.graphics.drawable.LayerDrawable(
+            arrayOf(
+                rounded(TRACK),
+                android.graphics.drawable.ClipDrawable(
+                    rounded(POSTER_ACCENT),
+                    Gravity.START,
+                    android.graphics.drawable.ClipDrawable.HORIZONTAL,
+                ),
+            ),
+        ).apply {
+            setId(0, android.R.id.background)
+            setId(1, android.R.id.progress)
+        }
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
+
+    /** What is happening now, e.g. "Reading room numbers · 12 of 40". */
+    private val now = TextView(context).apply {
+        textSize = 15f
+        setTextColor(POSTER_TEXT)
+        typeface = android.graphics.Typeface.create("sans-serif-medium", 0)
+        accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+    }
+
+    /** How far the parse has really got, 0 to 1, each time it advances (for the photo). */
+    var onFraction: ((Float) -> Unit)? = null
     private val rows = listOf(
         Row(ParseStage.STRAIGHTEN, context.getString(R.string.poster_stage_straighten)),
         Row(ParseStage.CORRIDORS, context.getString(R.string.poster_stage_corridors)),
@@ -99,20 +129,49 @@ internal class PosterProgressView(context: Context) : LinearLayout(context) {
 
     init {
         orientation = VERTICAL
-        setPadding(0, dp(12), 0, dp(8))
-        addView(bar, LayoutParams(-1, dp(6)).apply { bottomMargin = dp(10) })
-        rows.forEach { addView(it.view, LayoutParams(-1, -2)) }
+        setPadding(0, dp(16), 0, dp(8))
+        addView(now, LayoutParams(-1, -2))
+        addView(
+            bar,
+            LayoutParams(-1, dp(6)).apply {
+                topMargin = dp(10)
+                bottomMargin = dp(if (developer) 12 else 4)
+            }
+        )
+        if (developer) rows.forEach { addView(it.view, LayoutParams(-1, -2)) }
     }
 
     fun show(progress: ParseProgress) {
-        rows.forEach { it.render(progress) }
+        if (developer) rows.forEach { it.render(progress) }
+        val phrase = context.getString(
+            when (progress.stage) {
+                ParseStage.STRAIGHTEN -> R.string.poster_now_straighten
+                ParseStage.CORRIDORS -> R.string.poster_now_corridors
+                ParseStage.FIND_TEXT -> R.string.poster_now_find_text
+                ParseStage.READ_ROOMS -> R.string.poster_now_read_rooms
+                ParseStage.RECHECK_SMALL -> R.string.poster_now_recheck
+                ParseStage.PLACE_ROOMS -> R.string.poster_now_place_rooms
+            },
+        )
+        now.text = if (progress.total > 0) {
+            context.getString(R.string.poster_now_count, phrase, progress.done, progress.total)
+        } else {
+            phrase
+        }
         val start = STAGE_START.getValue(progress.stage)
         val next = STAGE_START.entries.firstOrNull { it.key > progress.stage }?.value ?: 1.0
         val within = if (progress.total > 0) progress.done.toDouble() / progress.total else 0.0
-        bar.setProgress(((start + (next - start) * within) * BAR_MAX).roundToInt(), true)
+        val fraction = start + (next - start) * within
+        bar.setProgress((fraction * BAR_MAX).roundToInt(), true)
+        onFraction?.invoke(fraction.toFloat())
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).roundToInt()
+
+    private fun rounded(color: Int) = android.graphics.drawable.GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(3).toFloat()
+    }
 
     private companion object {
         const val BAR_MAX = 1000

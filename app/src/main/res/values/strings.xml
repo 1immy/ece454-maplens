@@ -347,6 +347,13 @@
     <string name="poster_map_description">Rectified poster with extracted corridors, room entrances and proposed START</string>
   <string name="poster_parsing_title">Reading the map</string>
   <string name="poster_photo_description">The photo being read</string>
+  <string name="poster_now_straighten">Straightening your photo</string>
+  <string name="poster_now_corridors">Tracing the hallways</string>
+  <string name="poster_now_find_text">Finding room numbers</string>
+  <string name="poster_now_read_rooms">Reading room numbers</string>
+  <string name="poster_now_recheck">Double-checking small labels</string>
+  <string name="poster_now_place_rooms">Placing doors, exits and START</string>
+  <string name="poster_now_count">%1$s · %2$d of %3$d</string>
   <string name="poster_stage_straighten">Straighten the photo</string>
   <string name="poster_stage_corridors">Trace corridors</string>
   <string name="poster_stage_find_text">Find labels</string>

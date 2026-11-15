@@ -179,7 +179,7 @@ class PosterCaptureActivity : ComponentActivity() {
             setBackgroundColor(Color.rgb(236, 238, 240))
             contentDescription = getString(R.string.poster_photo_description)
         }
-        progress = PosterProgressView(this).apply { visibility = View.GONE }
+        progress = PosterProgressView(this, developer).apply { visibility = View.GONE }
         map = MapView(this).apply {
             visibility = View.GONE
             contentDescription = getString(R.string.poster_map_description)
@@ -417,7 +417,7 @@ class PosterCaptureActivity : ComponentActivity() {
         cancel.visibility = View.GONE
         progress.visibility = View.GONE
         photoView.visibility = View.GONE
-        photoView.setImageDrawable(null)
+        clearPhoto()
         cameraFrame.visibility = View.VISIBLE
         // Load the Fast parser's models while the poster is being framed.
         if (fastMode) PosterWarmup.start()
@@ -701,6 +701,10 @@ class PosterCaptureActivity : ComponentActivity() {
             runOnUiThread {
                 if (id == generation && !isDestroyed) {
                     photoView.setImageBitmap(shown)
+                    // The photo comes clear as it is read, in step with the real progress.
+                    val reveal = PhotoReveal(::photoArea)
+                    photoView.foreground = reveal
+                    progress.onFraction = reveal::reveal
                     photoView.visibility = View.VISIBLE
                     cameraFrame.visibility = View.GONE
                 }
@@ -738,6 +742,8 @@ class PosterCaptureActivity : ComponentActivity() {
                 result.getOrNull()?.rectified?.recycle()
                 return@runOnUiThread
             }
+            // Read: the photo comes fully clear before the map takes its place.
+            result.onSuccess { (photoView.foreground as? PhotoReveal)?.reveal(1f) }
             result.onSuccess { if (developer) showReview(it) else saveForUser(it) }.onFailure {
                 Log.w(TAG, "Poster processing failed", it)
                 busy = false
@@ -811,6 +817,28 @@ class PosterCaptureActivity : ComponentActivity() {
             },
         )
         status.setText(R.string.poster_ready)
+    }
+
+    /** Where the photo is drawn in [photoView]: fitted inside it, so not all of the view. */
+    private fun photoArea(): android.graphics.Rect? {
+        val image = photoView.drawable ?: return null
+        val drawn = android.graphics.RectF(
+            0f,
+            0f,
+            image.intrinsicWidth.toFloat(),
+            image.intrinsicHeight.toFloat(),
+        )
+        photoView.imageMatrix.mapRect(drawn)
+        drawn.offset(photoView.paddingLeft.toFloat(), photoView.paddingTop.toFloat())
+        return android.graphics.Rect().also { drawn.roundOut(it) }
+    }
+
+    /** Takes the photo (and its reading sweep) off the screen. */
+    private fun clearPhoto() {
+        (photoView.foreground as? PhotoReveal)?.stop()
+        photoView.foreground = null
+        progress.onFraction = null
+        photoView.setImageDrawable(null)
     }
 
     private fun hideRetake() {
@@ -897,7 +925,7 @@ class PosterCaptureActivity : ComponentActivity() {
         stopCamera()
         cameraFrame.visibility = View.GONE
         photoView.visibility = View.GONE
-        photoView.setImageDrawable(null)
+        clearPhoto()
         progress.visibility = View.GONE
         cancel.visibility = View.GONE
         importButton.visibility = View.GONE
