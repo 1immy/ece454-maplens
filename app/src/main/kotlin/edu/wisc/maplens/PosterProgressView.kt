@@ -14,9 +14,8 @@ import edu.wisc.maplens.mapparse.ParseStage
 import kotlin.math.roundToInt
 
 internal val POSTER_ACCENT = Color.rgb(26, 86, 150)
-internal val POSTER_TEXT = Color.rgb(32, 33, 36)
-internal val POSTER_MUTED = Color.rgb(95, 99, 104)
-private val TRACK = Color.rgb(221, 225, 230)
+internal val POSTER_TEXT get() = Ui.INK
+internal val POSTER_MUTED get() = Ui.INK_SECONDARY
 
 /** Where each stage starts on the bar, from warmed parse timings on the emulator. */
 private val STAGE_START = mapOf(
@@ -73,8 +72,10 @@ internal class PosterProgressView(
             val active = order == current.stage.ordinal
             spinner.visibility = if (active) View.VISIBLE else View.INVISIBLE
             mark.text = if (done) "✓" else if (active) "" else "○"
-            mark.setTextColor(if (done) POSTER_ACCENT else POSTER_MUTED)
-            title.setTextColor(if (done || active) POSTER_TEXT else POSTER_MUTED)
+            spinner.indeterminateTintList = ColorStateList.valueOf(palette.accent)
+            count.setTextColor(palette.inkSecondary)
+            mark.setTextColor(if (done) palette.accent else palette.inkSecondary)
+            title.setTextColor(if (done || active) palette.ink else palette.inkSecondary)
             count.text = if (active && current.total > 0) {
                 context.getString(R.string.poster_stage_count, current.done, current.total)
             } else {
@@ -89,22 +90,10 @@ internal class PosterProgressView(
         }
     }
 
+    private var palette = ParsePalette.LIGHT
+    private var last: ParseProgress? = null
     private val bar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
         max = BAR_MAX
-        // Rounded track and fill, like a modern linear indicator.
-        progressDrawable = android.graphics.drawable.LayerDrawable(
-            arrayOf(
-                rounded(TRACK),
-                android.graphics.drawable.ClipDrawable(
-                    rounded(POSTER_ACCENT),
-                    Gravity.START,
-                    android.graphics.drawable.ClipDrawable.HORIZONTAL,
-                ),
-            ),
-        ).apply {
-            setId(0, android.R.id.background)
-            setId(1, android.R.id.progress)
-        }
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
@@ -116,8 +105,8 @@ internal class PosterProgressView(
         accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
     }
 
-    /** How far the parse has really got, 0 to 1, each time it advances (for the photo). */
-    var onFraction: ((Float) -> Unit)? = null
+    /** Each report from the parse, with how far it has really got, 0 to 1 (for the drawing). */
+    var onProgress: ((ParseProgress, Float) -> Unit)? = null
     private val rows = listOf(
         Row(ParseStage.STRAIGHTEN, context.getString(R.string.poster_stage_straighten)),
         Row(ParseStage.CORRIDORS, context.getString(R.string.poster_stage_corridors)),
@@ -139,9 +128,46 @@ internal class PosterProgressView(
             }
         )
         if (developer) rows.forEach { addView(it.view, LayoutParams(-1, -2)) }
+        usePalette(ParsePalette.LIGHT)
+    }
+
+    /** Recolours the line, bar and stage list, e.g. for the phone's dark setting. */
+    fun usePalette(look: ParsePalette) {
+        palette = look
+        now.setTextColor(look.ink)
+        paintBar(look.accent)
+        last?.let { show(it) }
+    }
+
+    /** The map is read: the bar fills and turns green. */
+    fun showDone() {
+        now.setText(R.string.poster_now_ready)
+        paintBar(palette.done)
+        bar.setProgress(BAR_MAX, true)
+    }
+
+    private fun paintBar(fill: Int) {
+        val progress = bar.progress
+        // Rounded track and fill, like a modern linear indicator.
+        bar.progressDrawable = android.graphics.drawable.LayerDrawable(
+            arrayOf(
+                rounded(palette.track),
+                android.graphics.drawable.ClipDrawable(
+                    rounded(fill),
+                    Gravity.START,
+                    android.graphics.drawable.ClipDrawable.HORIZONTAL,
+                ),
+            ),
+        ).apply {
+            setId(0, android.R.id.background)
+            setId(1, android.R.id.progress)
+        }
+        bar.progress = progress
     }
 
     fun show(progress: ParseProgress) {
+        if (last?.stage != progress.stage || last == null) paintBar(palette.accent)
+        last = progress
         if (developer) rows.forEach { it.render(progress) }
         val phrase = context.getString(
             when (progress.stage) {
@@ -163,7 +189,7 @@ internal class PosterProgressView(
         val within = if (progress.total > 0) progress.done.toDouble() / progress.total else 0.0
         val fraction = start + (next - start) * within
         bar.setProgress((fraction * BAR_MAX).roundToInt(), true)
-        onFraction?.invoke(fraction.toFloat())
+        onProgress?.invoke(progress, fraction.toFloat())
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).roundToInt()

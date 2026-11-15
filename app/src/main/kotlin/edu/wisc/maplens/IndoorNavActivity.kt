@@ -326,6 +326,7 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         RobotHub.load(this)
         voice = VoiceAndHaptics(this).apply {
@@ -337,8 +338,8 @@ class IndoorNavActivity : ComponentActivity() {
         @Suppress("DEPRECATION")
         window.navigationBarColor = Color.TRANSPARENT
         WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = true
-            isAppearanceLightNavigationBars = true
+            isAppearanceLightStatusBars = !Ui.dark
+            isAppearanceLightNavigationBars = !Ui.dark
         }
         setContentView(buildLayout())
         if (!developer) {
@@ -880,7 +881,7 @@ class IndoorNavActivity : ComponentActivity() {
             isClickable = true
             contentDescription = "${placeTitle(p)}, $detail"
             setOnClickListener { openPlace(p) }
-            addView(iconBubble(kindIcon(p.kind), Ui.INK_SECONDARY, Color.rgb(241, 243, 244)))
+            addView(iconBubble(kindIcon(p.kind), Ui.INK_SECONDARY, Ui.SURFACE_RAISED))
             addView(
                 LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
@@ -2210,7 +2211,7 @@ class IndoorNavActivity : ComponentActivity() {
 
     private fun renderNavigateSheet() {
         val end =
-            roundIcon(R.drawable.ic_close, Ui.INK, Color.rgb(241, 243, 244), R.string.in_end) {
+            roundIcon(R.drawable.ic_close, Ui.INK, Ui.SURFACE_RAISED, R.string.in_end) {
                 stopNavigation()
             }
         val eta = text(Ui.HEADING, ETA_GREEN, bold = true).apply {
@@ -2831,7 +2832,7 @@ class IndoorNavActivity : ComponentActivity() {
         }
         sheet = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = topRounded(Ui.SURFACE, 24)
+            background = topRounded(Ui.SURFACE, 28)
             elevation = dpf(12f)
             setPadding(dp(20), dp(8), dp(20), dp(16))
             padForSystemBars(top = false)
@@ -2858,7 +2859,10 @@ class IndoorNavActivity : ComponentActivity() {
         val scrim = View(this).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.argb(200, 255, 255, 255), Color.argb(0, 255, 255, 255)),
+                intArrayOf(
+                    Ui.BACKGROUND and 0x00FFFFFF or (200 shl 24),
+                    Ui.BACKGROUND and 0x00FFFFFF,
+                ),
             )
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             ViewCompat.setOnApplyWindowInsetsListener(this) { v, insets ->
@@ -2868,7 +2872,7 @@ class IndoorNavActivity : ComponentActivity() {
             }
         }
         root = FrameLayout(this).apply {
-            setBackgroundColor(IndoorMapView.BACKGROUND)
+            setBackgroundColor(IndoorMapView.GROUND)
             addView(map, FrameLayout.LayoutParams(MATCH, MATCH))
             addView(scrim, FrameLayout.LayoutParams(MATCH, 0, Gravity.TOP))
             addView(topArea, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.TOP))
@@ -3302,9 +3306,9 @@ class IndoorNavActivity : ComponentActivity() {
         /** Prefix of the remembered start for a map (see [originKey]). */
         private const val PREF_ORIGIN = "origin:"
 
-        private val ETA_GREEN = Color.rgb(24, 128, 56)
-        private val BANNER_GREEN = Color.rgb(13, 101, 45)
-        private val BANNER_DARK = Color.rgb(9, 74, 33)
+        private val ETA_GREEN get() = Ui.GUIDE_INK
+        private val BANNER_GREEN get() = Ui.GUIDE
+        private val BANNER_DARK get() = Ui.GUIDE_DEEP
 
         /** "Rerouting…": neutral dark grey, so it reads as a pause, not an instruction. */
         private val BANNER_GREY = Color.rgb(60, 64, 67)
@@ -3317,9 +3321,33 @@ class IndoorNavActivity : ComponentActivity() {
 
         /** LOW confidence: amber dot, dark amber text on a soft amber chip. */
         private val CONF_LOW = Color.rgb(227, 116, 0)
-        private val CONF_LOW_INK = Color.rgb(122, 62, 0)
-        private val CONF_LOW_SOFT = Color.rgb(254, 243, 224)
-        private val CONF_LOW_EDGE = Color.rgb(249, 203, 140)
+        private val CONF_LOW_INK get() = if (Ui.dark) {
+            Color.rgb(
+                242,
+                177,
+                76
+            )
+        } else {
+            Color.rgb(122, 62, 0)
+        }
+        private val CONF_LOW_SOFT get() = if (Ui.dark) {
+            Color.rgb(
+                46,
+                37,
+                22
+            )
+        } else {
+            Color.rgb(254, 243, 224)
+        }
+        private val CONF_LOW_EDGE get() = if (Ui.dark) {
+            Color.rgb(
+                110,
+                76,
+                24
+            )
+        } else {
+            Color.rgb(249, 203, 140)
+        }
 
         /** HIGH steps in a row before the chip goes back from uncertain to on track. */
         private const val HIGH_HOLD_STEPS = 3

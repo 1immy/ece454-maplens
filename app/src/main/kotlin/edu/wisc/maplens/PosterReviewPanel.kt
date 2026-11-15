@@ -16,9 +16,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import kotlin.math.roundToInt
 
-private val SURFACE = Color.rgb(240, 242, 245)
-private val SELECTED_SURFACE = Color.rgb(228, 238, 249)
-private val ON_ACCENT = Color.rgb(250, 251, 252)
+private val SURFACE get() = Ui.SURFACE_RAISED
+private val SELECTED_SURFACE get() = Ui.ACCENT_SOFT
+private val ON_ACCENT get() = Ui.ON_ACCENT
 private const val CROP_MARGIN_PX = 24
 
 /** The printed label with some margin, to compare against the number read from it. */

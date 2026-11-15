@@ -23,6 +23,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.animation.OvershootInterpolator
 import android.view.animation.PathInterpolator
+import edu.wisc.maplens.Ui
 import edu.wisc.maplens.model.PixelPoint
 import kotlin.math.PI
 import kotlin.math.abs
@@ -71,7 +72,12 @@ internal class IndoorMapView(context: Context) : View(context) {
     var posterColors = false
         set(value) {
             field = value
-            imagePaint.colorFilter = if (value) null else MUTED
+            imagePaint.colorFilter = when {
+                value && night -> DIMMED
+                value -> null
+                night -> MUTED_DARK
+                else -> MUTED
+            }
             invalidate()
         }
 
@@ -322,10 +328,12 @@ internal class IndoorMapView(context: Context) : View(context) {
     private var mapRouteDots = FloatArray(0)
     private var screenRouteDots = FloatArray(0)
 
+    /** Drawn dark when the app is dark, fixed when the view is made. */
+    private val night = Ui.dark
     private val imagePaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG).apply {
-        colorFilter = MUTED
+        colorFilter = if (night) MUTED_DARK else MUTED
     }
-    private val dotBorder = fill(Color.WHITE)
+    private val dotBorder = fill(if (night) Color.rgb(13, 20, 32) else Color.WHITE)
     private val dotBlue = fill(ROUTE_BLUE)
     private val dotWalked = fill(Color.rgb(154, 160, 166))
     private val shadow = fill(Color.argb(46, 0, 0, 0))
@@ -341,12 +349,14 @@ internal class IndoorMapView(context: Context) : View(context) {
     private val arrowStroke = stroke(Color.WHITE, 2.5f)
     private val pinRed = fill(PIN_RED)
     private val pinDark = fill(Color.rgb(165, 14, 14))
-    private val labelHalo = stroke(Color.WHITE, 3.5f).apply {
+    private val labelHalo = stroke(if (night) Color.rgb(15, 23, 34) else Color.WHITE, 3.5f).apply {
         textSize = 14 * density
         typeface = MEDIUM
         textAlign = Paint.Align.CENTER
     }
-    private val labelText = fill(Color.rgb(165, 14, 14)).apply {
+    private val labelText = fill(
+        if (night) Color.rgb(242, 139, 130) else Color.rgb(165, 14, 14)
+    ).apply {
         textSize = 14 * density
         typeface = MEDIUM
         textAlign = Paint.Align.CENTER
@@ -355,7 +365,7 @@ internal class IndoorMapView(context: Context) : View(context) {
     private val roomFill = fill(HIGHLIGHT)
     private val roomEdge = stroke(PIN_RED, 2f).apply { strokeJoin = Paint.Join.MITER }
     private val checkpointPaint = fill(Color.rgb(239, 108, 0))
-    private val chipPaint = fill(Color.WHITE)
+    private val chipPaint = fill(if (night) Color.rgb(20, 29, 43) else Color.WHITE)
     private val chipArrow = fill(ROUTE_BLUE)
     private val chipLine = stroke(Color.argb(150, 26, 115, 232), 2f)
     private val shape = Path()
@@ -537,7 +547,7 @@ internal class IndoorMapView(context: Context) : View(context) {
         lastFrame = now
         var moving = advance(now, dt)
 
-        canvas.drawColor(BACKGROUND)
+        canvas.drawColor(if (night) BACKGROUND_DARK else BACKGROUND)
         val image = bitmap ?: return
         buildMatrix()
         canvas.save()
@@ -1150,6 +1160,10 @@ internal class IndoorMapView(context: Context) : View(context) {
         val ROBOT_TEAL = Color.rgb(0, 121, 107)
         val PIN_RED = Color.rgb(234, 67, 53)
         val BACKGROUND = Color.rgb(232, 234, 237)
+        val BACKGROUND_DARK = Color.rgb(15, 23, 34)
+
+        /** The map's ground in the app's current look. */
+        val GROUND get() = if (Ui.dark) BACKGROUND_DARK else BACKGROUND
 
         private const val HIGHLIGHT = 0x40EA4335
         private const val NAV_ANCHOR = 0.70
@@ -1181,6 +1195,30 @@ internal class IndoorMapView(context: Context) : View(context) {
                             0.72f, 0f, 0f, 0f, 74f,
                             0f, 0.72f, 0f, 0f, 76f,
                             0f, 0f, 0.72f, 0f, 80f,
+                            0f, 0f, 0f, 1f, 0f,
+                        ),
+                    ),
+                )
+            },
+        )
+
+        /**
+         * The same plan for the dark look: greyscale turned over, so the paper reads as a
+         * dark ground and the walls as soft light lines, with a slight blue cast.
+         */
+        /** The poster's own colours, a little dimmer so it doesn't glare in the dark look. */
+        private val DIMMED =
+            ColorMatrixColorFilter(ColorMatrix().apply { setScale(0.82f, 0.82f, 0.84f, 1f) })
+
+        private val MUTED_DARK = ColorMatrixColorFilter(
+            ColorMatrix().apply {
+                setSaturation(0f)
+                postConcat(
+                    ColorMatrix(
+                        floatArrayOf(
+                            -0.52f, 0f, 0f, 0f, 132f,
+                            0f, -0.52f, 0f, 0f, 140f,
+                            0f, 0f, -0.52f, 0f, 151f,
                             0f, 0f, 0f, 1f, 0f,
                         ),
                     ),
