@@ -65,6 +65,7 @@ import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.model.RecoveryAction
+import edu.wisc.maplens.model.bearingDifference
 import edu.wisc.maplens.model.edgePoints
 import edu.wisc.maplens.model.wrapBearing
 import edu.wisc.maplens.nav.CompassView
@@ -294,6 +295,10 @@ class IndoorNavActivity : ComponentActivity() {
 
     /** The live map heading, for the sign scan's bearings (#19). */
     private var liveHeadingRad: Double? = null
+
+    /** "Turn around" is on the banner: a turn alone (no step) should clear it. */
+    private var facingBackShown = false
+    private var lastTurnCheckMs = 0L
 
     /** The "Find a room sign" camera, while it is open. */
     private var signScan: SignScanView? = null
@@ -1141,6 +1146,7 @@ class IndoorNavActivity : ComponentActivity() {
 
     private fun stopNavigation(toBrowse: Boolean = true) {
         orientTo = null
+        facingBackShown = false
         orientDial = null
         orientLine = null
         voice.stop()
@@ -1343,6 +1349,12 @@ class IndoorNavActivity : ComponentActivity() {
         if (now - orientSinceMs >= ORIENT_HOLD_MS) endOrient(spoken = true)
     }
 
+    /** [pose] where it is, facing the way the compass says now. */
+    private fun facingNow(pose: PoseEstimate) = pose.copy(
+        timestampNanos = SystemClock.elapsedRealtimeNanos(),
+        headingRad = liveHeadingRad ?: pose.headingRad,
+    )
+
     /** Turning done (or skipped, or the user just walked): on to the real directions. */
     private fun endOrient(spoken: Boolean) {
         if (orientTo == null) return
@@ -1360,13 +1372,26 @@ class IndoorNavActivity : ComponentActivity() {
         }
         bannerDistance.visibility = View.VISIBLE
         renderNavigateSheet()
-        // The first real instruction, spoken by the announcer as a fresh route's first cue.
-        lastPose?.let(::handlePose)
+        // The first real instruction, spoken by the announcer as a fresh route's first cue,
+        // from where they now face: the last pose still holds the heading before the turn,
+        // which would read as facing back and say "Turn around" again.
+        lastPose?.let { handlePose(facingNow(it)) }
     }
 
     private fun onLiveHeading(mapRad: Double) {
         liveHeadingRad = mapRad
         if (orientTo != null) updateOrient(mapRad)
+        // Told to turn around and now turned: re-check at once instead of on the next step,
+        // so the banner moves on as soon as they face the route, like the turn step does.
+        val pose = lastPose
+        val now = SystemClock.elapsedRealtime()
+        if (facingBackShown && following && orientTo == null && pose != null &&
+            now - lastTurnCheckMs >= TURN_CHECK_MS &&
+            bearingDifference(mapRad, pose.headingRad) >= TURN_CHECK_RAD
+        ) {
+            lastTurnCheckMs = now
+            handlePose(facingNow(pose))
+        }
         if (following) map.setHeading(mapRad, minimumChangeRad = Math.toRadians(0.5))
     }
 
@@ -1452,6 +1477,7 @@ class IndoorNavActivity : ComponentActivity() {
         } else {
             g.instruction(at, k)
         }
+        facingBackShown = status.facingBack
         renderBanner(g, at, k, instruction, turnAround = status.facingBack)
         renderEta(g, at, k)
         if (status.facingBack) {
@@ -3056,6 +3082,10 @@ class IndoorNavActivity : ComponentActivity() {
 
         /** ...held this long, so swinging past it doesn't count. */
         private const val ORIENT_HOLD_MS = 450L
+
+        /** While "Turn around" shows, re-check this often, once they turned this much. */
+        private const val TURN_CHECK_MS = 300L
+        private val TURN_CHECK_RAD = Math.toRadians(30.0)
 
         /** Walking this far along the route ends the turn step: they found the way. */
         private const val ORIENT_WALK_STEPS = 2.0
