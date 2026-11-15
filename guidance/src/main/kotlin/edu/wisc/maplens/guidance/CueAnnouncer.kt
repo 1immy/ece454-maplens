@@ -8,7 +8,10 @@ data class Announcement(val text: String, val haptic: Haptic?)
 
 /** When to speak. Values in steps, so they scale with the walker's k. */
 data class AnnouncerParams(
-    /** Say "In N steps, turn left …" once the next maneuver is this close (and at the start). */
+    /**
+     * Say "In N steps, turn left …" once the next maneuver is this close (and at the start).
+     * A destination further than this with no turn before it is "walk straight", not ahead.
+     */
     val prepareSteps: Int = 12,
     /** Say "Turn left …" and vibrate once it is this close. */
     val nowSteps: Int = 2,
@@ -27,6 +30,7 @@ class CueAnnouncer(private val params: AnnouncerParams = AnnouncerParams()) {
     private var prepared = false
     private var nowSaid = false
     private var arrived = false
+    private var straightSaid = false
 
     fun reset() {
         cue = -1
@@ -34,6 +38,7 @@ class CueAnnouncer(private val params: AnnouncerParams = AnnouncerParams()) {
         prepared = false
         nowSaid = false
         arrived = false
+        straightSaid = false
     }
 
     fun next(instruction: Instruction, cueIndex: Int): Announcement? {
@@ -48,9 +53,17 @@ class CueAnnouncer(private val params: AnnouncerParams = AnnouncerParams()) {
             cue = cueIndex
             prepared = false
             nowSaid = false
+            straightSaid = false
         }
         val first = !started
         started = true
+        // The last stretch, still long: say which way and how far once, as Google Maps does
+        // ("Walk straight for 30 steps to room 3546"), then the heads-up when it is close.
+        if (arriving && n > params.prepareSteps) {
+            if (straightSaid) return null
+            straightSaid = true
+            return Announcement(straightText(instruction), null)
+        }
         if (!arriving && n <= params.nowSteps && !nowSaid) {
             nowSaid = true
             prepared = true
@@ -66,8 +79,21 @@ class CueAnnouncer(private val params: AnnouncerParams = AnnouncerParams()) {
     companion object {
         fun prepareText(i: Instruction): String {
             val steps = if (i.stepsUntil == 1) "1 step" else "${i.stepsUntil} steps"
+            if (i.maneuver == Maneuver.ARRIVE) {
+                return "In $steps, you'll reach ${i.detail.removePrefix("at ")}".trim()
+            }
             return "In $steps, ${verb(i.maneuver)} ${i.detail}".trim()
         }
+
+        /** "Walk straight for 30 steps to room 3546": a long last stretch with no turn. */
+        fun straightText(i: Instruction): String {
+            val steps = if (i.stepsUntil == 1) "1 step" else "${i.stepsUntil} steps"
+            return "Walk straight for $steps ${towards(i.detail)}".trim()
+        }
+
+        /** "at room 3546" becomes "to room 3546". */
+        fun towards(detail: String): String =
+            if (detail.startsWith("at ")) "to " + detail.removePrefix("at ") else detail
 
         fun nowText(i: Instruction): String =
             "${verb(i.maneuver).replaceFirstChar { it.uppercase() }} ${i.detail}".trim()

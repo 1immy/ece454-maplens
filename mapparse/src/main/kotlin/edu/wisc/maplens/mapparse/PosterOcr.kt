@@ -158,35 +158,174 @@ internal fun recheckRegions(bgr: Mat, regions: List<Rect>): List<PosterReading> 
 
 /** [recheckRegions] keeping each region's reads apart, with the networks loaded once. */
 internal fun recheckEach(bgr: Mat, regions: List<Rect>): List<List<PosterReading>> {
-    if (regions.isEmpty()) return emptyList()
-    return try {
-        // A few recognizers side by side, each on its own thread and slice of the regions:
-        // each read is single-threaded and small, so they don't compete much.
-        val slices = regions.indices.groupBy { it % RECHECK_THREADS }.values.toList()
-        val bySlice = slices.parallelMap { slice ->
-            val ocr = PosterOcr {}
-            slice.map { i ->
-                val region = regions[i]
-                val quad = arrayOf(
-                    Point(region.left.toDouble(), region.top.toDouble()),
-                    Point(region.right.toDouble(), region.top.toDouble()),
-                    Point(region.right.toDouble(), region.bottom.toDouble()),
-                    Point(region.left.toDouble(), region.bottom.toDouble()),
-                )
-                i to ocr.readQuad(bgr, quad)
-                    .map { it.copy(possible = it.confidence < OcrParams.SUPPLEMENTAL_CONFIDENCE) }
+    val recheck = Recheck(bgr, regions)
+    recheck.read(regions.indices)
+    return regions.indices.map(recheck::reads)
+}
+
+/**
+ * The recognizer's reads of word-sized [regions], asked for a few at a time. The regions are
+ * dealt to recognizer passes once, up front and by position alone: a few recognizers side by
+ * side, each with its own slice of the regions, two regions to a pass where they fit. A read
+ * depends a little on the word sharing its pass, so a region must always share with the same
+ * one for its read to come out the same whichever regions are asked for and in what order.
+ * [read] runs every pass holding a region asked for; a pass none of whose regions is ever
+ * asked for is never run.
+ */
+internal class Recheck(private val bgr: Mat, private val regions: List<Rect>) {
+    // No more recognizer copies than regions: loading one costs about as much as four reads.
+    private val slices: List<List<List<Int>>> = if (regions.isEmpty()) {
+        emptyList()
+    } else {
+        regions.indices.groupBy { it % minOf(RECHECK_THREADS, regions.size) }
+            .values.map { it.chunked(2) }
+    }
+    private val done = java.util.concurrent.ConcurrentHashMap<Int, List<PosterReading>>()
+
+    /** Region [index]'s reads. It must have been asked for with [read]. */
+    fun reads(index: Int): List<PosterReading> = done.getValue(index)
+
+    /** Reads the regions at [indexes] not read yet; returns how many passes that took. */
+    fun read(indexes: Iterable<Int>): Int {
+        val wanted = indexes.filter { !done.containsKey(it) }.toSet()
+        val work = slices.map { slice -> slice.filter { pair -> pair.any { it in wanted } } }
+            .filter { it.isNotEmpty() }
+        return work.parallelMap { pairs ->
+            Recognizers.use { ocr -> pairs.sumOf { pair -> readPass(ocr, pair, wanted) } }
+        }.sum()
+    }
+
+    /** One pair's reads: together if they fit one pass, else each one asked for on its own. */
+    private fun readPass(ocr: PosterOcr, pair: List<Int>, wanted: Set<Int>): Int {
+        val both = pair.takeIf { it.size == 2 }
+            ?.let { (a, b) -> ocr.readPair(bgr, quad(a), quad(b)) }
+        if (both != null) {
+            done[pair[0]] = marked(both.first)
+            done[pair[1]] = marked(both.second)
+            return 1
+        }
+        val alone = pair.filter { it in wanted }
+        for (i in alone) done[i] = marked(ocr.readQuad(bgr, quad(i)))
+        return alone.size
+    }
+
+    private fun quad(i: Int) = regions[i].let { region ->
+        arrayOf(
+            Point(region.left.toDouble(), region.top.toDouble()),
+            Point(region.right.toDouble(), region.top.toDouble()),
+            Point(region.right.toDouble(), region.bottom.toDouble()),
+            Point(region.left.toDouble(), region.bottom.toDouble()),
+        )
+    }
+
+    private fun marked(reads: List<PosterReading>) =
+        reads.map { it.copy(possible = it.confidence < OcrParams.SUPPLEMENTAL_CONFIDENCE) }
+}
+
+/**
+ * Recognizers loaded during one parse, lent out by [recheckEach] and kept until [release], so
+ * a later pass (the cut-number reread) doesn't load the 21 MB network again. [PosterWarmup]
+ * loads them ahead of the parse and keeps them across parses while the capture screen is open.
+ */
+internal object Recognizers {
+    private val idle = java.util.concurrent.LinkedBlockingQueue<PosterOcr>()
+
+    /** Recognizers a warm-up is still loading. */
+    private val warming = java.util.concurrent.atomic.AtomicInteger()
+
+    /** True while [PosterWarmup] owns the networks: a parse then leaves them loaded. */
+    @Volatile var kept = false
+
+    fun <T> use(block: (PosterOcr) -> T): T {
+        val ocr = take()
+        try {
+            return block(ocr)
+        } finally {
+            idle.add(ocr)
+        }
+    }
+
+    /** An idle recognizer, one the warm-up is about to deliver, or else a new one. */
+    private fun take(): PosterOcr {
+        while (true) {
+            idle.poll()?.let { return it }
+            if (warming.get() == 0) break
+            try {
+                idle.poll(WARM_POLL_MS, java.util.concurrent.TimeUnit.MILLISECONDS)?.let {
+                    return it
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                checkCancellation()
             }
         }
-        val reads = bySlice.flatten().toMap()
-        regions.indices.map { reads.getValue(it) }
-    } finally {
+        return idle.poll() ?: loaded()
+    }
+
+    private fun loaded(): PosterOcr {
+        val timer = StageTimer()
+        return PosterOcr {}.also { timer.mark("load recognizer") }
+    }
+
+    /** Loads the recognizers a parse runs side by side and runs each once, ahead of a parse. */
+    fun warm() {
+        warming.set(RECHECK_THREADS)
+        try {
+            repeat(RECHECK_THREADS) {
+                checkCancellation()
+                if (!kept) return
+                val ocr = loaded()
+                ocr.warm()
+                idle.add(ocr)
+                warming.decrementAndGet()
+            }
+        } finally {
+            warming.set(0)
+        }
+    }
+
+    /** Frees the networks: holding them through navigation costs more than loading again. */
+    fun release() {
+        idle.clear()
+        OcrFiles.clear()
         System.gc()
         System.runFinalization()
     }
+
+    private const val WARM_POLL_MS = 20L
+}
+
+/** The recognizer's bundled files, read once for every copy loaded while they are held. */
+private object OcrFiles {
+    private var recognizer: ByteArray? = null
+    private var alphabet: List<String>? = null
+
+    @Synchronized
+    fun recognizer(): ByteArray = recognizer ?: resource("rec.onnx").use { it.readBytes() }
+        .also {
+            requireOcrModel(it)
+            recognizer = it
+        }
+
+    @Synchronized
+    fun alphabet(): List<String> = alphabet
+        ?: (listOf("") + resource("characters.txt").bufferedReader().use { it.readLines() } + " ")
+            .also { alphabet = it }
+
+    @Synchronized
+    fun clear() {
+        recognizer = null
+        alphabet = null
+    }
+
+    private fun resource(name: String) =
+        checkNotNull(javaClass.getResourceAsStream("/poster-ocr/$name")) {
+            "Bundled poster OCR asset missing: $name"
+        }
 }
 
 /** Recognizer copies run at once by [recheckEach]. */
-private const val RECHECK_THREADS = 4
+private const val RECHECK_THREADS = 2
 
 internal fun posterTileOrigins(size: Int, span: Int): List<Int> {
     val last = (size - span).coerceAtLeast(0)
@@ -196,11 +335,12 @@ internal fun posterTileOrigins(size: Int, span: Int): List<Int> {
 }
 
 /** Native networks for one read. Reloading costs less than holding them through navigation. */
-private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
+internal class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
     private val detector by lazy { network("det.onnx") }
-    private val recognizer = network("rec.onnx")
-    private val alphabet =
-        listOf("") + resource("characters.txt").bufferedReader().use { it.readLines() } + " "
+    private val recognizer = Mats().use { mats ->
+        Dnn.readNetFromONNX(mats.own(MatOfByte(*OcrFiles.recognizer())))
+    }
+    private val alphabet = OcrFiles.alphabet()
 
     private fun resource(name: String) =
         checkNotNull(javaClass.getResourceAsStream("/poster-ocr/$name")) {
@@ -211,6 +351,19 @@ private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
         val bytes = resource(name).use { it.readBytes() }
         requireOcrModel(bytes)
         Dnn.readNetFromONNX(mats.own(MatOfByte(*bytes)))
+    }
+
+    /** One read of a blank word, so the network's first, slower pass is not a real one. */
+    fun warm() = Mats().use { mats ->
+        val width = OcrParams.RECOGNIZER_WIDTH.toDouble()
+        val height = OcrParams.RECOGNIZER_HEIGHT.toDouble()
+        val blank = mats.own(
+            Mat(height.toInt(), width.toInt(), CvType.CV_8UC3, Scalar.all(255.0)),
+        )
+        readQuad(
+            blank,
+            arrayOf(Point(), Point(width, 0.0), Point(width, height), Point(0.0, height))
+        )
     }
 
     /** One recognizer read of [quad], for [recheckRegions]. */
@@ -431,9 +584,56 @@ private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
 
     private fun recognize(bgr: Mat, quad: Array<Point>): List<PosterReading> = Mats().use { mats ->
         checkCancellation()
+        val crop = prepared(bgr, quad, mats) ?: return emptyList()
+        val input = mats.own(
+            Mat.zeros(OcrParams.RECOGNIZER_HEIGHT, OcrParams.RECOGNIZER_WIDTH, CvType.CV_32FC3),
+        )
+        crop.copyTo(mats.own(input.colRange(0, crop.cols())))
+        val (characters, columns) = run(input, mats)
+        readingsFrom(characters, boundsOf(quad), crop.cols(), columns)
+    }
+
+    /**
+     * Two words read in one pass of the recognizer: side by side in its 320 px input with a
+     * blank gap, the characters split back by where they sit. The network's cost is per input,
+     * not per word, so a pair costs what one word did. Null when the two don't fit together.
+     */
+    fun readPair(
+        bgr: Mat,
+        a: Array<Point>,
+        b: Array<Point>,
+    ): Pair<List<PosterReading>, List<PosterReading>>? = Mats().use { mats ->
+        checkCancellation()
+        val first = prepared(bgr, a, mats) ?: return null
+        val second = prepared(bgr, b, mats) ?: return null
+        // The second word starts on a column boundary, so its characters' columns shift whole.
+        val start = (first.cols() + PAIR_GAP + COLUMN_PX - 1) / COLUMN_PX * COLUMN_PX
+        if (start + second.cols() > OcrParams.RECOGNIZER_WIDTH) return null
+        val input = mats.own(
+            Mat.zeros(OcrParams.RECOGNIZER_HEIGHT, OcrParams.RECOGNIZER_WIDTH, CvType.CV_32FC3),
+        )
+        first.copyTo(mats.own(input.colRange(0, first.cols())))
+        second.copyTo(mats.own(input.colRange(start, start + second.cols())))
+        val (characters, columns) = run(input, mats)
+        val step = OcrParams.RECOGNIZER_WIDTH.toDouble() / columns
+        if (step != COLUMN_PX.toDouble()) return null
+        val split = (first.cols() + start) / 2.0
+        val (left, right) = characters.partition { (it.column + 0.5) * step < split }
+        val shift = start / COLUMN_PX
+        readingsFrom(left, boundsOf(a), first.cols(), columns) to
+            readingsFrom(
+                right.map { it.copy(column = it.column - shift) },
+                boundsOf(b),
+                second.cols(),
+                columns,
+            )
+    }
+
+    /** [quad] straightened to the recognizer's height and normalised; null if too small. */
+    private fun prepared(bgr: Mat, quad: Array<Point>, mats: Mats): Mat? {
         val width = maxOf(distance(quad[0], quad[1]), distance(quad[2], quad[3])).toInt()
         val height = maxOf(distance(quad[0], quad[3]), distance(quad[1], quad[2])).toInt()
-        if (width < 3 || height < 3) return emptyList()
+        if (width < 3 || height < 3) return null
         val source = mats.own(MatOfPoint2f(*quad))
         val destination = mats.own(
             MatOfPoint2f(
@@ -462,41 +662,54 @@ private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
             Size(resizedWidth.toDouble(), OcrParams.RECOGNIZER_HEIGHT.toDouble()),
         )
         resized.convertTo(resized, CvType.CV_32F, 1 / 127.5, -1.0)
-        val padded = mats.own(
-            Mat.zeros(OcrParams.RECOGNIZER_HEIGHT, OcrParams.RECOGNIZER_WIDTH, CvType.CV_32FC3),
-        )
-        resized.copyTo(mats.own(padded.colRange(0, resizedWidth)))
-        val input = mats.own(Dnn.blobFromImage(padded))
-        recognizer.setInput(input)
+        return resized
+    }
+
+    /** One pass of the recognizer over a full-size [input]: characters and output columns. */
+    private fun run(input: Mat, mats: Mats): Pair<List<OcrCharacter>, Int> {
+        recognizer.setInput(mats.own(Dnn.blobFromImage(input)))
         val output = mats.own(recognizer.forward())
         check(output.size(2) == alphabet.size)
         val values = FloatArray(output.total().toInt())
         output.get(intArrayOf(0, 0, 0), values)
-        val characters = decodePosterText(values, alphabet)
+        return decodePosterText(values, alphabet) to output.size(1)
+    }
+
+    private fun boundsOf(quad: Array<Point>) = Rect(
+        floor(quad.minOf { it.x }).toInt(),
+        floor(quad.minOf { it.y }).toInt(),
+        ceil(quad.maxOf { it.x }).toInt(),
+        ceil(quad.maxOf { it.y }).toInt(),
+    )
+
+    /**
+     * The reads in one word's [characters] ([resizedWidth] px of the input, [columns] output
+     * columns across the full input): the word, plus each room number of a run of them.
+     */
+    private fun readingsFrom(
+        characters: List<OcrCharacter>,
+        box: Rect,
+        resizedWidth: Int,
+        columns: Int,
+    ): List<PosterReading> {
         if (characters.isEmpty()) return emptyList()
         val text = characters.joinToString("") { it.text }
         val confidence = characters.map { it.confidence }.average().toFloat()
         if (confidence < OcrParams.TEXT_CONFIDENCE) return emptyList()
-        val box = Rect(
-            floor(quad.minOf { it.x }).toInt(),
-            floor(quad.minOf { it.y }).toInt(),
-            ceil(quad.maxOf { it.x }).toInt(),
-            ceil(quad.maxOf { it.y }).toInt(),
-        )
         val reading = PosterReading(text, box, confidence)
         val tokens = roomRowTokens(text)
         if (tokens.isEmpty()) return listOf(reading)
         val symbols = characters.filterNot { it.text.isBlank() || it.text in listOf("|", ",") }
         if (symbols.joinToString("") { it.text } != tokens.joinToString("")) return listOf(reading)
         val columnWidth = box.width() * OcrParams.RECOGNIZER_WIDTH.toDouble() /
-            resizedWidth / output.size(1)
+            resizedWidth / columns
         val characterWidth = if (symbols.size > 1) {
             (symbols.last().column - symbols.first().column) * columnWidth / (symbols.size - 1)
         } else {
             box.width().toDouble()
         }
         var offset = 0
-        listOf(reading) + tokens.map { token ->
+        return listOf(reading) + tokens.map { token ->
             val group = symbols.subList(offset, offset + token.length)
             offset += token.length
             val left = ((group.first().column + 0.5) * columnWidth - characterWidth / 2)
@@ -508,6 +721,14 @@ private class PosterOcr(private val onProgress: (ParseProgress) -> Unit) {
                 minOf(confidence, group.minOf { it.confidence }),
             )
         }
+    }
+
+    private companion object {
+        /** Blank between a pair's two words, so no character runs across. */
+        const val PAIR_GAP = 24
+
+        /** Input pixels per output column of the recognizer (320 px in, 40 columns out). */
+        const val COLUMN_PX = 8
     }
 }
 

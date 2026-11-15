@@ -11,6 +11,31 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class PosterLandmarksTest {
+    /** Eh3 import, Nov 14: rooms 3445 and 3446 reached through one opening, 1 px apart. */
+    @Test
+    fun aDoorLinkRunningAlongAnotherBranchesWhereTheyPart() {
+        val joint = Node("n4", PixelPoint(434.0, 1239.0), NodeType.DEAD_END)
+        val first = (0..18).map { PixelPoint(434.0 - 4 * it, 1238.0) } +
+            listOf(PixelPoint(360.0, 1234.0), PixelPoint(347.0, 1231.0), PixelPoint(347.0, 1223.0))
+        val door = Node("ocrD1", first.last(), NodeType.DOOR)
+        val graph = FloorGraph(
+            "b",
+            "3",
+            mapOf(joint.id to joint, door.id to door),
+            listOf(Edge("door1", joint.id, door.id, first, pathLength(first))),
+            emptyList(),
+            "",
+        )
+        val second = (0..17).map { PixelPoint(433.0 - 4 * it, 1238.6) } +
+            listOf(PixelPoint(361.0, 1234.0), PixelPoint(357.0, 1238.0), PixelPoint(357.0, 1250.0))
+        val (shared, last) = checkNotNull(graph.sharedLink(joint, second))
+        assertEquals("door1", shared.id)
+        // Together up to x 361, then apart.
+        assertEquals(PixelPoint(361.0, 1234.0), second[last])
+        val apart = (0..5).map { PixelPoint(434.0, 1239.0 + 8 * it) }
+        assertEquals(null, graph.sharedLink(joint, apart))
+    }
+
     @Test
     fun starSplitsEnrichedEdgeWithoutLosingDoor() {
         val graph = corridor()

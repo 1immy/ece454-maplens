@@ -288,6 +288,13 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     /** True until the camera is first moved on purpose; until then the floor is re-fitted. */
     private var openingFit = false
+
+    /**
+     * Points a [fit] framed (a route preview). Kept framed while the panels around the map
+     * change size (the preview sheet opens after the fit), until the user or another camera
+     * move takes over.
+     */
+    private var framed: List<PixelPoint>? = null
     private var transition: Transition? = null
     private var lastFrame = 0L
     private var pinDropStart = 0L
@@ -369,6 +376,13 @@ internal class IndoorMapView(context: Context) : View(context) {
      */
     fun setInsets(top: Int, bottom: Int) {
         if (top == insetTop && bottom == insetBottom) return
+        val keepFramed = framed
+        if (keepFramed != null) {
+            insetTop = top
+            insetBottom = bottom
+            post { if (framed === keepFramed) fit(keepFramed) }
+            return
+        }
         if (openingFit) {
             // Panels laid out after the first fit: fit again so the floor sits between them.
             insetTop = top
@@ -392,6 +406,7 @@ internal class IndoorMapView(context: Context) : View(context) {
     /** The whole floor, north (poster) up, flat. */
     fun showAll(animate: Boolean = true) {
         openingFit = false
+        framed = null
         fitWhole(animate)
     }
 
@@ -404,6 +419,7 @@ internal class IndoorMapView(context: Context) : View(context) {
     /** Frames [points] with a margin, keeping the current rotation unless [northUp]. */
     fun fit(points: List<PixelPoint>, northUp: Boolean = true, animate: Boolean = true) {
         openingFit = false
+        framed = null
         if (points.isEmpty() || width == 0) return
         follow = Follow.NONE
         val minX = points.minOf { it.x }
@@ -417,11 +433,13 @@ internal class IndoorMapView(context: Context) : View(context) {
             .coerceIn(minZoom(), fitZoom() * 3.5)
         val up = if (northUp) MAP_UP else upRad
         moveTo((minX + maxX) / 2, (minY + maxY) / 2, z, up, 0.0, animate)
+        framed = points
     }
 
     /** Centers on one point at a street-level zoom; [northUp] also turns the map poster-up. */
     fun focus(point: PixelPoint, northUp: Boolean = false, animate: Boolean = true) {
         openingFit = false
+        framed = null
         follow = Follow.NONE
         val up = if (northUp) MAP_UP else upRad
         val t = if (northUp) 0.0 else tilt
@@ -431,6 +449,7 @@ internal class IndoorMapView(context: Context) : View(context) {
     /** Back to poster-up and flat, keeping the centre. */
     fun resetNorth() {
         openingFit = false
+        framed = null
         if (follow == Follow.HEADING) follow = Follow.POSITION
         moveTo(cx, cy, zoom, MAP_UP, 0.0, animate = true)
     }
@@ -438,6 +457,7 @@ internal class IndoorMapView(context: Context) : View(context) {
     /** Starts following the puck, easing in from wherever the camera is now. */
     fun startFollowing(mode: Follow) {
         openingFit = false
+        framed = null
         follow = mode
         val z = if (mode == Follow.HEADING) {
             fitZoom() * navZoom
@@ -455,6 +475,7 @@ internal class IndoorMapView(context: Context) : View(context) {
     /** Flattens the map over the puck for tapping a position, keeping zoom and rotation. */
     fun flatten() {
         openingFit = false
+        framed = null
         follow = Follow.NONE
         val x = if (hasPuck) puckX else cx
         val y = if (hasPuck) puckY else cy
@@ -1045,6 +1066,7 @@ internal class IndoorMapView(context: Context) : View(context) {
             transition = null
             // Once the user touches the map, panels opening must not re-fit it any more.
             openingFit = false
+            framed = null
         }
         scaler.onTouchEvent(event)
         handleTwist(event)
@@ -1097,6 +1119,7 @@ internal class IndoorMapView(context: Context) : View(context) {
 
     private fun userMoved() {
         openingFit = false
+        framed = null
         transition = null
         if (follow != Follow.NONE) {
             follow = Follow.NONE

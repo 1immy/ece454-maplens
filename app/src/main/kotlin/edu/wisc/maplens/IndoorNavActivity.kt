@@ -40,6 +40,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import edu.wisc.maplens.guidance.Announcement
+import edu.wisc.maplens.guidance.AnnouncerParams
 import edu.wisc.maplens.guidance.CueAnnouncer
 import edu.wisc.maplens.guidance.Haptic
 import edu.wisc.maplens.guidance.Instruction
@@ -65,6 +66,7 @@ import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.model.RecoveryAction
 import edu.wisc.maplens.model.edgePoints
+import edu.wisc.maplens.model.wrapBearing
 import edu.wisc.maplens.nav.CompassView
 import edu.wisc.maplens.nav.DemoScenario
 import edu.wisc.maplens.nav.DemoWalker
@@ -84,10 +86,12 @@ import edu.wisc.maplens.nav.SignReader
 import edu.wisc.maplens.nav.SignScanView
 import edu.wisc.maplens.nav.SignVoter
 import edu.wisc.maplens.nav.Trail
+import edu.wisc.maplens.nav.TurnDial
 import edu.wisc.maplens.nav.nearestRoomLabel
 import edu.wisc.maplens.nav.places
 import edu.wisc.maplens.nav.rerouteTo
 import edu.wisc.maplens.nav.smoothedCorridors
+import edu.wisc.maplens.nav.startingAt
 import edu.wisc.maplens.robot.Carry
 import edu.wisc.maplens.robot.EscortCue
 import edu.wisc.maplens.robot.EscortState
@@ -106,6 +110,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -148,6 +153,7 @@ class IndoorNavActivity : ComponentActivity() {
     private val featureChips = mutableMapOf<PlaceKind, View>()
     private lateinit var routeCard: LinearLayout
     private lateinit var routeTo: TextView
+    private lateinit var routeFrom: TextView
     private lateinit var banner: LinearLayout
     private lateinit var bannerCard: LinearLayout
     private lateinit var bannerIcon: ManeuverView
@@ -156,6 +162,15 @@ class IndoorNavActivity : ComponentActivity() {
     private lateinit var bannerTitle: TextView
     private lateinit var bannerDetail: TextView
     private lateinit var thenStrip: LinearLayout
+
+    /**
+     * Before the first step: the map bearing the user should turn to face (the route's first
+     * stretch), while they face elsewhere. Null once they face it, walk off, or skip.
+     */
+    private var orientTo: Double? = null
+    private var orientSinceMs = 0L
+    private var orientDial: TurnDial? = null
+    private var orientLine: TextView? = null
     private lateinit var thenIcon: ManeuverView
     private lateinit var hintCard: LinearLayout
     private lateinit var confidenceChip: LinearLayout
@@ -213,6 +228,12 @@ class IndoorNavActivity : ComponentActivity() {
     private var logFile: File? = null
 
     private var graph: FloorGraph? = null
+
+    /** The map as loaded, START at the poster; [graph] is it with START moved to [origin]. */
+    private var baseGraph: FloorGraph? = null
+
+    /** Where the user said "I'm here"; null means the poster's START. */
+    private var origin: Place? = null
     private var corridors: Map<String, String> = emptyMap()
     private var places: List<Place> = emptyList()
     private var walkPx: Map<String, Double> = emptyMap()
@@ -251,6 +272,9 @@ class IndoorNavActivity : ComponentActivity() {
     private var demoPauseUntil = 0L
     private var walking = false
     private var liveMode = false
+
+    /** User mode walks for real: no Demo walk, its scenarios or the Demo / Live chip. */
+    private val developer by lazy { AppMode.isDeveloper(this) }
     private var following = false
     private var resumeFollowing = false
     private var stats: LiveStats? = null
@@ -312,6 +336,11 @@ class IndoorNavActivity : ComponentActivity() {
             isAppearanceLightNavigationBars = true
         }
         setContentView(buildLayout())
+        if (!developer) {
+            modeChip.visibility = View.GONE
+            // Live from the start, so its sensors settle while the user picks a room.
+            toggleMode()
+        }
         onBackPressedDispatcher.addCallback(this, backHandler)
         show(Screen.BROWSE)
         loader.execute {
@@ -319,6 +348,7 @@ class IndoorNavActivity : ComponentActivity() {
             runOnUiThread {
                 loaded.onSuccess { (g, image) ->
                     graph = g
+                    baseGraph = g
                     corridors = g.corridorIds()
                     map.bitmap = image
                     map.setPuck(g.nodes.getValue(g.startNodeId).position)
@@ -334,25 +364,28 @@ class IndoorNavActivity : ComponentActivity() {
     /** Graph, image, every searchable place and its walking distance from START. */
     private fun loadMap(): Pair<FloorGraph, android.graphics.Bitmap> {
         val savedId = intent.getStringExtra(EXTRA_MAP_ID)
+        var printed = emptyList<LabelBox>()
         val (loaded, image) = if (savedId == null) {
             MapAssets.loadGraph(this) to MapAssets.loadImage(this)
         } else {
             val store = MapAssets.savedMaps(this)
             val saved = store.get(savedId) ?: error("saved map $savedId is gone")
             runOnUiThread { mapName = saved.name }
+            printed = store.loadLabels(saved).map {
+                LabelBox(
+                    it.label,
+                    it.left.toDouble(),
+                    it.top.toDouble(),
+                    it.right.toDouble(),
+                    it.bottom.toDouble(),
+                )
+            }
             store.loadGraph(saved) to MapAssets.loadImage(saved)
         }
         // Routes, turn cues and tracking follow each corridor's straight line, not its trace.
         val g = loaded.smoothedCorridors()
         val all = g.places()
-        val distances = all.mapNotNull { p ->
-            val route = if (p.label != null) {
-                router.routeToLabel(g, g.startNodeId, p.label)
-            } else {
-                router.route(g, g.startNodeId, p.nodeIds.first())
-            }
-            route?.let { p.key to it.lengthPx }
-        }.toMap()
+        val distances = distancesFrom(g, all)
         val doors = all.filter { it.kind == PlaceKind.ROOM }.associate { room ->
             room.label!! to room.nodeIds.map { g.nodes.getValue(it).position }
         }
@@ -369,19 +402,34 @@ class IndoorNavActivity : ComponentActivity() {
         runOnUiThread {
             places = all
             walkPx = distances
-            val found = PlaceSearch(all) { distances[it.key] }
+            // Distances from wherever the walk starts now ([walkPx]), so "nearest exit" and
+            // result order follow an "I'm here" start, not only the poster.
+            val found = PlaceSearch(all) { walkPx[it.key] }
             search = found
             roomFinder = finder
             val kinds = found.available()
             featureChips.forEach { (kind, view) -> view.visibility = shown(kind in kinds) }
             chips.visibility = shown(screen == Screen.BROWSE && kinds.isNotEmpty())
         }
-        // Reading the printed numbers takes a few seconds; taps work from doors until then.
+        // Where the scan read the room numbers, saved with the map: exact, and no wait. That
+        // includes numbers a wall line cuts, which a fresh read here can miss (EH3's 3540).
+        // Maps saved without them, or rooms they lack, are read here again (a few seconds;
+        // taps work from doors until then).
         loader.execute {
-            val boxes = MapRooms.labels(image, doors.keys, doors)
+            val missing = doors.keys - printed.map { it.label }.toSet()
+            val read = if (missing.isEmpty()) {
+                emptyList()
+            } else {
+                MapRooms.labels(image, doors.keys, doors)
+                    .filter { box -> printed.none { it.label == box.label } }
+            }
+            val boxes = printed + read
             runOnUiThread {
                 finder.labels = boxes
                 labelBoxes = boxes.associateBy { it.label }
+                // A room picked before the numbers were read: move its pin onto its number.
+                val picked = place?.label?.let { labelBoxes[it] }
+                if (screen == Screen.PLACE && picked != null) map.pin = picked.center
             }
         }
         return g to image
@@ -520,15 +568,34 @@ class IndoorNavActivity : ComponentActivity() {
 
     private fun renderBrowseSheet() {
         etaText = null
+        val here = origin
+        val title = text(Ui.HEADING, bold = true).apply {
+            text = mapName ?: getString(R.string.in_building)
+            markHeading()
+        }
+        if (here == null) {
+            setSheet(
+                title,
+                text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
+                    val line = if (mapName == null) R.string.in_floor_line else R.string.in_at_start
+                    text = getString(line)
+                }.withMargins(top = 4, bottom = 8),
+            )
+            return
+        }
+        val reset = styledButton(
+            ButtonStyle.SECONDARY,
+            getString(R.string.in_origin_poster),
+            R.drawable.ic_my_location,
+        ).apply { setOnClickListener { setOrigin(null) } }
         setSheet(
-            text(Ui.HEADING, bold = true).apply {
-                text = mapName ?: getString(R.string.in_building)
-                markHeading()
-            },
+            title,
             text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
-                val line = if (mapName == null) R.string.in_floor_line else R.string.in_at_start
-                text = getString(line)
-            }.withMargins(top = 4, bottom = 8),
+                text = getString(R.string.in_origin_line, placeTitle(here))
+                setStartIcon(R.drawable.ic_my_location, IndoorMapView.PUCK_BLUE)
+                compoundDrawablePadding = dp(6)
+            }.withMargins(top = 4),
+            reset.withMargins(top = 12, bottom = 4),
         )
     }
 
@@ -544,6 +611,51 @@ class IndoorNavActivity : ComponentActivity() {
         show(Screen.BROWSE)
         renderBrowseSheet()
         if (moveCamera) graph?.let { map.focus(it.nodes.getValue(it.startNodeId).position) }
+    }
+
+    /** Walking distance in px from [g]'s START to each of [all], where there is a route. */
+    private fun distancesFrom(g: FloorGraph, all: List<Place>): Map<String, Double> =
+        all.mapNotNull { p ->
+            val route = if (p.label != null) {
+                router.routeToLabel(g, g.startNodeId, p.label)
+            } else {
+                router.route(g, g.startNodeId, p.nodeIds.first())
+            }
+            route?.let { p.key to it.lengthPx }
+        }.toMap()
+
+    /**
+     * "I'm here" at [p], or back to the poster's START for null. Like choosing a starting
+     * point in Google Maps: the blue dot moves there, and distances, routes and the facing
+     * step all start from it until the user changes it again.
+     */
+    private fun setOrigin(p: Place?) {
+        val base = baseGraph ?: return
+        stopNavigation(toBrowse = false)
+        origin = p
+        val g = if (p == null) base else base.startingAt(originNode(p))
+        graph = g
+        walkPx = distancesFrom(g, places)
+        routeFrom.text = p?.let { placeTitle(it) } ?: getString(R.string.in_your_location)
+        // A shortcut is offered only where one is reachable from the new start.
+        val kinds = search?.available().orEmpty()
+        featureChips.forEach { (kind, view) -> view.visibility = shown(kind in kinds) }
+        map.setPuck(g.nodes.getValue(g.startNodeId).position, durationMs = 500)
+        clearPlace(moveCamera = true)
+        showSnack(
+            if (p == null) {
+                getString(R.string.in_origin_reset)
+            } else {
+                getString(R.string.in_origin_set, placeTitle(p))
+            },
+        )
+    }
+
+    /** The door of [p] nearest where its number is printed: where someone there stands. */
+    private fun originNode(p: Place): String {
+        val g = baseGraph ?: return p.nodeIds.first()
+        val printed = p.label?.let { labelBoxes[it]?.center } ?: return p.nodeIds.first()
+        return p.nodeIds.minBy { g.nodes.getValue(it).position.distanceTo(printed) }
     }
 
     // ---- Search ----
@@ -639,13 +751,17 @@ class IndoorNavActivity : ComponentActivity() {
 
     // ---- Place ----
 
-    /** Selects [p]: pin on its printed number (or door) and its card. */
-    private fun openPlace(p: Place, moveCamera: Boolean = true) {
+    /**
+     * Selects [p]: pin on its printed number and its card. Until the numbers are read (a few
+     * seconds after a map opens) the pin goes where the user tapped ([tap]), else on the door,
+     * and moves onto the number once it is read.
+     */
+    private fun openPlace(p: Place, moveCamera: Boolean = true, tap: PixelPoint? = null) {
         stopNavigation(toBrowse = false)
         place = p
         map.choicePins = emptyList()
         val box = p.label?.let { labelBoxes[it] }
-        val at = box?.center ?: p.position
+        val at = box?.center ?: tap ?: p.position
         map.route = emptyList()
         clearRoomTint()
         map.pin = at
@@ -685,6 +801,22 @@ class IndoorNavActivity : ComponentActivity() {
                 isEnabled = meters != null
                 setOnClickListener { if (plan(p)) beginNavigation() }
             }
+        val isOrigin = origin?.key == p.key
+        // Where the user is: start the next walk from this room instead of the poster.
+        val here = styledButton(
+            ButtonStyle.TONAL,
+            getString(if (isOrigin) R.string.in_origin_here else R.string.in_im_here),
+            R.drawable.ic_my_location,
+        ).apply {
+            contentDescription = getString(R.string.in_im_here_description, placeTitle(p))
+            isEnabled = !isOrigin
+            setOnClickListener { setOrigin(p) }
+        }
+        if (isOrigin) {
+            directions.isEnabled = false
+            start.isEnabled = false
+            summary.setText(R.string.in_origin_summary)
+        }
         setSheet(
             text(Ui.TITLE, bold = true).apply {
                 text = placeTitle(p)
@@ -698,7 +830,8 @@ class IndoorNavActivity : ComponentActivity() {
                     start,
                     LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) }
                 )
-            }.withMargins(top = 16, bottom = 4),
+            }.withMargins(top = 16),
+            here.withMargins(top = 8, bottom = 4),
         )
     }
 
@@ -723,7 +856,7 @@ class IndoorNavActivity : ComponentActivity() {
         val hit = finder.roomAt(tap, map.mapDistance(dpf(TAP_DOOR_DP)))
         val target = hit?.let { h -> places.firstOrNull { it.label == h.label } }
         when {
-            target != null -> openPlace(target, moveCamera = false)
+            target != null -> openPlace(target, moveCamera = false, tap = tap)
             hit != null -> openUnmapped(hit.label)
             screen == Screen.PLACE -> clearPlace(moveCamera = false)
         }
@@ -764,7 +897,13 @@ class IndoorNavActivity : ComponentActivity() {
         val g = graph ?: return false
         val next = NavigationSession(router)
         next.onMapCaptured(g)
-        next.onGraphVerified(g)
+        // A map that fails the checks gets a message, never a crash.
+        val verified = runCatching { next.onGraphVerified(g) }
+        if (verified.isFailure) {
+            android.util.Log.e(PERF_TAG, "map failed its checks", verified.exceptionOrNull())
+            showSnack(getString(R.string.no_route, placeTitle(p)))
+            return false
+        }
         val ok = if (p.label != null) {
             next.onCalibratedToRoom(Demo.STEP_LENGTH_PX, p.label)
         } else {
@@ -888,12 +1027,12 @@ class IndoorNavActivity : ComponentActivity() {
                 text = resources.getQuantityString(R.plurals.in_route_line, steps, steps)
                 contentDescription = "${placeTitle(p)}. $text"
             }.withMargins(top = 2),
-            modes.withMargins(top = 16),
+            modes.withMargins(top = 16).apply { visibility = shown(developer) },
             text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
                 setText(R.string.demo_scenario_title)
-                visibility = shown(!liveMode)
+                visibility = shown(developer && !liveMode)
             }.withMargins(top = 12),
-            scenarios.withMargins(top = 6),
+            scenarios.withMargins(top = 6).apply { visibility = shown(developer && !liveMode) },
             *guideChoice().toTypedArray(),
             stepsHeader.withMargins(top = 8),
             scroll.apply {
@@ -962,6 +1101,9 @@ class IndoorNavActivity : ComponentActivity() {
     // ---- Navigation ----
 
     private fun beginNavigation() {
+        // User mode never plays the demo: without live tracking yet, ask for it (sensor or
+        // permission) instead of walking a pretend route.
+        if (!developer && !liveMode) return toggleMode()
         val g = guide ?: return
         val p = place ?: return
         stats = null
@@ -998,6 +1140,9 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun stopNavigation(toBrowse: Boolean = true) {
+        orientTo = null
+        orientDial = null
+        orientLine = null
         voice.stop()
         announcer.reset()
         pendingReroute?.let(ticker::removeCallbacks)
@@ -1034,10 +1179,23 @@ class IndoorNavActivity : ComponentActivity() {
     /** START: tap the corridor you face, on the map or in the list. Its bearing sets θ0. */
     private fun askFacing(again: Boolean) {
         val g = graph ?: return
-        val options = g.facingOptions(g.startNodeId)
+        val here = origin
+        val options = if (here == null) {
+            g.facingOptions(g.startNodeId)
+        } else {
+            g.facingOptions(
+                g.startNodeId,
+                here.label?.let { labelBoxes[it]?.center } ?: here.position,
+                placeTitle(here).replaceFirstChar { it.lowercase() },
+            )
+        }
         show(Screen.FACING)
         hintTitle.setText(R.string.in_facing_title)
-        hintBody.setText(if (again) R.string.in_facing_again else R.string.in_facing_body)
+        hintBody.text = when {
+            here != null -> getString(R.string.in_facing_body_here, placeTitle(here))
+            again -> getString(R.string.in_facing_again)
+            else -> getString(R.string.in_facing_body)
+        }
         map.setPuck(g.nodes.getValue(g.startNodeId).position)
         map.setHeading(null)
         map.facingChoices = options.map { it.bearingRad }
@@ -1094,7 +1252,17 @@ class IndoorNavActivity : ComponentActivity() {
             openLog("live", p.label ?: p.key, facing.bearingRad)
             startedAt = SystemClock.elapsedRealtime()
             show(Screen.NAVIGATE)
-            renderNavigateSheet()
+            // Facing away from the route? Turn first, as a maps app says "Head north" before
+            // anything else: the turn step shows until the user faces the way to go.
+            val way = guide?.path?.bearingAt(0.0)
+            val turn = way?.let { wrapBearing(it - facing.bearingRad) }
+            if (way != null && turn != null &&
+                NavMath.startTurn(turn, ORIENT_MIN_RAD, ORIENT_AROUND_RAD) != null
+            ) {
+                beginOrient(way, turn)
+            } else {
+                renderNavigateSheet()
+            }
             map.setHeading(facing.bearingRad)
             onPose(
                 PoseEstimate(
@@ -1112,8 +1280,93 @@ class IndoorNavActivity : ComponentActivity() {
         }
     }
 
+    // ---- Turn to face the route ----
+
+    private fun beginOrient(way: Double, turn: Double) {
+        orientTo = way
+        orientSinceMs = 0L
+        val dial = TurnDial(this).apply { offsetRad = turn }
+        orientDial = dial
+        val line = text(Ui.BODY, Ui.INK_SECONDARY).apply {
+            gravity = Gravity.CENTER
+            setText(R.string.in_orient_body)
+        }
+        orientLine = line
+        val skip = styledButton(ButtonStyle.SECONDARY, getString(R.string.in_orient_skip)).apply {
+            setOnClickListener { endOrient(spoken = false) }
+        }
+        setSheet(
+            dial.withMargins(top = 8),
+            line.withMargins(top = 12),
+            skip.withMargins(top = 16, bottom = 4),
+        )
+        (dial.layoutParams as? LinearLayout.LayoutParams)?.gravity = Gravity.CENTER_HORIZONTAL
+        renderOrientBanner(turn)
+        voice.announce(Announcement(getString(orientVoice(turn)), Haptic.TURN))
+    }
+
+    /** The banner while turning: which way, and that it is to face the route. */
+    private fun renderOrientBanner(turn: Double) {
+        val maneuver = orientManeuver(turn)
+        bannerIcon.maneuver = maneuver
+        bannerTitle.update(maneuverText(maneuver, 1))
+        bannerDistance.visibility = View.GONE
+        bannerDetail.update(getString(R.string.in_orient_detail))
+        thenStrip.visibility = View.GONE
+        banner.contentDescription = "${bannerTitle.text}, ${bannerDetail.text}"
+    }
+
+    private fun orientManeuver(turn: Double) =
+        NavMath.startTurn(turn, minRad = 0.0, aroundRad = ORIENT_AROUND_RAD) ?: Maneuver.STRAIGHT
+
+    private fun orientVoice(turn: Double) = when (orientManeuver(turn)) {
+        Maneuver.U_TURN -> R.string.in_orient_say_around
+        Maneuver.TURN_RIGHT -> R.string.in_orient_say_right
+        else -> R.string.in_orient_say_left
+    }
+
+    /** Each compass reading while turning: follow it, and start once the route is ahead. */
+    private fun updateOrient(heading: Double) {
+        val way = orientTo ?: return
+        val turn = wrapBearing(way - heading)
+        orientDial?.offsetRad = turn
+        val facing = abs(turn) <= ORIENT_DONE_RAD
+        orientLine?.setText(if (facing) R.string.in_orient_facing else R.string.in_orient_body)
+        if (!facing) {
+            orientSinceMs = 0L
+            renderOrientBanner(turn)
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (orientSinceMs == 0L) orientSinceMs = now
+        // Held for a moment, so swinging past the right way doesn't count.
+        if (now - orientSinceMs >= ORIENT_HOLD_MS) endOrient(spoken = true)
+    }
+
+    /** Turning done (or skipped, or the user just walked): on to the real directions. */
+    private fun endOrient(spoken: Boolean) {
+        if (orientTo == null) return
+        orientTo = null
+        orientDial = null
+        orientLine = null
+        if (spoken) {
+            map.performHapticFeedback(
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    android.view.HapticFeedbackConstants.CONFIRM
+                } else {
+                    android.view.HapticFeedbackConstants.VIRTUAL_KEY
+                },
+            )
+        }
+        bannerDistance.visibility = View.VISIBLE
+        renderNavigateSheet()
+        // The first real instruction, spoken by the announcer as a fresh route's first cue.
+        lastPose?.let(::handlePose)
+    }
+
     private fun onLiveHeading(mapRad: Double) {
         liveHeadingRad = mapRad
+        if (orientTo != null) updateOrient(mapRad)
         if (following) map.setHeading(mapRad, minimumChangeRad = Math.toRadians(0.5))
     }
 
@@ -1180,6 +1433,12 @@ class IndoorNavActivity : ComponentActivity() {
         // Off the line but not yet confirmed: keep the last instruction, like a maps app,
         // rather than skipping ahead to a turn the walker hasn't reached.
         if (status.offRoute) return
+        // Still turning to face the route: keep the turn step, unless they already set off.
+        if (orientTo != null) {
+            if (status.progressPx < ORIENT_WALK_STEPS * pose.stepLengthPx) return
+            endOrient(spoken = false)
+            return
+        }
         guideFrom(g, pose, status)
     }
 
@@ -1662,8 +1921,18 @@ class IndoorNavActivity : ComponentActivity() {
         turnAround: Boolean = false,
     ) {
         val arrived = instruction.maneuver == Maneuver.ARRIVE && instruction.stepsUntil == 0
-        bannerIcon.maneuver = instruction.maneuver
-        bannerTitle.update(maneuverText(instruction.maneuver, instruction.stepsUntil))
+        // A long last stretch with no turn is "Walk straight", as in Google Maps; only the
+        // last few steps say the destination is ahead. The voice follows the same split.
+        val straight = instruction.maneuver == Maneuver.ARRIVE &&
+            instruction.stepsUntil > AnnouncerParams().prepareSteps
+        bannerIcon.maneuver = if (straight) Maneuver.STRAIGHT else instruction.maneuver
+        bannerTitle.update(
+            if (straight) {
+                getString(R.string.in_walk_straight)
+            } else {
+                maneuverText(instruction.maneuver, instruction.stepsUntil)
+            },
+        )
         val meters = NavMath.roundedMeters(instruction.stepsUntil * stride)
         val noDistance = arrived || turnAround
         bannerDistance.update(if (noDistance) "" else getString(R.string.in_step_distance, meters))
@@ -1675,7 +1944,12 @@ class IndoorNavActivity : ComponentActivity() {
                 place?.let { placeTitle(it) }
             } else {
                 val n = instruction.stepsUntil
-                resources.getQuantityString(R.plurals.in_banner_detail, n, instruction.detail, n)
+                val where = if (straight) {
+                    CueAnnouncer.towards(instruction.detail)
+                } else {
+                    instruction.detail
+                }
+                resources.getQuantityString(R.plurals.in_banner_detail, n, where, n)
             },
         )
         banner.contentDescription = "${bannerTitle.text}, ${bannerDetail.text}"
@@ -1862,13 +2136,22 @@ class IndoorNavActivity : ComponentActivity() {
                 )
                 addView(
                     text(Ui.TITLE, bold = true).apply {
-                        setText(R.string.in_arrived)
+                        // An approximate end is beside the room, not at its door.
+                        val near = p?.approximate == true
+                        setText(if (near) R.string.in_arrived_near else R.string.in_arrived)
                         markHeading()
                     },
                     LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(12) },
                 )
             },
             text(Ui.HEADING).apply { text = p?.let { placeTitle(it) } }.withMargins(top = 8),
+            *listOfNotNull(
+                p?.takeIf { it.approximate }?.let {
+                    text(Ui.BODY, Ui.INK_SECONDARY).apply {
+                        setText(R.string.in_arrived_near_detail)
+                    }.withMargins(top = 4)
+                },
+            ).toTypedArray(),
             text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
                 text = resources
                     .getQuantityString(R.plurals.in_arrived_detail, steps, steps, elapsed)
@@ -2088,6 +2371,7 @@ class IndoorNavActivity : ComponentActivity() {
                             dotIcon(IndoorMapView.PUCK_BLUE),
                             text(Ui.BODY).apply {
                                 setText(R.string.in_your_location)
+                                routeFrom = this
                             }
                         )
                     )
@@ -2655,7 +2939,13 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     private fun placeKind(p: Place): String {
-        if (p.kind == PlaceKind.ROOM) return roomKind()
+        if (p.kind == PlaceKind.ROOM) {
+            return if (p.approximate) {
+                getString(R.string.in_room_approximate, roomKind())
+            } else {
+                roomKind()
+            }
+        }
         val near = graph?.nearestRoomLabel(p.position)
         val base = mapName ?: getString(R.string.in_feature_kind)
         return if (near == null) base else getString(R.string.in_near_room, base, near)
@@ -2754,6 +3044,21 @@ class IndoorNavActivity : ComponentActivity() {
 
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val PERF_TAG = "MapLensPerf"
+
+        /** Facing further than this from the route's first stretch adds a turn step first. */
+        private val ORIENT_MIN_RAD = Math.toRadians(40.0)
+
+        /** From this much, the turn step says "turn around" rather than left or right. */
+        private val ORIENT_AROUND_RAD = Math.toRadians(135.0)
+
+        /** Within this of the route's way counts as facing it... */
+        private val ORIENT_DONE_RAD = Math.toRadians(25.0)
+
+        /** ...held this long, so swinging past it doesn't count. */
+        private const val ORIENT_HOLD_MS = 450L
+
+        /** Walking this far along the route ends the turn step: they found the way. */
+        private const val ORIENT_WALK_STEPS = 2.0
 
         /** Tap reach around an exit, elevator or AED, as a multiple of a door's. */
         private const val FEATURE_TAP_REACH = 2.5

@@ -21,7 +21,7 @@ class CueAnnouncerTest {
             listOf(
                 Announcement("In 20 steps, turn right at the junction", null),
                 Announcement("Turn right at the junction", Haptic.TURN),
-                Announcement("In 6 steps, arrive at room 3546", null),
+                Announcement("In 6 steps, you'll reach room 3546", null),
                 Announcement("You have arrived at room 3546", Haptic.ARRIVE),
             ),
             said,
@@ -45,7 +45,7 @@ class CueAnnouncerTest {
     @Test
     fun `arriving with no maneuvers left skips the now cue but still vibrates on arrival`() {
         val a = CueAnnouncer()
-        assertEquals("In 3 steps, arrive at room 3546", a.next(arrive(3), 0)?.text)
+        assertEquals("In 3 steps, you'll reach room 3546", a.next(arrive(3), 0)?.text)
         assertNull(a.next(arrive(2), 0))
         assertNull(a.next(arrive(1), 0))
         assertEquals(Haptic.ARRIVE, a.next(arrive(0), 0)?.haptic)
@@ -67,5 +67,19 @@ class CueAnnouncerTest {
         assertEquals("Turn around", CueAnnouncer.nowText(Instruction(Maneuver.U_TURN, 1, "")))
         val door = arrive(0).copy(detail = "at your destination")
         assertEquals("You have arrived at your destination", CueAnnouncer.arrivalText(door))
+    }
+
+    @Test
+    fun aLongLastStretchIsWalkStraightThenAHeadsUp() {
+        val a = CueAnnouncer()
+        val said = (30 downTo 0).mapNotNull { a.next(arrive(it), 0)?.text }
+        assertEquals(
+            listOf(
+                "Walk straight for 30 steps to room 3546",
+                "In 12 steps, you'll reach room 3546",
+                "You have arrived at room 3546",
+            ),
+            said,
+        )
     }
 }

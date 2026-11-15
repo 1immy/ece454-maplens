@@ -43,11 +43,37 @@ class PosterParserChecks : Instrumentation() {
     private var photo: String? = null
     private var compare: String? = null
 
+    /** `-e threads N`: OpenCV worker threads for a probe run, to time the parse with each. */
+    private var threads: Int? = null
+
+    /** `-e only settledDoubts` or `reachedTargets`: runs that one synthetic check. */
+    private var only: String? = null
+
+    /** `-e all true`: parses every fixture photo and writes each graph and its readings. */
+    private var all = false
+
+    /** `-e warm true`: a probe parses after [PosterWarmup], as it does behind the camera. */
+    private var warm = false
+    private var aimSide = 1280
+    private var imported = false
+
+    private fun warmUp() {
+        if (!warm) return
+        PosterWarmup.start()
+        PosterWarmup.await()
+    }
+
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         probe = arguments?.getString("probe")
         photo = arguments?.getString("photo")
         compare = arguments?.getString("compare")
+        threads = arguments?.getString("threads")?.toIntOrNull()
+        warm = arguments?.getString("warm") == "true"
+        all = arguments?.getString("all") == "true"
+        only = arguments?.getString("only")
+        imported = arguments?.getString("imported") == "true"
+        aimSide = arguments?.getString("side")?.toIntOrNull() ?: 1280
         start()
     }
 
@@ -62,6 +88,32 @@ class PosterParserChecks : Instrumentation() {
         }
         compare?.let { path ->
             runCompare(path)
+            return
+        }
+        if (all) {
+            runAll()
+            return
+        }
+        if (only != null) {
+            val outcome = runCatching {
+                requireOpenCv()
+                when (only) {
+                    "settledDoubts" -> checkSettledDoubts()
+                    "reachedTargets" -> checkReachedTargets()
+                    "aim" -> checkAim()
+                    else -> error("no check named $only")
+                }
+            }
+            finish(
+                if (outcome.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString(
+                        "stream",
+                        outcome.exceptionOrNull()?.let(Log::getStackTraceString)
+                            ?: "Check $only passed",
+                    )
+                },
+            )
             return
         }
         try {
@@ -88,6 +140,8 @@ class PosterParserChecks : Instrumentation() {
             checkWallFringe()
             checkUnsupportedDoorDetour()
             checkSeparateDoorways()
+            checkSettledDoubts()
+            checkReachedTargets()
             checkFrames()
             checkRectified("eh-3-elevators-evac")
             checkRectified("eh-3-stair3424-evac")
@@ -585,6 +639,115 @@ class PosterParserChecks : Instrumentation() {
         check(warnings.isEmpty())
     }
 
+    /**
+     * A doubtful room the parser does not send for a second opinion must come out the same
+     * whether or not that opinion would have agreed: random posters of room numbers in runs,
+     * some doubtful, some marked possible, some out of their run, tried with and without
+     * agreement on every read that was skipped.
+     */
+    private fun checkSettledDoubts() {
+        val random = java.util.Random(454)
+        var skipped = 0
+        var asked = 0
+        repeat(300) {
+            val readings = mutableListOf<PosterReading>()
+            for (row in 0 until 2 + random.nextInt(3)) {
+                val run = 3400 + 10 * random.nextInt(30)
+                for (column in 0 until 1 + random.nextInt(6)) {
+                    val stray = random.nextInt(6) == 0
+                    val number = if (stray) 3100 + random.nextInt(800) else run + column
+                    val left = 100 + column * (90 + random.nextInt(200))
+                    val top = 100 + row * (60 + random.nextInt(300))
+                    val confidence = listOf(0.55f, 0.7f, 0.85f, 0.92f, 0.99f)[random.nextInt(5)]
+                    readings += PosterReading(
+                        number.toString(),
+                        android.graphics.Rect(left, top, left + 60, top + 24),
+                        confidence,
+                        possible = confidence < 0.8f && random.nextBoolean(),
+                    )
+                    // Now and then a second read at the same box, as overlapping lines give.
+                    if (random.nextInt(8) == 0) {
+                        readings += readings.last().copy(
+                            text = (number + 1).toString(),
+                            confidence = 0.6f,
+                            possible = random.nextBoolean(),
+                        )
+                    }
+                }
+            }
+            readings += PosterReading("EXIT", android.graphics.Rect(5, 5, 60, 30), 0.6f)
+            val sharp = if (random.nextBoolean()) {
+                listOf(PosterReading("3411", android.graphics.Rect(300, 130, 360, 154), 0.95f))
+            } else {
+                emptyList()
+            }
+            val doubtful = readings.filter {
+                normalizeRoom(it.text) != null && it.confidence < 0.9f
+            }
+            val open = PosterMlKit.unsettledDoubts(doubtful, readings, readings + sharp)
+            val settled = doubtful.filter { it !in open }.map { it.box }.toSet()
+            skipped += settled.size
+            asked += open.size
+            val agreedOpen = open.filter { random.nextBoolean() }.map { it.box }.toSet()
+            val without = PosterMlKit.sureRooms(readings, sharp, agreedOpen)
+            check(without == PosterMlKit.sureRooms(readings, sharp, agreedOpen + settled))
+            for (box in settled) {
+                check(without == PosterMlKit.sureRooms(readings, sharp, agreedOpen + box))
+            }
+        }
+        // The posters must exercise both outcomes, or the check proves nothing.
+        check(skipped > 100 && asked > 100) { "skipped $skipped, asked $asked" }
+    }
+
+    /**
+     * [keepWhereReached] must give exactly `targets AND dilate(source, kernel)`: random sparse
+     * images, targets on the borders included, with the route mask's disc and smaller shapes.
+     */
+    private fun checkReachedTargets() = Mats().use { mats ->
+        val random = java.util.Random(454)
+        val kernels = listOf(
+            mats.kernel(61, shape = Imgproc.MORPH_ELLIPSE),
+            mats.kernel(9, shape = Imgproc.MORPH_ELLIPSE),
+            mats.kernel(15, 5),
+            mats.kernel(1, 1),
+        )
+        var cleared = 0
+        var kept = 0
+        repeat(40) { round ->
+            val width = 40 + random.nextInt(260)
+            val height = 40 + random.nextInt(200)
+            val size = width * height
+            val source = ByteArray(size)
+            repeat(1 + random.nextInt(12)) { source[random.nextInt(size)] = -1 }
+            val targets = ByteArray(size)
+            repeat(size / 20) { targets[random.nextInt(size)] = -1 }
+            for (x in 0 until width step 3) {
+                targets[x] = -1
+                targets[size - 1 - x] = -1
+            }
+            val kernel = kernels[round % kernels.size]
+            val sourceMat = mats.own(Mat(height, width, CvType.CV_8U))
+            sourceMat.put(0, 0, source)
+            val grown = mats.mat()
+            Imgproc.dilate(sourceMat, grown, kernel)
+            val reach = ByteArray(size).also { grown.get(0, 0, it) }
+            val expected = ByteArray(size) { i ->
+                if (targets[i] != 0.toByte() && reach[i] != 0.toByte()) -1 else 0
+            }
+            check(keepWhereReached(targets, source, width, kernel))
+            check(targets.contentEquals(expected)) { "round $round" }
+            cleared += expected.count { it == 0.toByte() }
+            kept += expected.count { it != 0.toByte() }
+        }
+        check(kept > 1000 && cleared > 1000) { "kept $kept, cleared $cleared" }
+        // Too many targets, or a kernel whose rows are not single runs: left to the caller.
+        val ring = mats.own(Mat.ones(3, 3, CvType.CV_8U))
+        ring.put(1, 1, byteArrayOf(0))
+        val few = ByteArray(100).also { it[5] = -1 }
+        check(!keepWhereReached(few.copyOf(), ByteArray(100), 10, ring))
+        check(!keepWhereReached(ByteArray(100) { -1 }, ByteArray(100), 10, kernels[0]))
+    }
+
     private fun checkFrames() {
         val results = JSONObject()
         val photos = context.assets.list("").orEmpty().filter {
@@ -805,6 +968,46 @@ class PosterParserChecks : Instrumentation() {
         File(output, "photos.json").writeText(reports.toString(2))
     }
 
+    /** The live aim detector on every fixture photo at preview size: angles and time per look. */
+    private fun checkAim() {
+        val results = JSONObject()
+        val photos = context.assets.list("").orEmpty().filter {
+            it.endsWith(".jpg") && it.matches(Regex(".*-[0-9]{2}-.*"))
+        }
+        for (photo in photos) {
+            PosterAim.workSide = aimSide.toDouble()
+            val bitmap = load(photo, maxSide = aimSide)
+            try {
+                // iPhone 13 Pro Max main camera, 26 mm equivalent.
+                val focal = 26 / 43.27 * kotlin.math.hypot(
+                    bitmap.width.toDouble(),
+                    bitmap.height.toDouble(),
+                )
+                PosterAim.look(bitmap, 0, focal)
+                val times = List(5) {
+                    val start = SystemClock.elapsedRealtimeNanos()
+                    PosterAim.look(bitmap, 0, focal)
+                    (SystemClock.elapsedRealtimeNanos() - start) / 1e6
+                }
+                val seen = PosterAim.look(bitmap, 0, focal)
+                results.put(
+                    photo,
+                    JSONObject()
+                        .put("problem", seen.problem?.name ?: JSONObject.NULL)
+                        .put("yaw", seen.yawDegrees).put("pitch", seen.pitchDegrees)
+                        .put("fill", seen.fill).put("ms", times.sorted()[2])
+                        .put("size", JSONArray(listOf(seen.width, seen.height)))
+                        .put("corners", JSONArray(seen.corners?.toList())),
+                )
+            } finally {
+                bitmap.recycle()
+            }
+        }
+        File(output, "aim.json").writeText(results.toString(2))
+        // A non-debuggable probe can't be read with run-as.
+        Log.i("MapLensAim", results.toString())
+    }
+
     /** Process-wide peak since launch. Snapshots of PSS miss the detector's transient buffers. */
     private fun peakRssKiB(): Long = File("/proc/self/status").readLines()
         .first { it.startsWith("VmHWM") }.filter(Char::isDigit).toLong()
@@ -862,17 +1065,42 @@ class PosterParserChecks : Instrumentation() {
         val result = Bundle()
         try {
             requireOpenCv()
-            val options = BitmapFactory.Options().apply { inSampleSize = 1 }
-            val raw = checkNotNull(BitmapFactory.decodeFile(path, options)) { "cannot read $path" }
-            val scale = minOf(1f, 3200f / maxOf(raw.width, raw.height))
-            val bitmap = android.graphics.Bitmap.createScaledBitmap(
-                raw,
-                (raw.width * scale).toInt(),
-                (raw.height * scale).toInt(),
-                true,
-            )
+            threads?.let(org.opencv.core.Core::setNumThreads)
+            val bitmap = if (imported) {
+                // As the app's "Use a photo" decodes: EXIF turn applied, ImageDecoder scaling.
+                android.graphics.ImageDecoder.decodeBitmap(
+                    android.graphics.ImageDecoder.createSource(File(path)),
+                ) { decoder, info, _ ->
+                    decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+                    val side = maxOf(info.size.width, info.size.height)
+                    if (side > 3200) {
+                        val scale = 3200f / side
+                        decoder.setTargetSize(
+                            Math.round(info.size.width * scale),
+                            Math.round(info.size.height * scale),
+                        )
+                    }
+                }
+            } else {
+                val options = BitmapFactory.Options().apply { inSampleSize = 1 }
+                val raw = checkNotNull(BitmapFactory.decodeFile(path, options)) {
+                    "cannot read $path"
+                }
+                val scale = minOf(1f, 3200f / maxOf(raw.width, raw.height))
+                android.graphics.Bitmap.createScaledBitmap(
+                    raw,
+                    (raw.width * scale).toInt(),
+                    (raw.height * scale).toInt(),
+                    true,
+                )
+            }
+            warmUp()
             val parsed = OfflineMapParser().parse(bitmap)
+            PosterWarmup.release()
             writeGraph("probe", parsed.graph)
+            // A non-debuggable probe can't be read with run-as.
+            Log.i("MapLensProbe", "rooms " + parsed.graph.landmarks.map { it.label }.sorted())
+            writeProbeReadings()
             File(output, "probe.warnings.json").writeText(JSONArray(parsed.warnings).toString(2))
             File(output, "probe.jpg").outputStream().use {
                 parsed.rectified.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it)
@@ -915,6 +1143,62 @@ class PosterParserChecks : Instrumentation() {
         }
     }
 
+    /**
+     * Each fixture photo's graph and readings to files/poster-eval/all, or the retake message:
+     * a before-and-after diff of that folder shows whether a change altered any parse.
+     */
+    private fun runAll() {
+        val result = Bundle()
+        try {
+            requireOpenCv()
+            val folder = File(output, "all").apply {
+                deleteRecursively()
+                mkdirs()
+            }
+            val photos = checkNotNull(context.assets.list("")).filter {
+                it.endsWith(".jpg") && Regex("-\\d\\d-").containsMatchIn(it)
+            }.sorted()
+            for (photo in photos) {
+                val name = photo.removeSuffix(".jpg")
+                val bitmap = load(photo, 3200)
+                ParseDebug.readings = null
+                try {
+                    val parsed = OfflineMapParser().parse(bitmap)
+                    File(folder, "$name.graph.json").writeText(FloorGraphJson.encode(parsed.graph))
+                    File(folder, "$name.warnings.json")
+                        .writeText(JSONArray(parsed.warnings).toString(1))
+                    writeProbeReadings(File(folder, "$name.readings.json"))
+                    parsed.rectified.recycle()
+                } catch (failure: PosterRetakeException) {
+                    File(folder, "$name.retake.txt").writeText(failure.message.orEmpty())
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+            result.putString("stream", "Parsed ${photos.size} photos to ${folder.absolutePath}")
+            finish(Activity.RESULT_OK, result)
+        } catch (failure: Exception) {
+            result.putString("stream", Log.getStackTraceString(failure))
+            finish(Activity.RESULT_CANCELED, result)
+        }
+    }
+
+    /** Every reading the probe's parse used, to tell whether an OCR change altered any. */
+    private fun writeProbeReadings(file: File = File(output, "probe.readings.json")) {
+        val readings = ParseDebug.readings ?: return
+        val rows = JSONArray(
+            readings.map {
+                JSONObject().put("text", it.text).put("confidence", it.confidence.toDouble())
+                    .put("possible", it.possible)
+                    .put(
+                        "box",
+                        JSONArray(listOf(it.box.left, it.box.top, it.box.right, it.box.bottom))
+                    )
+            },
+        )
+        file.writeText(rows.toString(1))
+    }
+
     private fun runProbe(path: String) {
         val result = Bundle()
         try {
@@ -922,11 +1206,21 @@ class PosterParserChecks : Instrumentation() {
             val bitmap = checkNotNull(BitmapFactory.decodeFile(path)) { "cannot read $path" }
             Mats().use { mats ->
                 val bgr = bitmapBgr(bitmap, mats)
+                threads?.let(org.opencv.core.Core::setNumThreads)
+                warmUp()
                 val parsed = OfflineMapParser().parseRectified(bitmap, bgr)
+                PosterWarmup.release()
                 writeGraph("probe", parsed.graph)
+                writeProbeReadings()
                 File(output, "probe.warnings.json").writeText(
                     JSONArray(parsed.warnings).toString(2),
                 )
+                ParseDebug.regions?.let { r ->
+                    val buf = java.nio.ByteBuffer.allocate(r.size * 4)
+                    buf.asIntBuffer().put(r)
+                    File(output, "probe.regions.bin").writeBytes(buf.array())
+                }
+                ParseDebug.relief?.let { File(output, "probe.relief.bin").writeBytes(it) }
             }
             result.putString("stream", "Probe written to ${output.absolutePath}")
             finish(Activity.RESULT_OK, result)

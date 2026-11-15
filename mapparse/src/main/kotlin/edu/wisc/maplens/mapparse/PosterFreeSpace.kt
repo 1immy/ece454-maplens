@@ -44,13 +44,12 @@ internal class FreeSpace(
  * paint can pass as a wall in a photo, and would split its corridor in two, so on a painted poster
  * the [paint] never counts.
  */
-private fun longWalls(hsv: Mat, paint: Mat?, mats: Mats): Mat {
+private fun longWalls(hsv: Mat, paint: Mat?, mats: Mats, planes: PosterPlanes?): Mat {
     val s = mats.mat()
     val v = mats.mat()
     Core.extractChannel(hsv, s, 1)
     Core.extractChannel(hsv, v, 2)
-    val local = mats.mat()
-    Imgproc.medianBlur(v, local, 31)
+    val local = planes?.localValue ?: mats.mat().also { Imgproc.medianBlur(v, it, LOCAL_VALUE) }
     val size = hsv.rows() * hsv.cols()
     val sat = ByteArray(size).also { s.get(0, 0, it) }
     val value = ByteArray(size).also { v.get(0, 0, it) }
@@ -175,15 +174,30 @@ private fun corridorWidth(h: IntArray, v: IntArray, blocked: ByteArray, routes: 
     return if (bestScore > 0) best else MIN_WIDTH
 }
 
+/** [offPaper] as a mask the caller owns, so it can be worked out off the tracing thread. */
+internal fun offPaperMask(bgr: Mat, hsv: Mat?): Mat = Mats().use { mats ->
+    val planes = hsv ?: mats.mat().also { Imgproc.cvtColor(bgr, it, Imgproc.COLOR_BGR2HSV) }
+    offPaper(bgr, planes, mats).clone()
+}
+
 /**
  * Measures free space. When the poster has paint, [routes] is the widened paint mask and [paint]
- * the paint itself.
+ * the paint itself. [planes] and [offPaper], when given, are what this would work out itself.
  */
-internal fun freeSpace(bgr: Mat, routes: Mat?, paint: Mat?, mats: Mats): FreeSpace {
-    val hsv = mats.mat()
-    Imgproc.cvtColor(bgr, hsv, Imgproc.COLOR_BGR2HSV)
-    val walls = longWalls(hsv, paint, mats)
-    val outside = offPaper(bgr, hsv, mats)
+internal fun freeSpace(
+    bgr: Mat,
+    routes: Mat?,
+    paint: Mat?,
+    mats: Mats,
+    planes: PosterPlanes? = null,
+    offPaper: Mat? = null,
+): FreeSpace {
+    val timer = StageTimer()
+    val hsv = planes?.hsv ?: mats.mat().also { Imgproc.cvtColor(bgr, it, Imgproc.COLOR_BGR2HSV) }
+    val walls = longWalls(hsv, paint, mats, planes)
+    timer.mark("free: long walls")
+    val outside = offPaper ?: offPaper(bgr, hsv, mats)
+    timer.mark("free: off paper")
     val rows = bgr.rows()
     val cols = bgr.cols()
     val widened = routes?.let { ByteArray(rows * cols).also { bytes -> it.get(0, 0, bytes) } }
@@ -202,8 +216,10 @@ internal fun freeSpace(bgr: Mat, routes: Mat?, paint: Mat?, mats: Mats): FreeSpa
 
     val (firstBlocked, firstH, firstV) = measure(FIRST_SEAL)
     val first = corridorWidth(firstH, firstV, firstBlocked, widened)
+    timer.mark("free: first measure")
     val (blocked, h, v) = measure(maxOf(FIRST_SEAL, (first * SEAL).toInt()))
     val width = maxOf(MIN_WIDTH, corridorWidth(h, v, blocked, widened))
+    timer.mark("free: second measure")
     val open = mats.mat()
     Core.bitwise_or(walls, outside, open)
     val unsealed = ByteArray(rows * cols).also { open.get(0, 0, it) }

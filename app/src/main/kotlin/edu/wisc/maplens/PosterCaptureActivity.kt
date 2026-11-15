@@ -11,9 +11,15 @@ import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.hardware.camera2.CameraCharacteristics
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
@@ -24,6 +30,7 @@ import android.util.Size
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -33,7 +40,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
@@ -49,18 +60,23 @@ import edu.wisc.maplens.mapparse.OfflineMapParser
 import edu.wisc.maplens.mapparse.ParseProgress
 import edu.wisc.maplens.mapparse.ParseResult
 import edu.wisc.maplens.mapparse.ParseStage
+import edu.wisc.maplens.mapparse.PosterAim
 import edu.wisc.maplens.mapparse.PosterRetakeException
+import edu.wisc.maplens.mapparse.PosterWarmup
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.routing.AStarRouter
-import java.text.DateFormat
-import java.util.Date
 import java.util.concurrent.Executors
+import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /** Owns one capture/review session, independently of the bundled navigation demo. */
 class PosterCaptureActivity : ComponentActivity() {
     private lateinit var cameraView: PreviewView
+    private lateinit var cameraFrame: FrameLayout
+    private lateinit var aimOverlay: AimOverlay
     private lateinit var photoView: ImageView
     private lateinit var progress: PosterProgressView
     private lateinit var map: MapView
@@ -68,6 +84,10 @@ class PosterCaptureActivity : ComponentActivity() {
     private lateinit var mapBar: LinearLayout
     private lateinit var mapButton: Button
     private lateinit var status: TextView
+    private lateinit var retakeCard: LinearLayout
+    private lateinit var retakeIcon: ImageView
+    private lateinit var retakeTitle: TextView
+    private lateinit var retakeBody: TextView
     private lateinit var action: Button
     private lateinit var details: Button
     private lateinit var cancel: Button
@@ -80,12 +100,37 @@ class PosterCaptureActivity : ComponentActivity() {
      * kept side by side for comparison. Remembered between scans.
      */
     private val prefs by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
+
+    /** Developer mode: Edit map, Details and the parser switch. User mode: scan and save. */
+    private val developer by lazy { AppMode.isDeveloper(this) }
     private var fastMode: Boolean
-        get() = prefs.getBoolean(PREF_FAST, true)
+        // User mode always reads with the Fast parser; the switch is a developer tool.
+        get() = !developer || prefs.getBoolean(PREF_FAST, true)
         set(value) = prefs.edit().putBoolean(PREF_FAST, value).apply()
     private var camera: ProcessCameraProvider? = null
     private var preview: Preview? = null
     private var capture: ImageCapture? = null
+    private var analysis: ImageAnalysis? = null
+
+    /** Preview frames are looked at here, one at a time, for the framing hints. */
+    private val aimWorker = Executors.newSingleThreadExecutor()
+    private val aimGuide = AimGuide()
+    private var lastLookMs = 0L
+
+    /** Lens focal length over the sensor's long side (focal pixels per pixel of long side). */
+    @Volatile private var focalShare = DEFAULT_FOCAL_SHARE
+
+    /** Latest turn rate of the phone (rad/s): a turning phone blurs the photo. */
+    @Volatile private var turnRate = 0.0
+    private val sensors by lazy { getSystemService(SensorManager::class.java) }
+    private val gyro = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            val (x, y, z) = event.values
+            turnRate = sqrt((x * x + y * y + z * z).toDouble())
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    }
     private var session = NavigationSession(AStarRouter())
     private var review: ParseResult? = null
     private var busy = false
@@ -122,6 +167,11 @@ class PosterCaptureActivity : ComponentActivity() {
         cameraView = PreviewView(this).apply {
             scaleType = PreviewView.ScaleType.FIT_CENTER
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        }
+        aimOverlay = AimOverlay(this)
+        cameraFrame = FrameLayout(this).apply {
+            addView(cameraView, FrameLayout.LayoutParams(-1, -1))
+            addView(aimOverlay, FrameLayout.LayoutParams(-1, -1))
         }
         photoView = ImageView(this).apply {
             visibility = View.GONE
@@ -185,6 +235,43 @@ class PosterCaptureActivity : ComponentActivity() {
             setLineSpacing(0f, 1.15f)
             setPadding(0, pad / 2, 0, pad)
         }
+        // Why the last scan was sent back, in Google's amber warning style, so it is never
+        // mistaken for the usual "hold the phone" line above the camera.
+        retakeIcon = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER }
+        retakeTitle = TextView(this).apply {
+            textSize = Ui.BODY
+            setTextColor(RETAKE_INK)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
+        retakeBody = TextView(this).apply {
+            textSize = Ui.CAPTION
+            setTextColor(RETAKE_INK)
+            setLineSpacing(0f, 1.15f)
+        }
+        retakeCard = LinearLayout(this).apply {
+            visibility = View.GONE
+            setPadding(dp(12), dp(12), dp(16), dp(12))
+            background = rounded(RETAKE_FILL, radiusDp = 16, stroke = RETAKE_EDGE)
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE
+            addView(
+                FrameLayout(context).apply {
+                    background = rounded(RETAKE_EDGE, radiusDp = 18)
+                    addView(retakeIcon, FrameLayout.LayoutParams(-1, -1))
+                },
+                LinearLayout.LayoutParams(dp(36), dp(36)),
+            )
+            addView(
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(retakeTitle)
+                    addView(
+                        retakeBody,
+                        LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) },
+                    )
+                },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(12) },
+            )
+        }
         // No icon: the label changes with the step (allow camera, capture, retake).
         action = styledButton(ButtonStyle.PRIMARY, getString(R.string.capture_poster))
         details = styledButton(ButtonStyle.SECONDARY).apply { visibility = View.GONE }
@@ -231,6 +318,7 @@ class PosterCaptureActivity : ComponentActivity() {
             contentDescription = getString(R.string.poster_fast_description)
             setOnCheckedChangeListener { _, checked ->
                 fastMode = checked
+                if (checked && review == null) PosterWarmup.start() else PosterWarmup.release()
                 Toast.makeText(
                     context,
                     if (checked) R.string.poster_fast_on else R.string.poster_fast_off,
@@ -250,7 +338,7 @@ class PosterCaptureActivity : ComponentActivity() {
                 },
                 LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4) },
             )
-            addView(fastSwitch, LinearLayout.LayoutParams(-2, dp(Ui.TOUCH_DP)))
+            if (developer) addView(fastSwitch, LinearLayout.LayoutParams(-2, dp(Ui.TOUCH_DP)))
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -270,7 +358,8 @@ class PosterCaptureActivity : ComponentActivity() {
             }
             addView(topBar, LinearLayout.LayoutParams(-1, -2).apply { marginStart = -dp(12) })
             addView(status)
-            addView(cameraView, LinearLayout.LayoutParams(-1, 0, 1f))
+            addView(retakeCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = pad })
+            addView(cameraFrame, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(photoView, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(map, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(mapBar)
@@ -284,15 +373,26 @@ class PosterCaptureActivity : ComponentActivity() {
         if (hasCameraPermission()) startCamera() else showPermission()
     }
 
+    override fun onResume() {
+        super.onResume()
+        sensors?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let {
+            sensors?.registerListener(gyro, it, SensorManager.SENSOR_DELAY_UI)
+        }
+    }
+
     override fun onPause() {
         super.onPause()
+        sensors?.unregisterListener(gyro)
+        turnRate = 0.0
         if (busy) resetCapture()
     }
 
     override fun onDestroy() {
         invalidateCapture()
         stopCamera()
+        PosterWarmup.release()
         worker.shutdown()
+        aimWorker.shutdown()
         super.onDestroy()
     }
 
@@ -318,7 +418,9 @@ class PosterCaptureActivity : ComponentActivity() {
         progress.visibility = View.GONE
         photoView.visibility = View.GONE
         photoView.setImageDrawable(null)
-        cameraView.visibility = View.VISIBLE
+        cameraFrame.visibility = View.VISIBLE
+        // Load the Fast parser's models while the poster is being framed.
+        if (fastMode) PosterWarmup.start()
         val pending = ProcessCameraProvider.getInstance(this)
         pending.addListener({
             if (isDestroyed || isFinishing || review != null) return@addListener
@@ -343,10 +445,27 @@ class PosterCaptureActivity : ComponentActivity() {
                     .setResolutionSelector(resolution)
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                     .build()
-                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, view, photo)
+                val look = aimAnalysis()
+                val bound = try {
+                    provider.bindToLifecycle(
+                        this,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        view,
+                        photo,
+                        look,
+                    )
+                } catch (failure: IllegalArgumentException) {
+                    // A camera that can't stream a third output still takes the photo.
+                    Log.w(TAG, "No framing hints on this camera", failure)
+                    provider.unbindAll()
+                    aimOverlay.visibility = View.GONE
+                    provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, view, photo)
+                }
+                focalShare = focalShare(bound)
                 camera = provider
                 preview = view
                 capture = photo
+                analysis = look.takeIf { aimOverlay.visibility == View.VISIBLE }
                 ready(message ?: getString(R.string.poster_ready))
             } catch (failure: Exception) {
                 Log.w(TAG, "Camera bind failed", failure)
@@ -358,9 +477,81 @@ class PosterCaptureActivity : ComponentActivity() {
     private fun stopCamera() {
         preview?.let { camera?.unbind(it) }
         capture?.let { camera?.unbind(it) }
+        analysis?.let {
+            it.clearAnalyzer()
+            camera?.unbind(it)
+        }
         preview = null
         capture = null
+        analysis = null
+        aimOverlay.clear()
     }
+
+    /** Small, latest-only preview frames for the framing hints. */
+    private fun aimAnalysis(): ImageAnalysis {
+        val size = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    Size(AIM_FRAME_WIDTH, AIM_FRAME_HEIGHT),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                )
+            )
+            .build()
+        return ImageAnalysis.Builder()
+            .setResolutionSelector(size)
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+            .build()
+            .apply { setAnalyzer(aimWorker, ::lookForPoster) }
+    }
+
+    /** On [aimWorker]: finds the map in one preview frame and posts the hint. */
+    private fun lookForPoster(image: ImageProxy) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastLookMs < AIM_INTERVAL_MS) {
+            image.close()
+            return
+        }
+        lastLookMs = now
+        val sighting = image.use {
+            val frame = it.toBitmap()
+            try {
+                val focal = focalShare * maxOf(frame.width, frame.height)
+                runCatching { PosterAim.look(frame, it.imageInfo.rotationDegrees, focal) }
+                    .onFailure { failure -> Log.w(TAG, "Framing look failed", failure) }
+                    .getOrNull()
+            } finally {
+                frame.recycle()
+            }
+        }
+        runOnUiThread {
+            if (analysis == null || busy || isDestroyed) return@runOnUiThread
+            val state = aimGuide.update(sighting, now, turnRate)
+            aimOverlay.show(state)
+            // User mode won't take a photo the parse would get wrong: the chip says how to fix
+            // it, and the shutter comes back as soon as the phone is close enough.
+            if (!developer && review == null) {
+                action.isEnabled = capture != null && !state.blocksCapture
+            }
+        }
+    }
+
+    /**
+     * The lens's focal length over the sensor's long side, so a frame's focal length in pixels
+     * is this times its long side. Assumes the 4:3 stream spans the sensor's width.
+     */
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+    private fun focalShare(camera: Camera): Double = runCatching {
+        val info = Camera2CameraInfo.from(camera.cameraInfo)
+        val focal = checkNotNull(
+            info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+        ).first()
+        val sensor = checkNotNull(
+            info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+        )
+        (focal / maxOf(sensor.width, sensor.height)).toDouble()
+    }.getOrDefault(DEFAULT_FOCAL_SHARE)
 
     private fun ready(message: CharSequence = getString(R.string.poster_ready)) {
         busy = false
@@ -387,7 +578,12 @@ class PosterCaptureActivity : ComponentActivity() {
                     }
                     // The live preview would compete with the parser for CPU.
                     stopCamera()
-                    worker.execute { parse(id) { image.use(::upright) } }
+                    val share = focalShare
+                    worker.execute {
+                        parse(id, { maxOf(it.width, it.height) * share }) {
+                            image.use(::upright)
+                        }
+                    }
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -405,6 +601,7 @@ class PosterCaptureActivity : ComponentActivity() {
 
     /** Shows the parsing state and returns this attempt's generation. */
     private fun startParsing(): Int {
+        hideRetake()
         val id = synchronized(workLock) { ++generation }
         busy = true
         fastSwitch.isEnabled = false
@@ -427,7 +624,20 @@ class PosterCaptureActivity : ComponentActivity() {
         val id = startParsing()
         // The live preview would compete with the parser for CPU.
         stopCamera()
-        worker.execute { parse(id) { decodePhoto(uri) } }
+        worker.execute {
+            val focal35 = runCatching {
+                contentResolver.openInputStream(uri)?.use {
+                    android.media.ExifInterface(it).getAttributeInt(
+                        android.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+                        0,
+                    )
+                }
+            }.getOrNull()?.takeIf { it > 0 } ?: DEFAULT_FOCAL_35MM
+            // A 35 mm-equivalent focal length is over the 43.27 mm diagonal of 35 mm film.
+            parse(id, { hypot(it.width.toDouble(), it.height.toDouble()) * focal35 / 43.27 }) {
+                decodePhoto(uri)
+            }
+        }
     }
 
     /**
@@ -470,14 +680,18 @@ class PosterCaptureActivity : ComponentActivity() {
         ).also { if (it !== bitmap) bitmap.recycle() }
     }
 
-    /** Parses the photo [load] gives, on the worker, unless a newer attempt replaced [id]. */
-    private fun parse(id: Int, load: () -> Bitmap) {
+    /**
+     * Parses the photo [load] gives, on the worker, unless a newer attempt replaced [id].
+     * [focalPx] is the lens's focal length in that photo's pixels, for the angle check.
+     */
+    private fun parse(id: Int, focalPx: (Bitmap) -> Double, load: () -> Bitmap) {
         synchronized(workLock) {
             if (id != generation) return
             parsingThread = Thread.currentThread()
         }
         val result = try {
             val photo = load()
+            checkAngle(photo, focalPx(photo))
             val shown = Bitmap.createScaledBitmap(
                 photo,
                 photo.width * PHOTO_VIEW_SIDE / maxOf(photo.width, photo.height),
@@ -488,7 +702,7 @@ class PosterCaptureActivity : ComponentActivity() {
                 if (id == generation && !isDestroyed) {
                     photoView.setImageBitmap(shown)
                     photoView.visibility = View.VISIBLE
-                    cameraView.visibility = View.GONE
+                    cameraFrame.visibility = View.GONE
                 }
             }
             val began = android.os.SystemClock.elapsedRealtime()
@@ -524,15 +738,83 @@ class PosterCaptureActivity : ComponentActivity() {
                 result.getOrNull()?.rectified?.recycle()
                 return@runOnUiThread
             }
-            result.onSuccess(::showReview).onFailure {
+            result.onSuccess { if (developer) showReview(it) else saveForUser(it) }.onFailure {
                 Log.w(TAG, "Poster processing failed", it)
-                val message = (it as? PosterRetakeException)?.message
                 busy = false
                 fastSwitch.isEnabled = true
-                fastSwitch.isEnabled = true
-                startCamera(message ?: getString(R.string.poster_parse_failed))
+                startCamera()
+                when (it) {
+                    is TooAngled -> showRetake(R.string.poster_retake_angled, it.message, it.iconId)
+                    is PosterRetakeException -> showRetake(R.string.poster_retake_title, it.message)
+                    else -> showRetake(
+                        R.string.poster_retake_title,
+                        getString(R.string.poster_parse_failed),
+                    )
+                }
             }
         }
+    }
+
+    /**
+     * The map in [photo] seen too far from straight on: user mode stops here with how to
+     * retake it (a slanted map loses rooms and doors); developer mode goes on, to test with.
+     */
+    private fun checkAngle(photo: Bitmap, focalPx: Double) {
+        val seen = runCatching { PosterAim.look(photo, 0, focalPx) }.getOrNull() ?: return
+        if (seen.corners == null) return
+        val angle = maxOf(abs(seen.yawDegrees), abs(seen.pitchDegrees))
+        Log.i(TAG, "photo angle yaw %.1f pitch %.1f".format(seen.yawDegrees, seen.pitchDegrees))
+        if (angle <= AimParams().rejectDegrees) return
+        if (developer) {
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    getString(R.string.poster_angled_developer, angle.roundToInt()),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            return
+        }
+        photo.recycle()
+        val (move, iconId) = when (moveFor(seen.yawDegrees, seen.pitchDegrees)) {
+            AimHint.STEP_RIGHT -> R.string.aim_step_right to R.drawable.ic_aim_right
+            AimHint.STEP_LEFT -> R.string.aim_step_left to R.drawable.ic_aim_left
+            AimHint.LOWER -> R.string.aim_lower to R.drawable.ic_aim_down
+            else -> R.string.aim_raise to R.drawable.ic_aim_up
+        }
+        throw TooAngled(
+            getString(R.string.poster_too_angled, angle.roundToInt(), getString(move)),
+            iconId,
+        )
+    }
+
+    /** A photo sent back for its angle, with the arrow for the way to move. */
+    private class TooAngled(message: String, val iconId: Int) : Exception(message)
+
+    /**
+     * Shows why the last scan was sent back: a short title, the reason and what to do, with a
+     * light buzz and a spoken announcement. Stays until the next scan starts.
+     */
+    private fun showRetake(titleId: Int, reason: String?, iconId: Int = R.drawable.ic_warning) {
+        retakeTitle.setText(titleId)
+        retakeBody.text = reason ?: getString(R.string.poster_parse_failed)
+        retakeIcon.setImageDrawable(icon(iconId, Color.WHITE, 20))
+        retakeCard.visibility = View.VISIBLE
+        retakeCard.alpha = 0f
+        retakeCard.translationY = -dpf(8f)
+        retakeCard.animate().alpha(1f).translationY(0f).setDuration(220).start()
+        retakeCard.performHapticFeedback(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.view.HapticFeedbackConstants.REJECT
+            } else {
+                android.view.HapticFeedbackConstants.LONG_PRESS
+            },
+        )
+        status.setText(R.string.poster_ready)
+    }
+
+    private fun hideRetake() {
+        retakeCard.visibility = View.GONE
     }
 
     private fun upright(image: ImageProxy): Bitmap {
@@ -587,14 +869,33 @@ class PosterCaptureActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * User mode: no checking screen. A map that navigation accepts is saved and opened at
+     * once; one it can't use (no START, crossing corridors) sends the user back to retake.
+     */
+    private fun saveForUser(result: ParseResult) {
+        val verified = verifiedOrNull(result.graph)
+        if (verified == null) {
+            result.rectified.recycle()
+            busy = false
+            startCamera()
+            showRetake(R.string.poster_retake_title, getString(R.string.poster_user_blocked))
+            return
+        }
+        status.setText(R.string.poster_user_saving)
+        cancel.visibility = View.GONE
+        saveAndNavigate(verified, result.rectified, labelsOf(result))
+    }
+
     private fun showReview(result: ParseResult) {
         session.onMapCaptured(result.graph)
         val graph = checkNotNull(session.graph)
         review = result
         busy = false
         fastSwitch.isEnabled = true
+        PosterWarmup.release()
         stopCamera()
-        cameraView.visibility = View.GONE
+        cameraFrame.visibility = View.GONE
         photoView.visibility = View.GONE
         photoView.setImageDrawable(null)
         progress.visibility = View.GONE
@@ -624,7 +925,7 @@ class PosterCaptureActivity : ComponentActivity() {
         updateMapButton()
         val issues = result.warnings + reviewProblems(graph)
         status.text = reviewSummary(rooms.count { it.check != RoomCheck.CLEAR }, start != null)
-        details.visibility = View.VISIBLE
+        details.visibility = if (developer) View.VISIBLE else View.GONE
         details.text = getString(R.string.poster_review_details, issues.size)
         details.setOnClickListener {
             AlertDialog.Builder(this)
@@ -635,17 +936,17 @@ class PosterCaptureActivity : ComponentActivity() {
         }
         cancel.setText(R.string.poster_retake)
         cancel.visibility = View.VISIBLE
+        // Saving needs a graph NavigationSession accepts: a real START and validate() clean.
+        val verified = verifiedOrNull(result.graph)
+        val toCheck = rooms.count { it.check != RoomCheck.CLEAR }
         action.isEnabled = true
         action.setText(R.string.poster_edit)
         action.setOnClickListener { openEditor(result, graph) }
-        // Saving needs a graph NavigationSession accepts: a real START and validate() clean.
-        val verified = verifiedOrNull(result.graph)
         save.visibility = View.VISIBLE
         save.isEnabled = verified != null
         save.text = getString(
             if (verified != null) R.string.map_save else R.string.map_save_blocked,
         )
-        val toCheck = rooms.count { it.check != RoomCheck.CLEAR }
         save.setOnClickListener { verified?.let { confirmSave(it, result.rectified, toCheck) } }
     }
 
@@ -701,22 +1002,27 @@ class PosterCaptureActivity : ComponentActivity() {
         AlertDialog.Builder(this)
             .setTitle(R.string.map_save_title)
             .setMessage(getString(R.string.map_save_message, toCheck))
-            .setPositiveButton(R.string.map_save) { _, _ -> saveAndNavigate(graph, image) }
+            .setPositiveButton(R.string.map_save) { _, _ ->
+                saveAndNavigate(graph, image, review?.let(::labelsOf).orEmpty())
+            }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
     /** Writes the map off the UI thread, then opens it for navigation. */
-    private fun saveAndNavigate(graph: FloorGraph, image: Bitmap) {
+    /** Where the parser read each room number: kept with the map so taps on them work. */
+    private fun labelsOf(result: ParseResult) = result.rooms.map {
+        SavedLabel(it.label, it.bounds.left, it.bounds.top, it.bounds.right, it.bounds.bottom)
+    }
+
+    private fun saveAndNavigate(graph: FloorGraph, image: Bitmap, labels: List<SavedLabel>) {
         save.isEnabled = false
         action.isEnabled = false
-        val stamp = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
-            .format(Date())
-        val name = getString(R.string.map_default_name, stamp)
+        val name = suggestedMapName(graph)
         val store = MapAssets.savedMaps(this)
         worker.execute {
             val saved = runCatching {
-                store.save(graph, name) { file ->
+                store.save(graph, name, labels = labels) { file ->
                     file.outputStream().use {
                         check(image.compress(Bitmap.CompressFormat.JPEG, 92, it)) { "JPEG failed" }
                     }
@@ -731,6 +1037,10 @@ class PosterCaptureActivity : ComponentActivity() {
                     Log.w(TAG, "Saving the map failed", it)
                     save.isEnabled = true
                     action.isEnabled = true
+                    if (!developer) {
+                        busy = false
+                        startCamera()
+                    }
                     Toast.makeText(
                         this,
                         getString(R.string.map_save_failed, it.message.orEmpty()),
@@ -799,5 +1109,23 @@ class PosterCaptureActivity : ComponentActivity() {
         const val MAX_PHOTO_SIDE = 3200
         const val PHOTO_VIEW_SIDE = 1280
         const val TAG = "PosterCapture"
+
+        /** Framing-hint frames: the size the detector was checked at (Nov 14, 16 photos). */
+        const val AIM_FRAME_WIDTH = 1280
+        const val AIM_FRAME_HEIGHT = 960
+
+        /** About 8 looks a second: steady hints, and the CPU stays free for the warm-up. */
+        const val AIM_INTERVAL_MS = 120L
+
+        /** Focal length over sensor long side when the camera won't say: a 26 mm phone lens. */
+        const val DEFAULT_FOCAL_SHARE = 0.75
+
+        /** A phone's main camera, in 35 mm terms, when an imported photo doesn't say. */
+        const val DEFAULT_FOCAL_35MM = 26
+
+        /** Google's amber warning colours: yellow 50 fill, yellow 700 edge, brown ink. */
+        val RETAKE_FILL = Color.rgb(254, 247, 224)
+        val RETAKE_EDGE = Color.rgb(242, 153, 0)
+        val RETAKE_INK = Color.rgb(94, 61, 0)
     }
 }

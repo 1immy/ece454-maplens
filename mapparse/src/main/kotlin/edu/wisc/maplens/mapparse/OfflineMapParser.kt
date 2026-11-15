@@ -36,12 +36,16 @@ class OfflineMapParser(
 ) : MapParser {
     override fun parse(photo: Bitmap): ParseResult = Mats().use { mats ->
         onProgress(ParseProgress(ParseStage.STRAIGHTEN))
+        val whole = SystemClock.elapsedRealtime()
+        val timer = StageTimer()
         requireOpenCv()
         checkCancellation()
         val bgr = bitmapBgr(photo, mats)
+        timer.mark("photo to bgr")
         val frame = PosterFrame()
         val flat = mats.mat()
         val corners = frame.corners(bgr)
+        timer.mark("frame corners")
         val sourceWidth = frame.width(corners)
         if (sourceWidth < MIN_FRAME_WIDTH) {
             throw PosterRetakeException(
@@ -50,8 +54,11 @@ class OfflineMapParser(
         }
         frame.warp(bgr, corners, flat)
         bgr.release()
+        timer.mark("warp")
         val rectified = bitmapFromBgr(flat)
+        timer.mark("warp to bitmap")
         val unclear = sourceWidth < CLEAR_FRAME_WIDTH || sharpness(flat) < MIN_SHARPNESS
+        timer.mark("sharpness")
         val first = try {
             parseRectified(rectified, flat)
         } catch (failure: Exception) {
@@ -79,6 +86,7 @@ class OfflineMapParser(
             null
         }
         val result = upright ?: first
+        Log.i("MapLensParse", "whole ${SystemClock.elapsedRealtime() - whole} ms")
         return@use if (unclear) {
             result.copy(warnings = result.warnings + UNCLEAR_PHOTO_WARNING)
         } else {
@@ -86,8 +94,20 @@ class OfflineMapParser(
         }
     }
 
-    internal fun parseRectified(rectified: Bitmap, flat: Mat): ParseResult = Mats().use { mats ->
+    internal fun parseRectified(rectified: Bitmap, flat: Mat): ParseResult = try {
+        parseFlat(rectified, flat)
+    } finally {
+        // A warm-up keeps the networks for the next photo and frees them when the screen closes.
+        if (!Recognizers.kept) {
+            val timer = StageTimer()
+            Recognizers.release()
+            timer.mark("release recognizers")
+        }
+    }
+
+    private fun parseFlat(rectified: Bitmap, flat: Mat): ParseResult = Mats().use { mats ->
         checkCancellation()
+        val started = SystemClock.elapsedRealtime()
         onProgress(ParseProgress(ParseStage.CORRIDORS))
         val timer = StageTimer()
         // Reading the print doesn't depend on the corridors, so it runs alongside them, on its
@@ -101,19 +121,31 @@ class OfflineMapParser(
                 ocrImage.release()
             }
         }
+        // Door ink reads only the image, so it is ready before the rooms that need it.
+        val ink = Background { doorInk(flat) }
         val hsv = mats.mat()
         val routes = mats.mat()
         val stars: List<PixelPoint>
+        var icons: Background<List<PosterFeature>>? = null
         val corridors = try {
             Imgproc.cvtColor(flat, hsv, Imgproc.COLOR_BGR2HSV)
-            routeMask(hsv, routes, mats)
-            stars = detectStars(hsv)
+            // Icons and the star are colour blobs: found beside the route mask.
+            val found = Background { elevatorIcons(hsv) + aedIcons(hsv) }
+            icons = found
+            val starsFound = Background { detectStars(hsv) }
+            val planes = try {
+                PosterPlanes(hsv, mats).also { routeMask(hsv, routes, mats, it) }
+            } catch (failure: Throwable) {
+                starsFound.stop()
+                throw failure
+            }
+            stars = starsFound.await()
             timer.mark("route mask + stars")
-            val extracted = PosterCorridors().extract(routes, stars, flat)
+            val extracted = PosterCorridors().extract(routes, stars, flat, planes)
             timer.mark("extract")
-            recoverMarkerCorridor(hsv, routes, extracted, stars, flat).let { traced ->
+            recoverMarkerCorridor(hsv, routes, extracted, stars, flat, planes).let { traced ->
                 // The trace bends into the gold star: straighten it there before rooms attach.
-                stars.singleOrNull()?.let(traced::straightenedAround) ?: traced
+                (stars.singleOrNull()?.let(traced::straightenedAround) ?: traced).withoutBumps()
             }.also {
                 if (it.edges.sumOf { edge -> edge.lengthPx } < MIN_CORRIDOR_LENGTH) {
                     throw PosterRetakeException(
@@ -123,21 +155,31 @@ class OfflineMapParser(
             }
         } catch (failure: Throwable) {
             ocr.cancel()
+            ink.stop()
+            icons?.stop()
             throw failure
         }
         timer.mark("corridors")
         val warnings = mutableListOf("Check the corridors against the poster before saving.")
-        val readings = try {
+        val raw = try {
             ocr.await()
         } catch (_: CvException) {
             warnings += "Room recognition failed. Check or enter room labels in review."
             emptyList()
+        } catch (failure: Throwable) {
+            ink.stop()
+            icons?.stop()
+            throw failure
         }
         timer.mark("ocr")
         checkCancellation()
         onProgress(ParseProgress(ParseStage.PLACE_ROOMS))
         // The poster's floor, from its own room numbers (EH posters exist for every floor).
-        val floor = posterFloor(readings)
+        val floor = posterFloor(raw)
+        // A wall line through a printed number drops a digit ("3540" read "354"): read again.
+        val readings = repairCutNumbers(flat, raw, floor)
+        ParseDebug.readings = readings
+        timer.mark("cut numbers")
         val rooms = distinctRooms(readings, floor)
         if (rooms.isEmpty()) {
             warnings += "No room numbers read. Check focus or enter labels in review."
@@ -147,10 +189,11 @@ class OfflineMapParser(
         } else {
             val walls = wallMask(flat, routes, readings)
             timer.mark("wall mask")
-            corridors.attachRooms(rooms, walls, flat.cols(), warnings)
+            corridors.attachRooms(rooms, walls, flat.cols(), warnings, ink.await())
         }
         timer.mark("attach rooms")
-        val features = exitSigns(readings) + elevatorIcons(hsv) + aedIcons(hsv)
+        ink.stop()
+        val features = exitSigns(readings) + checkNotNull(icons).await()
         timer.mark("features")
         val graph = resolveStart(labeled.graph, stars, warnings).attachFeatures(features)
             .let { if (floor != null) it.copy(floor = floor.toString()) else it }
@@ -160,6 +203,7 @@ class OfflineMapParser(
             floor,
         ).filter { weak -> rooms.none { it.text == weak.text } }
             .map { RoomPreview(it.text, it.box, null, it.confidence, possible = true) }
+        Log.i("MapLensParse", "total ${SystemClock.elapsedRealtime() - started} ms")
         ParseResult(graph, rectified, warnings, labeled.rooms + possible)
     }
 }

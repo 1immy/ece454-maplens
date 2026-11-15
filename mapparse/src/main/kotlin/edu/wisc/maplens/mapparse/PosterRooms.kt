@@ -167,15 +167,26 @@ internal fun corridorPath(
         return y * stride + x
     }
 
-    fun wall(index: Int): Boolean =
-        walls[(index / stride + top) * width + index % stride + left] != 0.toByte()
+    // The crop's own copy of the walls and of where the goals are: the search asks both for
+    // every cell it visits, and a lookup by cell is far cheaper than arithmetic or a hash.
+    val wallAt = BooleanArray(size)
+    for (y in 0 until rows) {
+        val from = (y + top) * width + left
+        for (x in 0 until stride) wallAt[y * stride + x] = walls[from + x] != 0.toByte()
+    }
+
+    fun wall(index: Int): Boolean = wallAt[index]
 
     val nearby = samples.filter {
         it.x >= left && it.x < right && it.y >= top && it.y < bottom
     }
     if (nearby.isEmpty()) return null
     val goals = hashMapOf<Int, PixelPoint>()
-    for (point in nearby) goals.putIfAbsent(cell(point), point)
+    val isGoal = BooleanArray(size)
+    for (point in nearby) {
+        goals.putIfAbsent(cell(point), point)
+        isGoal[cell(point)] = true
+    }
 
     val queue = CellHeap()
     val costs = DoubleArray(size).apply { fill(Double.POSITIVE_INFINITY) }
@@ -192,7 +203,7 @@ internal fun corridorPath(
         val cost = queue.peekCost()
         val index = queue.poll()
         if (cost != costs[index]) continue
-        val goal = goals[index]
+        val goal = if (isGoal[index]) goals[index] else null
         if (goal != null) {
             if (crossings[index] <= wallLimit && lengths[index] <= limit) {
                 wallPath = CorridorConnector(goal, lengths[index].toDouble())

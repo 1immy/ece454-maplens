@@ -2,6 +2,7 @@ package edu.wisc.maplens.live
 
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
+import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.bearing
 import edu.wisc.maplens.model.bearingDifference
 import edu.wisc.maplens.model.corridorsAt
@@ -44,8 +45,18 @@ fun arrowFor(bearingRad: Double): String {
  * then set θ0 off by that much for the whole walk. A direction with a corridor (within
  * [FACING_MATCH_RAD]) is described by what lies along it; the others by the poster, which
  * is drawn facing the reader, so "up" on the map is the way someone reading it faces.
+ *
+ * Away from the poster (a starting point the user picked) there is no poster to face: give
+ * the room there as [landmark], where its number is printed, and [landmarkName], and the
+ * other two ways are described by that room ("facing room 3540", "with your back to it").
  */
-fun FloorGraph.facingOptions(nodeId: String): List<FacingOption> {
+fun FloorGraph.facingOptions(
+    nodeId: String,
+    landmark: PixelPoint? = null,
+    landmarkName: String? = null,
+): List<FacingOption> {
+    val here = nodes.getValue(nodeId).position
+    val toLandmark = landmark?.takeIf { landmarkName != null }?.let { bearing(here, it) }
     val corridors = corridorsAt(nodeId)
     if (corridors.isEmpty()) return emptyList()
     val axis = corridorAxisRad()
@@ -57,6 +68,11 @@ fun FloorGraph.facingOptions(nodeId: String): List<FacingOption> {
         val nearest = match ?: corridors.minBy { bearingDifference(it.bearingRad, bearing) }
         val description = when {
             match != null -> describeToward(nodeId, match.edgeId)
+            toLandmark != null && bearingDifference(bearing, toLandmark) <= PI / 4 ->
+                "facing $landmarkName"
+            toLandmark != null && bearingDifference(bearing, toLandmark + PI) <= PI / 4 ->
+                "with your back to $landmarkName"
+            toLandmark != null -> "facing the wall"
             bearingDifference(bearing, -PI / 2) <= PI / 4 -> "facing the map poster"
             bearingDifference(bearing, PI / 2) <= PI / 4 -> "with your back to the map poster"
             else -> "facing the wall"

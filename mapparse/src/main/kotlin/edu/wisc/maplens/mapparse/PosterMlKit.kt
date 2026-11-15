@@ -43,7 +43,16 @@ internal object PosterMlKit {
      */
     fun readPoster(poster: Bitmap, bgr: Mat): List<PosterReading> {
         val timer = StageTimer()
-        val first = read(poster)
+        // Word and sign patches come from the image alone, so they are found while ML Kit reads.
+        val wordRegions = Background { roomWordRegions(bgr) }
+        val signPatches = Background { exitPatches(bgr) }
+        val first = try {
+            read(poster)
+        } catch (failure: Throwable) {
+            wordRegions.cancel()
+            signPatches.cancel()
+            throw failure
+        }
         timer.mark("mlkit")
         val floor = posterFloor(first)
         val rooms = distinctRooms(first, floor)
@@ -52,11 +61,11 @@ internal object PosterMlKit {
             normalizeRoom(it.text) == null &&
                 (it.text.count(Char::isLetter) >= 3 || ',' in it.text)
         }
-        val words = roomWordRegions(bgr).filter { region ->
+        val words = wordRegions.await().filter { region ->
             rooms.none { region.contains(it.box.centerX(), it.box.centerY()) } &&
                 prose.none { it.box.contains(region.centerX(), region.centerY()) }
         }
-        val exits = exitPatches(bgr).filter { patch ->
+        val exits = signPatches.await().filter { patch ->
             first.none { isExitText(it.text) && patch.contains(it.box.centerX(), it.box.centerY()) }
         }
         val cells = words.map { it to false } + exits.map { it to true }
@@ -87,49 +96,67 @@ internal object PosterMlKit {
         // on a scan where almost every room was right), so a low one gets a second opinion:
         // the sharper recognizer reads the same spot, and agreement makes the room sure.
         val doubtful = (rooms + small).filter { it.confidence < MLKIT_SURE }
-        val rechecked = recheckEach(
+        val unread = mostLabelLike(stillUnread, readNow).take(MAX_RECHECK)
+        val recheck = Recheck(
             bgr,
-            stillUnread.take(MAX_RECHECK) + signCrops + doubtful.map { padded(it.box, DOUBT_PAD) },
+            unread + signCrops + doubtful.map { padded(it.box, DOUBT_PAD) },
         )
-        timer.mark(
-            "recheck ${stillUnread.size} words, ${unreadSigns.size} signs, ${doubtful.size} doubts",
-        )
-        val opinions = rechecked.takeLast(doubtful.size)
-        val agreed = doubtful.zip(opinions).filter { (read, again) ->
-            again.any { normalizeRoom(it.text) == normalizeRoom(read.text) }
-        }.map { it.first.box }.toSet()
-        val sharp = rechecked.take(
-            minOf(stillUnread.size, MAX_RECHECK)
-        ).flatten().filter { reading ->
+        // First the patches that can add a reading: unread words and unread signs.
+        val firstDoubt = unread.size + signCrops.size
+        recheck.read(0 until firstDoubt)
+        timer.mark("recheck ${unread.size} of ${stillUnread.size} words, ${unreadSigns.size} signs")
+        val sharp = unread.indices.flatMap { recheck.reads(it) }.filter { reading ->
             normalizeRoom(reading.text)?.let { floor == null || it.first() == floor } == true
         }
-        val sharpSigns = unreadSigns.zip(
-            rechecked.drop(minOf(stillUnread.size, MAX_RECHECK)).take(signCrops.size).chunked(1),
-        )
-            .mapNotNull { (patch, reads) ->
-                reads.flatten().firstOrNull { isExitLike(it.text) }
-                    ?.copy(text = "EXIT", box = Rect(patch), possible = false)
+        val sharpSigns = unreadSigns.mapIndexedNotNull { i, patch ->
+            recheck.reads(unread.size + i).firstOrNull { isExitLike(it.text) }
+                ?.copy(text = "EXIT", box = Rect(patch), possible = false)
+        }
+        // Then a second opinion on doubtful rooms, but only where it can change the answer:
+        // one the numbering around it already makes sure ends up sure either way.
+        val base = first + small
+        val open = unsettledDoubts(doubtful, base, base + sharp).toSet()
+        val asked = doubtful.indices.filter { doubtful[it] in open }
+        val passes = recheck.read(asked.map { firstDoubt + it })
+        timer.mark("recheck ${asked.size} of ${doubtful.size} doubts, $passes passes")
+        val agreed = asked.filter { i ->
+            recheck.reads(firstDoubt + i).any {
+                normalizeRoom(it.text) == normalizeRoom(doubtful[i].text)
             }
-        // Room reads on the review's scale (sure at 0.97+): sure when ML Kit was confident or
-        // the second reader agreed; otherwise left as read, so the review asks for a look.
-        val calibrated = (first + small).map { read ->
-            val room = normalizeRoom(read.text) != null
+        }.map { doubtful[it].box }.toSet()
+        return sureRooms(base, sharp, agreed) + sharp + signs + sharpSigns
+    }
+
+    /**
+     * [read] with its room numbers on the review's scale (sure at 0.97+): sure when ML Kit was
+     * confident, when the second reader [agreed] (by box), or when the number fits the run of
+     * its neighbours among [read] and [sharp]; otherwise left as read, so the review asks for
+     * a look.
+     */
+    internal fun sureRooms(
+        read: List<PosterReading>,
+        sharp: List<PosterReading>,
+        agreed: Set<Rect>,
+    ): List<PosterReading> {
+        val calibrated = read.map { reading ->
+            val room = normalizeRoom(reading.text) != null
             when {
-                !room -> read
-                read.confidence >= MLKIT_SURE || read.box in agreed ->
-                    read.copy(confidence = SURE, possible = false)
-                else -> read
+                !room -> reading
+                reading.confidence >= MLKIT_SURE || reading.box in agreed ->
+                    reading.copy(confidence = SURE, possible = false)
+                else -> reading
             }
         }
         // Rooms are numbered in runs: a doubtful number that fits its neighbours' run (their
         // first three digits) is most likely right; one that fits none stays for a look.
         val placed = (calibrated + sharp).filter { normalizeRoom(it.text) != null }
-        val trended = calibrated.map { read ->
-            val label = normalizeRoom(read.text)
-            if (label == null || read.confidence >= SURE || read.possible) return@map read
-            if (fitsNeighbours(label, read, placed)) read.copy(confidence = SURE) else read
+        return calibrated.map { reading ->
+            val label = normalizeRoom(reading.text)
+            if (label == null || reading.confidence >= SURE || reading.possible) {
+                return@map reading
+            }
+            if (fitsNeighbours(label, reading, placed)) reading.copy(confidence = SURE) else reading
         }
-        return trended + sharp + signs + sharpSigns
     }
 
     /**
@@ -228,6 +255,17 @@ internal object PosterMlKit {
         }
     }
 
+    /** Loads ML Kit's model by reading a blank image, so a parse's first read doesn't. */
+    fun warm() {
+        val blank = Bitmap.createBitmap(WARM_SIDE, WARM_SIDE, Bitmap.Config.ARGB_8888)
+        try {
+            blank.eraseColor(android.graphics.Color.WHITE)
+            read(blank)
+        } finally {
+            blank.recycle()
+        }
+    }
+
     fun read(poster: Bitmap): List<PosterReading> {
         checkCancellation()
         val text = Tasks.await(recognizer.process(InputImage.fromBitmap(poster, 0)))
@@ -302,6 +340,27 @@ internal object PosterMlKit {
     }
 
     /**
+     * The [doubtful] room reads whose second opinion can still change the result. A doubtful
+     * read becomes sure when the sharper reader agrees, or when it [fitsNeighbours]; so where
+     * every room read at its box ([read] is all of them) is already sure or fits the numbering
+     * of [placed], agreement adds nothing and the read is settled. A read marked possible is
+     * never settled this way: only agreement clears that mark.
+     */
+    internal fun unsettledDoubts(
+        doubtful: List<PosterReading>,
+        read: List<PosterReading>,
+        placed: List<PosterReading>,
+    ): List<PosterReading> {
+        val rooms = placed.filter { normalizeRoom(it.text) != null }
+        return doubtful.filterNot { doubt ->
+            read.filter { it.box == doubt.box && normalizeRoom(it.text) != null }.all {
+                it.confidence >= MLKIT_SURE ||
+                    (!it.possible && fitsNeighbours(normalizeRoom(it.text)!!, it, rooms))
+            }
+        }
+    }
+
+    /**
      * Whether [label] continues the numbering around it: at least two of the nearest room
      * numbers within [NEIGHBOUR_PX] share its first three digits (3536 among 3533, 3535, 3537).
      */
@@ -327,6 +386,9 @@ internal object PosterMlKit {
 
     private const val DEFAULT_CONFIDENCE = 0.95f
 
+    /** Side of the blank image [warm] reads. */
+    private const val WARM_SIDE = 64
+
     /** Neighbour check: digits shared, how near, how many looked at, how many must match. */
     private const val RUN_DIGITS = 3
     private const val NEIGHBOUR_PX = 320.0
@@ -342,7 +404,10 @@ internal object PosterMlKit {
     /** A small-patch read below this confidence is offered as a possible room only. */
     private const val SMALL_SURE = 0.8f
 
-    /** At most this many leftover word patches get the slower recognizer (~0.1 s each). */
+    /**
+     * At most this many leftover word patches get the slower recognizer (~0.1 s each), the
+     * most label-like first ([mostLabelLike]). Taken top to bottom, EH3's 3440 was 13th of 14.
+     */
     private const val MAX_RECHECK = 12
 
     /**
@@ -357,8 +422,12 @@ internal object PosterMlKit {
     /** Margin around a doubtful room's box for the second reader. */
     private const val DOUBT_PAD = 4
 
-    /** The second, wider crop of an exit-sign patch. */
-    private const val SIGN_PAD = 6
+    /**
+     * Margin added around an exit-sign patch for the second reader. None: the patch already
+     * has 4 px, and more shrinks the sign's small letters and pulls in neighbouring red (EH3,
+     * Nov 14: three of eight signs read empty at 6 px, all eight read EXIT at 0).
+     */
+    private const val SIGN_PAD = 0
 
     private fun padded(r: Rect, pad: Int) = Rect(
         r.left - pad,

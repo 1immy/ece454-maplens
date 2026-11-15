@@ -19,6 +19,7 @@ internal fun FloorGraph.attachRooms(
     walls: ByteArray,
     width: Int,
     warnings: MutableList<String>,
+    ink: ByteArray? = null,
 ): RoomAttachments {
     var graph = this
     val previews = mutableListOf<RoomPreview>()
@@ -30,43 +31,37 @@ internal fun FloorGraph.attachRooms(
     }
     val missed = mutableSetOf<String>()
     val detours = mutableSetOf<String>()
-    // Each room's search only reads the walls and the corridors as traced, so they run in
-    // parallel; the graph is then changed one room at a time, in order, as before.
-    // Doorways found the paint-bucket way (see roomEntrances): where they are clear, they say
-    // exactly where the room opens onto a corridor, and a room with two gets two doors.
+    // Each room's door is found from the walls (watershedDoors): where the room's floor meets
+    // reachable corridor floor through a door-sized gap, else an approximate end beside the
+    // room. The search only reads the poster; the graph then changes one room at a time.
     val timer = StageTimer()
-    val grid = WallGrid(walls, width)
-    val doorways = rooms.parallelMap { roomEntrances(it.center, grid) }
-    timer.mark("doorways")
-    // The cheapest path out, only for rooms without a clear doorway near a corridor.
-    val needPath = rooms.indices.filter { i ->
-        doorways[i].orEmpty().none { at ->
-            (nearestEdge(at)?.distancePx ?: Double.MAX_VALUE) <= DOORWAY_REACH_PX
-        }
-    }
+    // Seeded watershed over open floor (see watershedDoors): rooms, corridor and outside grow
+    // from their seeds and meet at the narrowest places, which are the doorways.
+    val findings = watershedDoors(walls, width, rooms, samples, ink)
+    timer.mark("doors")
+    // Rooms that can't be closed off: the old cheapest path out, flagged for review.
+    val needPath = rooms.indices.filter { findings[it] == null }
     val paths = needPath.parallelMap { corridorPath(rooms[it].center, samples, walls, width) }
     val connectors = arrayOfNulls<CorridorConnector>(rooms.size)
     for ((k, i) in needPath.withIndex()) connectors[i] = paths[k]
-    timer.mark("paths for ${needPath.size} of ${rooms.size} rooms")
+    timer.mark("fallback paths for ${needPath.size} of ${rooms.size} rooms")
     for ((index, room) in rooms.withIndex()) {
         checkCancellation()
-        val connector = connectors[index]
-        val openings = doorways[index].orEmpty()
-            .mapNotNull { at ->
-                graph.nearestEdge(
-                    at
-                )?.takeIf { it.distancePx <= DOORWAY_REACH_PX }
-            }
-            .sortedBy { it.distancePx }
-            .take(MAX_DOORWAYS)
-        if (openings.isNotEmpty()) {
-            for (opening in openings) {
-                // The graph changed with the last door: find the corridor point again.
-                val hit = graph.nearestEdge(opening.point) ?: continue
-                graph = graph.withDoor(room, hit, previews)
-            }
+        val finding = findings[index]
+        android.util.Log.d(
+            "MapLensDoors",
+            "${room.text}: ${finding?.kind ?: DoorKind.REVIEW} " +
+                (
+                    finding?.let {
+                        "door ${it.doorway} out ${it.outside} -> ${it.corridor}; ${it.reason}"
+                    } ?: "fallback"
+                    ),
+        )
+        if (finding != null) {
+            graph = graph.withFoundDoor(room, finding, previews, walls, width)
             continue
         }
+        val connector = connectors[index]
         val hit = connector?.let { graph.nearestEdge(it.target) }
         if (connector == null || hit == null) {
             previews += RoomPreview(room.text, Rect(room.box), null, room.confidence)
@@ -79,7 +74,7 @@ internal fun FloorGraph.attachRooms(
             detours += room.text
             continue
         }
-        graph = graph.withDoor(room, hit, previews)
+        graph = graph.withDoor(room, hit, previews, DoorKind.REVIEW)
     }
     if (missed.isNotEmpty()) {
         warnings += "No wall-clear entrance found for ${missed.joinToString()}. Check these rooms."
@@ -94,22 +89,98 @@ internal fun FloorGraph.attachRooms(
     return RoomAttachments(graph, previews)
 }
 
-/** A DOOR for [room] at corridor point [hit] (an end within 8 px is reused), and its label. */
+/**
+ * The door [finding] found for [room]: on the corridor where the way out reaches it, or, when
+ * that is more than [DIRECT_LINK_PX] away (an untraced stretch of corridor), at the walker's
+ * spot outside the doorway with a link edge over open floor to the traced corridor.
+ */
+private fun FloorGraph.withFoundDoor(
+    room: PosterReading,
+    finding: DoorFinding,
+    previews: MutableList<RoomPreview>,
+    walls: ByteArray,
+    width: Int,
+): FloorGraph {
+    // On the corridor centre line straight across from the opening, when nothing is in the
+    // way: the tracing convention, and where a walker heads for the door.
+    // The walk out shows whether the corridor is straight across: short and nearly straight.
+    val across = nearestEdge(finding.outside)
+    val walked = pathLength(finding.link)
+    if (across != null && across.distancePx <= ACROSS_PX &&
+        walked <= STRAIGHT_SHARE * across.distancePx + STRAIGHT_SLACK_PX
+    ) {
+        return withDoor(room, across, previews, finding.kind)
+    }
+    val hit = nearestEdge(finding.corridor) ?: return this
+    if (pathLength(finding.link) <= DIRECT_LINK_PX) {
+        return withDoor(room, hit, previews, finding.kind)
+    }
+    var graph = this
+    val edge = graph.edge(hit.edgeId)
+    val joint = graph.endpointNear(edge, hit.point, 3.0)
+        ?: Node(graph.nextNodeId("dj"), hit.point, NodeType.JUNCTION).also {
+            graph = graph.split(edge, hit, it)
+        }
+    val door = Node(graph.nextNodeId(doorIdPrefix(finding.kind)), finding.outside, NodeType.DOOR)
+    var start = joint
+    var line = listOf(joint.position) + finding.link.reversed().drop(1).dropLast(1) + door.position
+    // Rooms reached through one opening walk the same way there. Their links branch where they
+    // part; near-identical traced lines would otherwise wobble across each other. Each fork can
+    // lead along another room's link, so look again from there. The line shrinks every time.
+    while (true) {
+        val (shared, last) = graph.sharedLink(start, line) ?: break
+        val hit = checkNotNull(graph.copy(edges = listOf(shared)).nearestEdge(line[last]))
+        start = graph.endpointNear(shared, hit.point, 3.0)
+            ?: Node(graph.nextNodeId("fj"), hit.point, NodeType.JUNCTION).also {
+                graph = graph.split(shared, hit, it)
+            }
+        line = listOf(start.position) + line.drop(last + 1)
+    }
+    val linkId = generateSequence(1) { it + 1 }.map { "door$it" }
+        .first { id -> graph.edges.none { it.id == id } }
+    graph = graph.copy(
+        nodes = graph.nodes + (door.id to door),
+        edges = graph.edges + Edge(linkId, start.id, door.id, line, pathLength(line)),
+    )
+    return graph.labelled(room, door.id, previews)
+}
+
+/**
+ * A DOOR for [room] at corridor point [hit]. A corridor end within 8 px is reused, unless it is
+ * another room's door: neighbours on one corridor keep their own doors.
+ */
 private fun FloorGraph.withDoor(
     room: PosterReading,
     hit: EdgePosition,
     previews: MutableList<RoomPreview>,
+    kind: DoorKind = DoorKind.VERIFIED,
 ): FloorGraph {
     var graph = this
     val edge = graph.edge(hit.edgeId)
-    var node = graph.endpointNear(edge, hit.point, 8.0)
+    val othersDoor = { node: Node ->
+        graph.landmarks.any { it.nodeId == node.id && it.label != room.text }
+    }
+    var node = graph.endpointNear(edge, hit.point, 8.0)?.takeIf {
+        !othersDoor(it) || it.position.distanceTo(hit.point) < 1.5
+    }
     if (node == null) {
-        node = Node(graph.nextNodeId("ocrD"), hit.point, NodeType.DOOR)
+        node = Node(graph.nextNodeId(doorIdPrefix(kind)), hit.point, NodeType.DOOR)
         graph = graph.split(edge, hit, node)
     } else if (node.type == NodeType.DEAD_END) {
         node = node.copy(type = NodeType.DOOR)
         graph = graph.copy(nodes = graph.nodes + (node.id to node))
     }
+    return graph.labelled(room, node.id, previews)
+}
+
+/** Names node [nodeId] as [room]'s entrance in the graph and the review list. */
+private fun FloorGraph.labelled(
+    room: PosterReading,
+    nodeId: String,
+    previews: MutableList<RoomPreview>,
+): FloorGraph {
+    var graph = this
+    val node = graph.nodes.getValue(nodeId)
     if (previews.none { it.label == room.text && it.entranceNodeId != null }) {
         previews.removeAll { it.label == room.text }
         previews += RoomPreview(room.text, Rect(room.box), node.id, room.confidence)
@@ -121,11 +192,63 @@ private fun FloorGraph.withDoor(
     return graph
 }
 
-/** A doorway further than this from every traced corridor opens elsewhere (outside, a room). */
-private const val DOORWAY_REACH_PX = 70.0
+/**
+ * The edge leaving [joint] that [line] (also from [joint]) runs along furthest, at least
+ * [SHARED_MIN_PX], with the index of [line]'s last point still on it. Null when there is none.
+ */
+internal fun FloorGraph.sharedLink(joint: Node, line: List<PixelPoint>): Pair<Edge, Int>? =
+    edges.filter { joint.id == it.from || joint.id == it.to }.map { edge ->
+        var last = 0
+        while (last < line.lastIndex &&
+            distanceToLine(line[last + 1], edge.polyline) <= SHARED_PX
+        ) {
+            last++
+        }
+        edge to last
+    }.filter { (_, last) -> last > 0 && pathLength(line.take(last + 1)) >= SHARED_MIN_PX }
+        .maxByOrNull { (_, last) -> last }
 
-/** At most this many doorways per room become doors. */
-private const val MAX_DOORWAYS = 2
+private fun distanceToLine(point: PixelPoint, line: List<PixelPoint>): Double =
+    line.zipWithNext().minOfOrNull { (a, b) ->
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+        val squared = dx * dx + dy * dy
+        val t = if (squared == 0.0) {
+            0.0
+        } else {
+            (((point.x - a.x) * dx + (point.y - a.y) * dy) / squared).coerceIn(0.0, 1.0)
+        }
+        point.distanceTo(PixelPoint(a.x + t * dx, a.y + t * dy))
+    } ?: point.distanceTo(line.first())
+
+/** Door links this close together walk the same way. */
+private const val SHARED_PX = 3.0
+
+/** Shorter shared stretches are left as they are: they can't wobble across each other. */
+private const val SHARED_MIN_PX = 10.0
+
+/** A door this close to the traced corridor sits on it; further, it gets a link edge. */
+private const val DIRECT_LINK_PX = 25.0
+
+/** Furthest from the doorway to the corridor centre line for a door placed straight across. */
+private const val ACROSS_PX = 80.0
+
+/** The walk out may be this much longer than the straight line and still count as across. */
+private const val STRAIGHT_SHARE = 1.6
+private const val STRAIGHT_SLACK_PX = 15.0
+
+/** No wall pixel on the straight line from [a] to [b]. */
+private fun lineClear(a: PixelPoint, b: PixelPoint, walls: ByteArray, width: Int): Boolean {
+    val steps = kotlin.math.ceil(a.distanceTo(b)).toInt().coerceAtLeast(1)
+    val height = walls.size / width
+    for (i in 0..steps) {
+        val x = (a.x + (b.x - a.x) * i / steps).toInt()
+        val y = (a.y + (b.y - a.y) * i / steps).toInt()
+        if (x !in 0 until width || y !in 0 until height) return false
+        if (walls[y * width + x] != 0.toByte()) return false
+    }
+    return true
+}
 
 internal fun resolveStart(
     graph: FloorGraph,

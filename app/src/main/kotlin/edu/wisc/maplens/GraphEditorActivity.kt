@@ -29,8 +29,6 @@ import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.nearestEdge
 import edu.wisc.maplens.routing.AStarRouter
 import edu.wisc.maplens.routing.roomDestinations
-import java.text.DateFormat
-import java.util.Date
 import java.util.concurrent.Executors
 
 /** Screen tolerance for a finger: half of a 48 dp target on each side. */
@@ -820,9 +818,7 @@ class GraphEditorActivity : ComponentActivity() {
     private fun save(button: View) {
         button.isEnabled = false
         val checked = graph
-        val stamp = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
-            .format(Date())
-        val name = getString(R.string.map_default_name, stamp)
+        val name = suggestedMapName(checked)
         val maps = MapAssets.savedMaps(this)
         worker.execute {
             val saved = runCatching {

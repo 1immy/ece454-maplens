@@ -1,5 +1,6 @@
 package edu.wisc.maplens.nav
 
+import edu.wisc.maplens.mapparse.DoorIds
 import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
@@ -22,13 +23,25 @@ data class Place(
     val nodeIds: List<String>,
     /** Where the pin goes: the room's first door, or the feature node. */
     val position: PixelPoint,
+    /**
+     * The parser found no clear doorway, only the corridor beside the room: arriving there
+     * means "near the room, check the door sign".
+     */
+    val approximate: Boolean = false,
 )
 
 /** Every room with a door on the graph, then each exit, elevator and AED node. */
 fun FloorGraph.places(): List<Place> {
     val rooms = roomDestinations().map { label ->
         val doors = nodesForLabel(label)
-        Place("room:$label", PlaceKind.ROOM, label, doors, nodes.getValue(doors.first()).position)
+        Place(
+            "room:$label",
+            PlaceKind.ROOM,
+            label,
+            doors,
+            nodes.getValue(doors.first()).position,
+            approximate = doors.all(DoorIds::isApproximate),
+        )
     }
     val features = nodes.values
         .mapNotNull { node ->
@@ -118,4 +131,19 @@ class PlaceSearch(
             return if (stripped.any { it.isDigit() }) normalizeLabel(stripped) else upper
         }
     }
+}
+
+/**
+ * This map with START moved to [nodeId], for a walk that begins somewhere other than the
+ * poster (the user said "I'm here" at a room). Routes, the facing step and tracking all start
+ * from [FloorGraph.startNodeId], so nothing else changes. The poster's START becomes a plain
+ * corridor point; landmarks keep their node ids, so every room still routes and lists.
+ */
+fun FloorGraph.startingAt(nodeId: String): FloorGraph {
+    if (nodeId == startNodeId || nodeId !in nodes) return this
+    val poster = nodes.getValue(startNodeId)
+    val ways = adjacency()[poster.id].orEmpty().size
+    val plain = poster.copy(type = if (ways >= 2) NodeType.JUNCTION else NodeType.DEAD_END)
+    val here = nodes.getValue(nodeId).copy(type = NodeType.START)
+    return copy(nodes = nodes + (plain.id to plain) + (here.id to here), startNodeId = nodeId)
 }

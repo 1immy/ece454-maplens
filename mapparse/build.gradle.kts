@@ -14,6 +14,10 @@ android {
         testInstrumentationRunner = "edu.wisc.maplens.mapparse.PosterParserChecks"
     }
 
+    // `-Pmaplens.probe=release` builds the on-phone probe non-debuggable, to time the parser
+    // the way a release app runs it. Its output files then need a debug run (run-as).
+    testBuildType = providers.gradleProperty("maplens.probe").getOrElse("debug")
+
     sourceSets.getByName("androidTest") {
         assets.srcDirs(
             rootProject.file("data/fixtures/maps"),

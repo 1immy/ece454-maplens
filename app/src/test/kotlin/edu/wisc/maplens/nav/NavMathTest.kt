@@ -48,4 +48,16 @@ class NavMathTest {
         assertEquals(-90.0, NavMath.screenRotationDeg(0.0), 1e-9)
         assertEquals(90.0, NavMath.screenRotationDeg(PI), 1e-9)
     }
+
+    @Test
+    fun `the start turn says which way to face the route`() {
+        val deg = PI / 180
+        // Facing within 40 degrees of the route: just go.
+        assertEquals(null, NavMath.startTurn(30 * deg))
+        assertEquals(edu.wisc.maplens.guidance.Maneuver.TURN_RIGHT, NavMath.startTurn(90 * deg))
+        assertEquals(edu.wisc.maplens.guidance.Maneuver.TURN_LEFT, NavMath.startTurn(-70 * deg))
+        // Facing the opposite way: turn around, either side.
+        assertEquals(edu.wisc.maplens.guidance.Maneuver.U_TURN, NavMath.startTurn(170 * deg))
+        assertEquals(edu.wisc.maplens.guidance.Maneuver.U_TURN, NavMath.startTurn(-150 * deg))
+    }
 }

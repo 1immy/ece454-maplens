@@ -43,7 +43,23 @@ internal class Background<R>(task: () -> R) {
     fun cancel() {
         future.cancel(true)
     }
+
+    /**
+     * [cancel], then waits until the task has really ended: for a task that reads images the
+     * caller is about to free.
+     */
+    fun stop() {
+        future.cancel(true)
+        try {
+            pool.awaitTermination(STOP_WAIT_S, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
 }
+
+/** Longest [Background.stop] waits; the tasks it is used on end within a second. */
+private const val STOP_WAIT_S = 10L
 
 private fun <R> Future<R>.await(): R = try {
     get()
