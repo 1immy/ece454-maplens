@@ -69,13 +69,7 @@ class MapStore(private val root: File) {
             File(staging, GRAPH).writeText(FloorGraphJson.encode(graph))
             writeImage(File(staging, IMAGE))
             check(File(staging, IMAGE).length() > 0) { "image was not written" }
-            if (labels.isNotEmpty()) {
-                File(staging, LABELS).writeText(
-                    labels.joinToString("") {
-                        "${it.label}\t${it.left}\t${it.top}\t${it.right}\t${it.bottom}\n"
-                    },
-                )
-            }
+            if (labels.isNotEmpty()) File(staging, LABELS).writeText(encodeLabels(labels))
             val meta = Properties().apply {
                 setProperty("name", name)
                 setProperty("savedAtMillis", nowMillis.toString())
@@ -89,6 +83,21 @@ class MapStore(private val root: File) {
             throw e
         }
         return checkNotNull(read(File(root, id)))
+    }
+
+    /**
+     * Puts an edited, verified [graph] and its printed [labels] in place of map [id]'s. The
+     * name, pin, start kind and image stay. Each file is swapped whole, so a crash leaves the
+     * old one or the new one.
+     */
+    fun replace(id: String, graph: FloorGraph, labels: List<SavedLabel>): SavedMap {
+        require(graph.verified) { "only verified graphs can be saved" }
+        val dir = File(root, id)
+        check(File(dir, META).isFile) { "saved map $id is gone" }
+        File(dir, GRAPH).swapIn(FloorGraphJson.encode(graph))
+        File(dir, LABELS).swapIn(encodeLabels(labels))
+        updateMeta(id) { setProperty("rooms", graph.roomDestinations().size.toString()) }
+        return checkNotNull(read(dir))
     }
 
     /** Every complete saved map: pinned ones first, then newest first. */
@@ -117,12 +126,26 @@ class MapStore(private val root: File) {
         meta.change()
         val staging = File(metaFile.parentFile, "$META.tmp")
         staging.outputStream().use { meta.store(it, "MapLens saved map") }
-        if (!staging.renameTo(metaFile)) {
-            // Windows (unit tests) won't rename over an existing file.
-            metaFile.delete()
-            check(staging.renameTo(metaFile)) { "cannot update $metaFile" }
-        }
+        staging.moveOnto(metaFile)
         return true
+    }
+
+    private fun File.swapIn(text: String) {
+        val staging = File(parentFile, "$name.tmp")
+        staging.writeText(text)
+        staging.moveOnto(this)
+    }
+
+    private fun File.moveOnto(target: File) {
+        if (!renameTo(target)) {
+            // Windows (unit tests) won't rename over an existing file.
+            target.delete()
+            check(renameTo(target)) { "cannot update $target" }
+        }
+    }
+
+    private fun encodeLabels(labels: List<SavedLabel>) = labels.joinToString("") {
+        "${it.label}\t${it.left}\t${it.top}\t${it.right}\t${it.bottom}\n"
     }
 
     fun get(id: String): SavedMap? = File(root, id).takeIf { it.isDirectory }?.let(::read)

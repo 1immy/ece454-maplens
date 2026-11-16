@@ -1,8 +1,6 @@
 package edu.wisc.maplens
 
 import android.Manifest
-import android.app.AlertDialog
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -754,7 +752,8 @@ class PosterCaptureActivity : ComponentActivity() {
                 result.getOrNull()?.rectified?.recycle()
                 return@runOnUiThread
             }
-            result.onSuccess { if (developer) showReview(it) else saveForUser(it) }.onFailure {
+            // Every scan opens as a map. Edit map is on the saved map's menu on Home.
+            result.onSuccess(::saveScan).onFailure {
                 Log.w(TAG, "Poster processing failed", it)
                 busy = false
                 fastSwitch.isEnabled = true
@@ -892,12 +891,12 @@ class PosterCaptureActivity : ComponentActivity() {
     }
 
     /**
-     * User mode: no checking screen. A map that navigation accepts is saved and opened at
-     * once; one it can't use (crossing corridors, cut-off rooms) sends the user back to retake.
+     * No checking screen, in either mode (Edit map is on Home's map menu). A map that
+     * navigation accepts is saved and opened at once; one it can't use (crossing corridors, cut-off rooms) sends the user back to retake.
      * A map whose gold star wasn't found is saved with a stand-in START and asks where the user
      * is when it opens, since a retake rarely finds a star that glare hides or a map lacks.
      */
-    private fun saveForUser(result: ParseResult) {
+    private fun saveScan(result: ParseResult) {
         val noStar = result.graph.let { it.nodes[it.startNodeId]?.type != NodeType.START }
         val graph = result.graph.takeIf { noStar }?.withPlaceholderStart() ?: result.graph
         val verified = verifiedOrNull(graph)
@@ -924,111 +923,6 @@ class PosterCaptureActivity : ComponentActivity() {
         saveAndNavigate(verified, result.rectified, labelsOf(result), posterStart = !noStar)
     }
 
-    private fun showReview(result: ParseResult) {
-        useCameraLook(false)
-        session.onMapCaptured(result.graph)
-        val graph = checkNotNull(session.graph)
-        review = result
-        busy = false
-        fastSwitch.isEnabled = true
-        PosterWarmup.release()
-        stopCamera()
-        cameraFrame.visibility = View.GONE
-        photoCard.visibility = View.GONE
-        topBar.visibility = View.VISIBLE
-        clearPhoto()
-        useParseLook()
-        progress.visibility = View.GONE
-        cancel.visibility = View.GONE
-        importButton.visibility = View.GONE
-        action.visibility = View.VISIBLE
-        val start = graph.nodes[graph.startNodeId]?.takeIf { it.type == NodeType.START }
-        val rooms = reviewRooms(result)
-        // The map takes only the height it fills. The room list uses the rest of the screen.
-        val screen = resources.displayMetrics
-        val parent = map.parent as View
-        val mapHeight = (parent.width - parent.paddingLeft - parent.paddingRight) *
-            result.rectified.height / result.rectified.width
-        map.layoutParams = LinearLayout.LayoutParams(
-            -1,
-            mapHeight.coerceAtMost(screen.heightPixels * 45 / 100),
-        )
-        map.review = graph
-        map.bitmap = result.rectified
-        map.reviewRooms = rooms
-        map.start = start?.position
-        map.visibility = View.VISIBLE
-        mapBar.visibility = View.VISIBLE
-        roomPanel.show(rooms, result.rectified)
-        map.selectedRoom = null
-        roomPanel.visibility = View.VISIBLE
-        updateMapButton()
-        val issues = result.warnings + reviewProblems(graph)
-        status.text = reviewSummary(rooms.count { it.check != RoomCheck.CLEAR }, start != null)
-        details.visibility = if (developer) View.VISIBLE else View.GONE
-        details.text = getString(R.string.poster_review_details, issues.size)
-        details.setOnClickListener {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.poster_review)
-                .setMessage(issues.joinToString("\n\n") { "• $it" })
-                .setPositiveButton(android.R.string.ok, null)
-                .show()
-        }
-        cancel.setText(R.string.poster_retake)
-        cancel.visibility = View.VISIBLE
-        // Saving needs a graph NavigationSession accepts: a real START and validate() clean.
-        val verified = verifiedOrNull(result.graph)
-        val toCheck = rooms.count { it.check != RoomCheck.CLEAR }
-        action.isEnabled = true
-        action.setText(R.string.poster_edit)
-        action.setOnClickListener { openEditor(result, graph) }
-        save.visibility = View.VISIBLE
-        save.isEnabled = verified != null
-        save.text = getString(
-            if (verified != null) R.string.map_save else R.string.map_save_blocked,
-        )
-        save.setOnClickListener { verified?.let { confirmSave(it, result.rectified, toCheck) } }
-    }
-
-    /** The editor works on its own copy on disk. This screen's job is done once it opens. */
-    private fun openEditor(result: ParseResult, graph: FloorGraph) {
-        action.isEnabled = false
-        save.isEnabled = false
-        val rooms = result.rooms.map {
-            RoomDraft(
-                it.label,
-                it.bounds.left,
-                it.bounds.top,
-                it.bounds.right,
-                it.bounds.bottom,
-                it.entranceNodeId,
-                it.confidence,
-                it.possible,
-            )
-        }
-        worker.execute {
-            val written = runCatching {
-                DraftStore.of(this).start(MapDraft(graph, rooms)) { file ->
-                    file.outputStream().use {
-                        check(result.rectified.compress(Bitmap.CompressFormat.JPEG, 95, it))
-                    }
-                }
-            }
-            runOnUiThread {
-                if (isDestroyed) return@runOnUiThread
-                written.onSuccess {
-                    startActivity(Intent(this, GraphEditorActivity::class.java))
-                    finish()
-                }.onFailure {
-                    Log.w(TAG, "Draft not written", it)
-                    action.isEnabled = true
-                    save.isEnabled = verifiedOrNull(graph) != null
-                    status.setText(R.string.poster_draft_failed)
-                }
-            }
-        }
-    }
-
     /** The graph as a fresh session would verify it, or null when it would refuse it. */
     private fun verifiedOrNull(draft: FloorGraph): FloorGraph? = runCatching {
         NavigationSession(AStarRouter()).run {
@@ -1037,17 +931,6 @@ class PosterCaptureActivity : ComponentActivity() {
             graph
         }
     }.getOrNull()
-
-    private fun confirmSave(graph: FloorGraph, image: Bitmap, toCheck: Int) {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.map_save_title)
-            .setMessage(getString(R.string.map_save_message, toCheck))
-            .setPositiveButton(R.string.map_save) { _, _ ->
-                saveAndNavigate(graph, image, review?.let(::labelsOf).orEmpty())
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
-    }
 
     /** Writes the map off the UI thread, then opens it for navigation. */
     /** Where the parser read each room number: kept with the map so taps on them work. */
@@ -1083,10 +966,8 @@ class PosterCaptureActivity : ComponentActivity() {
                     Log.w(TAG, "Saving the map failed", it)
                     save.isEnabled = true
                     action.isEnabled = true
-                    if (!developer) {
-                        busy = false
-                        startCamera()
-                    }
+                    busy = false
+                    startCamera()
                     Toast.makeText(
                         this,
                         getString(R.string.map_save_failed, it.message.orEmpty()),
@@ -1280,26 +1161,6 @@ class PosterCaptureActivity : ComponentActivity() {
             setSpan(ForegroundColorSpan(color), from, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             append(getString(label) + "  ")
         }
-    }
-
-    private fun reviewSummary(toCheck: Int, hasStart: Boolean): CharSequence {
-        val text = SpannableStringBuilder()
-        fun add(value: String, vararg spans: Any) {
-            val from = text.length
-            text.append(value)
-            spans.forEach { text.setSpan(it, from, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
-        }
-
-        add(getString(R.string.poster_review), StyleSpan(Typeface.BOLD), RelativeSizeSpan(1.25f))
-        add(
-            "\n" + resources.getQuantityString(R.plurals.poster_need_look, toCheck, toCheck) + "\n",
-            StyleSpan(Typeface.BOLD),
-            ForegroundColorSpan(if (toCheck > 0) REVIEW_CHECK else REVIEW_ROOM),
-        )
-        val startText =
-            if (hasStart) R.string.poster_start_detected else R.string.poster_start_missing
-        add(getString(startText), ForegroundColorSpan(if (hasStart) REVIEW_START else REVIEW_CHECK))
-        return text
     }
 
     private companion object {

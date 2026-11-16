@@ -15,6 +15,7 @@ import android.transition.Fade
 import android.transition.TransitionManager
 import android.transition.TransitionSet
 import android.transition.TransitionValues
+import android.util.Log
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -833,7 +834,8 @@ class HomeActivity : ComponentActivity() {
             2,
             if (map.pinned) R.string.home_map_unpin else R.string.home_map_pin,
         )
-        menu.menu.add(0, MENU_DELETE, 3, R.string.home_map_delete)
+        menu.menu.add(0, MENU_EDIT, 3, R.string.home_map_edit)
+        menu.menu.add(0, MENU_DELETE, 4, R.string.home_map_delete)
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 MENU_SELECT -> startSelection(map.id)
@@ -842,11 +844,32 @@ class HomeActivity : ComponentActivity() {
                     MapAssets.savedMaps(this).setPinned(map.id, !map.pinned)
                     refresh()
                 }
+                MENU_EDIT -> editMap(map)
                 MENU_DELETE -> confirmDelete(listOf(map))
             }
             true
         }
         menu.show()
+    }
+
+    /** Opens "Check the map" on a copy of [map]; saving there replaces this map. */
+    private fun editMap(map: SavedMap) {
+        val store = MapAssets.savedMaps(this)
+        thumbLoader.execute {
+            val opened = runCatching {
+                val draft = draftOf(store.loadGraph(map), store.loadLabels(map))
+                DraftStore.of(this).start(draft, map.id) { map.imageFile.copyTo(it) }
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                opened.onSuccess {
+                    startActivity(Intent(this, GraphEditorActivity::class.java))
+                }.onFailure {
+                    Log.w(TAG, "Could not open ${map.id} for editing", it)
+                    Toast.makeText(this, R.string.editor_open_failed, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     private fun rename(map: SavedMap) {
@@ -971,6 +994,8 @@ class HomeActivity : ComponentActivity() {
         const val MENU_RENAME = 1
         const val MENU_PIN = 2
         const val MENU_DELETE = 3
+        const val MENU_EDIT = 5
+        const val TAG = "Home"
         const val MENU_SELECT = 4
         const val UNDO_MS = 5000L
 
