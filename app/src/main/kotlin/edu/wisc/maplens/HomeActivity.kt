@@ -67,6 +67,7 @@ class HomeActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         onBackPressedDispatcher.addCallback(this, leaveSelection)
     }
@@ -153,10 +154,14 @@ class HomeActivity : ComponentActivity() {
         val developer = AppMode.isDeveloper(this)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(if (selecting) 8 else 24), dp(24), dp(24))
+            setPadding(dp(16), dp(if (selecting) 8 else 16), dp(16), dp(24))
             if (!selecting) addView(brand())
             if (saved.isEmpty()) {
-                // First run: explain the flow before the camera.
+                // First run: a picture of the one thing to do, then the words.
+                addView(
+                    HomeArt(context),
+                    LinearLayout.LayoutParams(MATCH, dp(220)).apply { topMargin = dp(20) },
+                )
                 addView(
                     text(Ui.TITLE, bold = true).apply {
                         setText(R.string.home_title)
@@ -169,26 +174,16 @@ class HomeActivity : ComponentActivity() {
                         setText(R.string.home_intro)
                         transitionName = "intro"
                     },
-                    spaced(top = 12),
+                    spaced(top = 8),
                 )
-                addView(offlinePill(), spaced(top = 16, wrap = true))
                 addView(steps(), spaced(top = 24))
             } else {
                 // Returning: the maps are what people came for.
-                if (!selecting) {
-                    addView(
-                        text(Ui.BODY, Ui.INK_SECONDARY).apply {
-                            setText(R.string.home_pick_map)
-                            transitionName = "pick"
-                        },
-                        spaced(top = 16),
-                    )
-                }
                 val (pinned, others) = saved.partition { it.pinned }
                 if (pinned.isNotEmpty()) {
                     addView(
                         sectionHeader(R.string.home_pinned, pinned.size, select = !selecting),
-                        spaced(top = if (selecting) 8 else 24),
+                        spaced(top = if (selecting) 8 else 16),
                     )
                     pinned.forEachIndexed { i, map ->
                         addView(mapRow(map, selecting), spaced(top = if (i == 0) 12 else 8))
@@ -202,11 +197,23 @@ class HomeActivity : ComponentActivity() {
                             // Selection is one tap away too, not only behind a long press.
                             select = !selecting && pinned.isEmpty(),
                         ),
-                        spaced(top = if (selecting && pinned.isEmpty()) 8 else 24),
+                        spaced(top = if (selecting) 8 else if (pinned.isEmpty()) 16 else 24),
                     )
                     others.forEachIndexed { i, map ->
                         addView(mapRow(map, selecting), spaced(top = if (i == 0) 12 else 8))
                     }
+                }
+                if (!selecting) {
+                    addView(
+                        text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
+                            setText(R.string.home_swipe_hint)
+                            transitionName = "hint"
+                        },
+                        LinearLayout.LayoutParams(MATCH, WRAP).apply {
+                            topMargin = dp(10)
+                            marginStart = dp(4)
+                        },
+                    )
                 }
             }
             // The team's tools: only in developer mode.
@@ -292,23 +299,17 @@ class HomeActivity : ComponentActivity() {
             transitionName = "scan"
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Ui.BACKGROUND)
-            setPadding(dp(24), dp(12), dp(24), dp(16))
-            addView(
-                View(context).apply { setBackgroundColor(Ui.BORDER) },
-                LinearLayout.LayoutParams(MATCH, dp(1)).apply {
-                    leftMargin = -dp(24)
-                    rightMargin = -dp(24)
-                    bottomMargin = dp(12)
-                },
-            )
+            setPadding(dp(16), dp(8), dp(16), dp(16))
             addView(scan, LinearLayout.LayoutParams(MATCH, WRAP))
-            addView(
-                text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
-                    setText(R.string.home_scan_hint)
-                    gravity = Gravity.CENTER
-                },
-                spaced(top = 8),
-            )
+            if (saved.isNotEmpty()) {
+                addView(
+                    text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
+                        setText(R.string.home_scan_hint)
+                        gravity = Gravity.CENTER
+                    },
+                    spaced(top = 10),
+                )
+            }
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -346,7 +347,7 @@ class HomeActivity : ComponentActivity() {
             LinearLayout.LayoutParams(dp(40), dp(40)),
         )
         addView(
-            text(Ui.HEADING, bold = true).apply { setText(R.string.app_name) },
+            text(22f, bold = true).apply { setText(R.string.app_name) },
             LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) },
         )
         // Only in developer mode, so it's never forgotten on, and one tap turns it off.
@@ -407,28 +408,11 @@ class HomeActivity : ComponentActivity() {
         }
     }
 
-    private fun offlinePill(): View = TextView(this).apply {
-        setText(R.string.home_offline)
-        textSize = Ui.CAPTION
-        setTextColor(Ui.ACCENT)
-        gravity = Gravity.CENTER_VERTICAL
-        background = rounded(Ui.ACCENT_SOFT, radiusDp = 16)
-        setPadding(dp(12), dp(6), dp(14), dp(6))
-        setCompoundDrawablesRelative(icon(R.drawable.ic_wifi_off, Ui.ACCENT, 16), null, null, null)
-        compoundDrawablePadding = dp(8)
-    }
-
-    /** The three stages a user goes through, numbered, so the flow is clear before the camera. */
     private fun steps(): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = rounded(Ui.SURFACE, stroke = Ui.BORDER)
-        setPadding(dp(20), dp(20), dp(20), dp(20))
-        addView(
-            text(Ui.BODY, bold = true).apply {
-                setText(R.string.home_how)
-                markHeading()
-            },
-        )
+        background = rounded(Ui.SURFACE, radiusDp = 20, stroke = CARD_EDGE)
+        elevation = dpf(1f)
+        setPadding(dp(18), dp(2), dp(18), dp(18))
         val items = listOf(
             R.string.home_step_photo to R.string.home_step_photo_detail,
             R.string.home_step_check to R.string.home_step_check_detail,
@@ -447,10 +431,11 @@ class HomeActivity : ComponentActivity() {
             text(Ui.CAPTION, Ui.ACCENT, bold = true).apply {
                 text = NumberFormat.getIntegerInstance().format(number)
                 gravity = Gravity.CENTER
-                background = rounded(Ui.ACCENT_SOFT, radiusDp = 14)
+                background = rounded(Ui.ACCENT_SOFT, radiusDp = 16)
+                textSize = 15f
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             },
-            LinearLayout.LayoutParams(dp(28), dp(28)),
+            LinearLayout.LayoutParams(dp(32), dp(32)),
         )
         addView(
             LinearLayout(context).apply {
@@ -462,7 +447,7 @@ class HomeActivity : ComponentActivity() {
                     spaced(top = 2),
                 )
             },
-            LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(16) },
+            LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(14) },
         )
     }
 
@@ -622,12 +607,12 @@ class HomeActivity : ComponentActivity() {
         val detail = getString(R.string.home_map_row_detail, map.rooms, date)
         val card = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(80)
+            minimumHeight = dp(96)
             setPadding(dp(12), dp(12), dp(if (selecting) 16 else 4), dp(12))
             background = pressable(
                 rounded(
                     if (picked) Ui.ACCENT_SOFT else Ui.SURFACE,
-                    stroke = if (picked) Ui.ACCENT else Ui.BORDER,
+                    stroke = if (picked) Ui.ACCENT else CARD_EDGE,
                 ),
             )
             isClickable = true
@@ -651,7 +636,7 @@ class HomeActivity : ComponentActivity() {
                 true
             }
         }
-        card.addView(leading(map, picked), LinearLayout.LayoutParams(dp(56), dp(56)))
+        card.addView(leading(map, picked), LinearLayout.LayoutParams(dp(72), dp(72)))
         card.addView(
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -668,21 +653,22 @@ class HomeActivity : ComponentActivity() {
                         text = detail
                         maxLines = 2
                         ellipsize = TextUtils.TruncateAt.END
-                        if (map.pinned) {
-                            setCompoundDrawablesRelative(
-                                icon(R.drawable.ic_push_pin, Ui.ACCENT, 14),
-                                null,
-                                null,
-                                null,
-                            )
-                            compoundDrawablePadding = dp(4)
-                        }
                     },
-                    spaced(top = 4),
+                    spaced(top = 2),
                 )
             },
-            LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(16) },
+            LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(14) },
         )
+        if (map.pinned && !selecting) {
+            card.addView(
+                ImageView(this).apply {
+                    setImageDrawable(icon(R.drawable.ic_push_pin, Ui.ACCENT, 18))
+                    scaleType = ImageView.ScaleType.CENTER
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                },
+                LinearLayout.LayoutParams(dp(24), dp(48)),
+            )
+        }
         if (!selecting) {
             card.addView(
                 ImageButton(this).apply {
@@ -731,7 +717,7 @@ class HomeActivity : ComponentActivity() {
                 FrameLayout.LayoutParams(MATCH, MATCH),
             )
         } else {
-            background = rounded(Ui.BACKGROUND, radiusDp = 12, stroke = Ui.BORDER)
+            background = rounded(Ui.SURFACE_RAISED, radiusDp = 12)
             clipToOutline = true
             val image = ImageView(context).apply {
                 scaleType = ImageView.ScaleType.CENTER
@@ -976,6 +962,9 @@ class HomeActivity : ComponentActivity() {
 
     private companion object {
         const val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
+
+        /** A card's edge: just enough to lift it off the background. */
+        val CARD_EDGE = android.graphics.Color.rgb(233, 236, 241)
         const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
         const val RECORDER = "edu.wisc.maplens.debug.RecorderActivity"
         const val FIXTURE_EDITOR = "edu.wisc.maplens.debug.EditFixtureActivity"

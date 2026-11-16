@@ -99,6 +99,7 @@ class GraphEditorActivity : ComponentActivity() {
     private val graph: FloorGraph get() = history.current.graph
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         setContentView(buildLayout())
         onBackPressedDispatcher.addCallback(

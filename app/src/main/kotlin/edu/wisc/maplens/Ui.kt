@@ -20,23 +20,50 @@ import kotlin.math.roundToInt
 
 /**
  * The app's design tokens and a few view factories, so every screen shares one look without a
- * Material Components dependency. Colors mirror `res/values/themes.xml`.
+ * Material Components dependency. Light colors mirror `res/values/themes.xml`.
+ *
+ * Every color has a light and a dark value; [dark] picks one. The app ships light only, so
+ * the dark values match the design files and are not used on the phone yet.
  *
  * Type scale (sp): [TITLE] 28, [HEADING] 20, [BODY] 16, [CAPTION] 14. Spacing follows a 4/8 dp
  * grid, and every control is at least [TOUCH_DP] tall.
  */
 internal object Ui {
-    val BACKGROUND = Color.rgb(246, 247, 249)
-    val SURFACE = Color.WHITE
-    val INK = Color.rgb(15, 23, 42)
+    /** True would draw the app dark; the app ships light only (see [AppTheme]). */
+    @Volatile var dark = false
+
+    private fun pick(light: Int, night: Int) = if (dark) night else light
+
+    val BACKGROUND get() = pick(Color.rgb(246, 247, 249), Color.rgb(13, 20, 32))
+    val SURFACE get() = pick(Color.WHITE, Color.rgb(20, 29, 43))
+
+    /** Chips, icon tiles and fields on a surface. */
+    val SURFACE_RAISED get() = pick(Color.rgb(238, 241, 245), Color.rgb(27, 38, 54))
+    val INK get() = pick(Color.rgb(15, 23, 42), Color.rgb(232, 237, 244))
 
     /** 7.6:1 on white: secondary text stays readable outdoors and at large font scales. */
-    val INK_SECONDARY = Color.rgb(71, 85, 105)
-    val BORDER = Color.rgb(226, 232, 240)
-    val ACCENT = POSTER_ACCENT
-    val ACCENT_SOFT = Color.rgb(228, 238, 249)
-    val ON_ACCENT = Color.rgb(250, 251, 252)
-    val DISABLED = Color.rgb(203, 213, 225)
+    val INK_SECONDARY get() = pick(Color.rgb(71, 85, 105), Color.rgb(163, 177, 196))
+    val BORDER get() = pick(Color.rgb(226, 232, 240), Color.rgb(38, 51, 74))
+    val ACCENT get() = pick(POSTER_ACCENT, Color.rgb(127, 178, 236))
+    val ACCENT_SOFT get() = pick(Color.rgb(228, 238, 249), Color.rgb(27, 44, 68))
+    val ON_ACCENT get() = pick(Color.rgb(250, 251, 252), Color.rgb(13, 20, 32))
+    val DISABLED get() = pick(Color.rgb(203, 213, 225), Color.rgb(74, 88, 112))
+    val DISABLED_FILL get() = pick(Color.rgb(241, 245, 249), Color.rgb(27, 38, 54))
+
+    /** Guidance green: the turn banner, ETA and "ready". White text passes 4.5:1 on both. */
+    val GUIDE get() = pick(Color.rgb(19, 115, 51), Color.rgb(15, 90, 42))
+    val GUIDE_DEEP get() = pick(Color.rgb(13, 92, 40), Color.rgb(10, 66, 32))
+
+    /** Green as text, e.g. an ETA. */
+    val GUIDE_INK get() = pick(Color.rgb(19, 115, 51), Color.rgb(111, 207, 138))
+    val DANGER get() = pick(Color.rgb(197, 34, 31), Color.rgb(242, 139, 130))
+
+    /** Pressed ripple over a surface. */
+    val RIPPLE get() = pick(Color.argb(36, 15, 23, 42), Color.argb(46, 255, 255, 255))
+
+    /** Dark snack and undo bars (light in dark mode, as Android does). */
+    val SNACK get() = pick(Color.rgb(31, 41, 55), Color.rgb(226, 232, 240))
+    val ON_SNACK get() = pick(Color.rgb(248, 250, 252), Color.rgb(15, 23, 42))
 
     const val TITLE = 28f
     const val HEADING = 20f
@@ -59,7 +86,7 @@ internal fun Context.rounded(color: Int, radiusDp: Int = Ui.RADIUS_DP, stroke: I
     }
 
 /** A pressed ripple over [shape], so every tap gets feedback without moving the layout. */
-internal fun Context.pressable(shape: Drawable, rippleColor: Int = Color.argb(36, 15, 23, 42)) =
+internal fun Context.pressable(shape: Drawable, rippleColor: Int = Ui.RIPPLE) =
     RippleDrawable(ColorStateList.valueOf(rippleColor), shape, null)
 
 internal fun Context.text(
@@ -100,10 +127,10 @@ internal fun Context.styleButton(button: Button, style: ButtonStyle, iconId: Int
         ButtonStyle.TONAL -> Triple(Ui.ACCENT_SOFT, Ui.ACCENT, null)
         ButtonStyle.DARK -> Triple(Color.argb(40, 255, 255, 255), Color.WHITE, null)
     }
-    val enabled = rounded(fill, radiusDp = 14, stroke = border)
+    val enabled = rounded(fill, radiusDp = 16, stroke = border)
     val disabled = rounded(
-        if (style == ButtonStyle.DARK) Color.argb(18, 255, 255, 255) else Color.rgb(241, 245, 249),
-        radiusDp = 14,
+        if (style == ButtonStyle.DARK) Color.argb(18, 255, 255, 255) else Ui.DISABLED_FILL,
+        radiusDp = 16,
     )
     val states = StateListDrawable().apply {
         addState(intArrayOf(-android.R.attr.state_enabled), disabled)
@@ -112,7 +139,7 @@ internal fun Context.styleButton(button: Button, style: ButtonStyle, iconId: Int
     val ripple = if (style == ButtonStyle.PRIMARY || style == ButtonStyle.DARK) {
         Color.argb(56, 255, 255, 255)
     } else {
-        Color.argb(36, 15, 23, 42)
+        Ui.RIPPLE
     }
     val disabledInk = if (style == ButtonStyle.DARK) Color.argb(110, 255, 255, 255) else Ui.DISABLED
     button.apply {
@@ -171,4 +198,26 @@ internal fun View.padForSystemBars(top: Boolean = true, bottom: Boolean = true) 
 /** Lets screen readers jump between sections (API 28+; a no-op before). */
 internal fun View.markHeading() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) isAccessibilityHeading = true
+}
+
+/**
+ * The app is drawn light only. The dark values in [Ui] are kept for the design, but nothing
+ * turns them on: the dark look on the phone was not good enough to ship.
+ */
+internal object AppTheme {
+    /** Sets the light look and the window's background and system bar icons. */
+    fun apply(activity: android.app.Activity) {
+        Ui.dark = false
+        activity.setTheme(R.style.MapLens_Theme)
+        val window = activity.window
+        window.decorView.setBackgroundColor(Ui.BACKGROUND)
+        @Suppress("DEPRECATION")
+        window.statusBarColor = Ui.BACKGROUND
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = Ui.BACKGROUND
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
+    }
 }

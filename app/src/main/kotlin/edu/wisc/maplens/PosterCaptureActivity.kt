@@ -77,7 +77,19 @@ class PosterCaptureActivity : ComponentActivity() {
     private lateinit var cameraView: PreviewView
     private lateinit var cameraFrame: FrameLayout
     private lateinit var aimOverlay: AimOverlay
-    private lateinit var photoView: ImageView
+    private lateinit var photoCard: ParseResolveView
+    private lateinit var root: LinearLayout
+    private lateinit var back: ImageButton
+    private lateinit var screenTitle: TextView
+    private lateinit var topBar: LinearLayout
+    private lateinit var buttons: LinearLayout
+
+    /** True while the live camera shows: black, full width, a round shutter (see [useCameraLook]). */
+    private var cameraLook = false
+
+    /** Navigation waits for the "Map ready" moment; set while it plays. */
+    private var revealPending = false
+    private var pendingOpen: String? = null
     private lateinit var progress: PosterProgressView
     private lateinit var map: MapView
     private lateinit var roomPanel: PosterReviewPanel
@@ -134,6 +146,9 @@ class PosterCaptureActivity : ComponentActivity() {
     private var session = NavigationSession(AStarRouter())
     private var review: ParseResult? = null
     private var busy = false
+
+    /** Set once the saved map is opening, so pausing on the way out doesn't reopen the camera. */
+    private var leaving = false
     private val worker = Executors.newSingleThreadExecutor()
     private val cameraCallbacks by lazy { ContextCompat.getMainExecutor(this) }
     private val workLock = Any()
@@ -162,6 +177,7 @@ class PosterCaptureActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         onBackPressedDispatcher.addCallback(this, reviewBack)
         cameraView = PreviewView(this).apply {
@@ -173,13 +189,8 @@ class PosterCaptureActivity : ComponentActivity() {
             addView(cameraView, FrameLayout.LayoutParams(-1, -1))
             addView(aimOverlay, FrameLayout.LayoutParams(-1, -1))
         }
-        photoView = ImageView(this).apply {
-            visibility = View.GONE
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setBackgroundColor(Color.rgb(236, 238, 240))
-            contentDescription = getString(R.string.poster_photo_description)
-        }
-        progress = PosterProgressView(this).apply { visibility = View.GONE }
+        photoCard = ParseResolveView(this).apply { visibility = View.GONE }
+        progress = PosterProgressView(this, developer).apply { visibility = View.GONE }
         map = MapView(this).apply {
             visibility = View.GONE
             contentDescription = getString(R.string.poster_map_description)
@@ -293,7 +304,7 @@ class PosterCaptureActivity : ComponentActivity() {
             contentDescription = getString(R.string.poster_import_description)
             setOnClickListener { if (!busy) pickPhoto.launch("image/*") }
         }
-        val buttons = LinearLayout(this).apply {
+        buttons = LinearLayout(this).apply {
             setPadding(0, pad, 0, pad)
             // An 8 dp gap between visible buttons only; hidden ones get no divider.
             dividerDrawable = GradientDrawable().apply { setSize(dp(8), 0) }
@@ -302,7 +313,7 @@ class PosterCaptureActivity : ComponentActivity() {
                 addView(button, LinearLayout.LayoutParams(0, -2, 1f))
             }
         }
-        val back = ImageButton(this).apply {
+        back = ImageButton(this).apply {
             setImageDrawable(icon(R.drawable.ic_arrow_back, Ui.INK))
             background = pressable(rounded(Color.TRANSPARENT, radiusDp = 24))
             contentDescription = getString(R.string.nav_back)
@@ -326,21 +337,22 @@ class PosterCaptureActivity : ComponentActivity() {
                 ).show()
             }
         }
-        val topBar = LinearLayout(this).apply {
+        topBar = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(back, LinearLayout.LayoutParams(dp(Ui.TOUCH_DP), dp(Ui.TOUCH_DP)))
+            screenTitle = TextView(context).apply {
+                setText(R.string.home_scan)
+                textSize = Ui.BODY
+                setTextColor(Ui.INK_SECONDARY)
+                markHeading()
+            }
             addView(
-                TextView(context).apply {
-                    setText(R.string.home_scan)
-                    textSize = Ui.BODY
-                    setTextColor(Ui.INK_SECONDARY)
-                    markHeading()
-                },
+                screenTitle,
                 LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4) },
             )
             if (developer) addView(fastSwitch, LinearLayout.LayoutParams(-2, dp(Ui.TOUCH_DP)))
         }
-        val root = LinearLayout(this).apply {
+        root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Ui.BACKGROUND)
             // Window insets only reach here when Android draws edge to edge (15+), so the
@@ -360,7 +372,7 @@ class PosterCaptureActivity : ComponentActivity() {
             addView(status)
             addView(retakeCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = pad })
             addView(cameraFrame, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(photoView, LinearLayout.LayoutParams(-1, 0, 1f))
+            addView(photoCard, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(map, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(mapBar)
             addView(roomPanel, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -384,7 +396,7 @@ class PosterCaptureActivity : ComponentActivity() {
         super.onPause()
         sensors?.unregisterListener(gyro)
         turnRate = 0.0
-        if (busy) resetCapture()
+        if (busy && !leaving) resetCapture()
     }
 
     override fun onDestroy() {
@@ -400,6 +412,7 @@ class PosterCaptureActivity : ComponentActivity() {
         checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     private fun showPermission() {
+        useCameraLook(false)
         status.setText(R.string.poster_permission)
         importButton.visibility = View.VISIBLE
         action.setText(R.string.poster_grant_permission)
@@ -410,14 +423,17 @@ class PosterCaptureActivity : ComponentActivity() {
     }
 
     private fun startCamera(message: CharSequence? = null) {
+        useCameraLook(true)
         status.text = message ?: getString(R.string.poster_opening)
         action.visibility = View.VISIBLE
         importButton.visibility = View.VISIBLE
         action.isEnabled = false
         cancel.visibility = View.GONE
         progress.visibility = View.GONE
-        photoView.visibility = View.GONE
-        photoView.setImageDrawable(null)
+        photoCard.visibility = View.GONE
+        topBar.visibility = View.VISIBLE
+        clearPhoto()
+        useParseLook()
         cameraFrame.visibility = View.VISIBLE
         // Load the Fast parser's models while the poster is being framed.
         if (fastMode) PosterWarmup.start()
@@ -601,6 +617,7 @@ class PosterCaptureActivity : ComponentActivity() {
 
     /** Shows the parsing state and returns this attempt's generation. */
     private fun startParsing(): Int {
+        useCameraLook(false)
         hideRetake()
         val id = synchronized(workLock) { ++generation }
         busy = true
@@ -609,6 +626,9 @@ class PosterCaptureActivity : ComponentActivity() {
             setSpan(StyleSpan(Typeface.BOLD), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             setSpan(RelativeSizeSpan(1.25f), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
+        useParseLook()
+        // Like the design: while reading, Cancel is the only way out.
+        topBar.visibility = View.GONE
         progress.show(ParseProgress(ParseStage.STRAIGHTEN))
         progress.visibility = View.VISIBLE
         cancel.setText(android.R.string.cancel)
@@ -692,16 +712,12 @@ class PosterCaptureActivity : ComponentActivity() {
         val result = try {
             val photo = load()
             checkAngle(photo, focalPx(photo))
-            val shown = Bitmap.createScaledBitmap(
-                photo,
-                photo.width * PHOTO_VIEW_SIDE / maxOf(photo.width, photo.height),
-                photo.height * PHOTO_VIEW_SIDE / maxOf(photo.width, photo.height),
-                true,
-            )
             runOnUiThread {
                 if (id == generation && !isDestroyed) {
-                    photoView.setImageBitmap(shown)
-                    photoView.visibility = View.VISIBLE
+                    // A drawn poster resolves in step with the real progress.
+                    photoCard.begin()
+                    progress.onProgress = photoCard::progress
+                    photoCard.visibility = View.VISIBLE
                     cameraFrame.visibility = View.GONE
                 }
             }
@@ -813,6 +829,12 @@ class PosterCaptureActivity : ComponentActivity() {
         status.setText(R.string.poster_ready)
     }
 
+    /** Takes the photo (and its reading sweep) off the screen. */
+    private fun clearPhoto() {
+        photoCard.clear()
+        progress.onProgress = null
+    }
+
     private fun hideRetake() {
         retakeCard.visibility = View.GONE
     }
@@ -882,12 +904,21 @@ class PosterCaptureActivity : ComponentActivity() {
             showRetake(R.string.poster_retake_title, getString(R.string.poster_user_blocked))
             return
         }
-        status.setText(R.string.poster_user_saving)
         cancel.visibility = View.GONE
+        // "Map ready" shows for a moment while the map saves.
+        progress.showDone()
+        revealPending = true
+        pendingOpen = null
+        val rooms = verified.landmarks.map { it.label }.distinct().size
+        photoCard.finish(rooms) {
+            revealPending = false
+            pendingOpen?.let(::openSaved)
+        }
         saveAndNavigate(verified, result.rectified, labelsOf(result))
     }
 
     private fun showReview(result: ParseResult) {
+        useCameraLook(false)
         session.onMapCaptured(result.graph)
         val graph = checkNotNull(session.graph)
         review = result
@@ -896,8 +927,10 @@ class PosterCaptureActivity : ComponentActivity() {
         PosterWarmup.release()
         stopCamera()
         cameraFrame.visibility = View.GONE
-        photoView.visibility = View.GONE
-        photoView.setImageDrawable(null)
+        photoCard.visibility = View.GONE
+        topBar.visibility = View.VISIBLE
+        clearPhoto()
+        useParseLook()
         progress.visibility = View.GONE
         cancel.visibility = View.GONE
         importButton.visibility = View.GONE
@@ -1031,9 +1064,10 @@ class PosterCaptureActivity : ComponentActivity() {
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 saved.onSuccess {
-                    startActivity(IndoorNavActivity.open(this, it.id))
-                    finish()
+                    if (revealPending) pendingOpen = it.id else openSaved(it.id)
                 }.onFailure {
+                    revealPending = false
+                    pendingOpen = null
                     Log.w(TAG, "Saving the map failed", it)
                     save.isEnabled = true
                     action.isEnabled = true
@@ -1049,6 +1083,162 @@ class PosterCaptureActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Opens the saved map. After a parse the drawing eases forward and fades while the map
+     * fades in over it, so "Map ready" flows into navigation instead of cutting.
+     */
+    private fun openSaved(id: String) {
+        if (isDestroyed || isFinishing) return
+        leaving = true
+        val go = {
+            if (!isDestroyed && !isFinishing) {
+                val fade = android.app.ActivityOptions.makeCustomAnimation(
+                    this,
+                    R.anim.ml_fade_in,
+                    R.anim.ml_fade_out,
+                )
+                startActivity(IndoorNavActivity.open(this, id), fade.toBundle())
+                finish()
+            }
+        }
+        if (photoCard.visibility != View.VISIBLE ||
+            !android.animation.ValueAnimator.areAnimatorsEnabled()
+        ) {
+            go()
+            return
+        }
+        photoCard.animate().scaleX(HANDOFF_SCALE).scaleY(HANDOFF_SCALE)
+            .setDuration(HANDOFF_MS)
+            .setInterpolator(android.view.animation.PathInterpolator(0.3f, 0f, 0.8f, 0.15f))
+            .start()
+        progress.animate().alpha(0f).setDuration(HANDOFF_MS).start()
+        status.animate().alpha(0f).setDuration(HANDOFF_MS).withEndAction { go() }.start()
+    }
+
+    /**
+     * The live camera, as camera apps draw it: black around a full-width preview, the line
+     * of advice under it, a round shutter and the photo import as a quiet pill. Parsing,
+     * review and the permission ask go back to the app's light screen. The views stay the
+     * same; only their order and style change, so every state keeps its handlers.
+     */
+    private fun useCameraLook(on: Boolean) {
+        if (on == cameraLook) return
+        cameraLook = on
+        val pad = dp(12)
+        root.removeView(status)
+        root.removeView(importButton)
+        root.removeView(buttons)
+        if (on) {
+            val at = root.indexOfChild(save) + 1
+            root.addView(status, at, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+            root.addView(buttons, at + 1, LinearLayout.LayoutParams(-1, -2))
+            root.addView(
+                importButton,
+                at + 2,
+                LinearLayout.LayoutParams(-2, dp(44)).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    bottomMargin = dp(16)
+                },
+            )
+        } else {
+            root.addView(status, 1)
+            val at = root.indexOfChild(save) + 1
+            root.addView(
+                importButton,
+                at,
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = pad },
+            )
+            root.addView(buttons, at + 1)
+        }
+        root.setBackgroundColor(if (on) Color.BLACK else Ui.BACKGROUND)
+        cameraFrame.layoutParams = (cameraFrame.layoutParams as LinearLayout.LayoutParams).apply {
+            // Edge to edge, past the screen's side padding.
+            leftMargin = if (on) -pad else 0
+            rightMargin = if (on) -pad else 0
+        }
+        status.gravity = if (on) Gravity.CENTER_HORIZONTAL else Gravity.START
+        status.setTextColor(if (on) CAMERA_INK else Ui.INK)
+        status.textSize = if (on) 15f else Ui.BODY
+        screenTitle.setTextColor(if (on) Color.WHITE else Ui.INK_SECONDARY)
+        screenTitle.textSize = if (on) 18f else Ui.BODY
+        back.setImageDrawable(icon(R.drawable.ic_arrow_back, if (on) Color.WHITE else Ui.INK))
+        back.background = pressable(
+            rounded(Color.TRANSPARENT, radiusDp = 24),
+            if (on) Color.argb(56, 255, 255, 255) else Ui.RIPPLE,
+        )
+        fastSwitch.setTextColor(if (on) CAMERA_INK else Ui.INK_SECONDARY)
+        buttons.gravity = Gravity.CENTER_HORIZONTAL
+        if (on) {
+            action.background = shutter()
+            action.text = getString(R.string.capture_poster)
+            action.setTextColor(Color.TRANSPARENT)
+            action.setPadding(0, 0, 0, 0)
+            action.minHeight = 0
+            action.minimumHeight = 0
+            action.layoutParams = LinearLayout.LayoutParams(dp(76), dp(76))
+            importButton.background = pressable(
+                rounded(Color.argb(31, 255, 255, 255), radiusDp = 22),
+                Color.argb(56, 255, 255, 255),
+            )
+            importButton.setTextColor(Color.WHITE)
+            importButton.textSize = 15f
+            importButton.minHeight = 0
+            importButton.minimumHeight = 0
+            importButton.setPadding(dp(16), 0, dp(18), 0)
+            importButton.text = getString(R.string.poster_import)
+            importButton.setCompoundDrawablesRelative(
+                icon(R.drawable.ic_photo_library, Color.WHITE, 20),
+                null,
+                null,
+                null,
+            )
+            importButton.compoundDrawablePadding = dp(8)
+        } else {
+            styleButton(action, ButtonStyle.PRIMARY)
+            action.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            importButton.setCompoundDrawablesRelative(null, null, null, null)
+            importButton.text = getString(R.string.poster_import)
+            styleButton(importButton, ButtonStyle.SECONDARY, R.drawable.ic_photo_library)
+        }
+        @Suppress("DEPRECATION")
+        window.statusBarColor = if (on) Color.BLACK else Ui.BACKGROUND
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = if (on) Color.BLACK else Ui.BACKGROUND
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !on
+            isAppearanceLightNavigationBars = !on
+        }
+    }
+
+    /** A camera shutter: white ring and disc; faded while the shot isn't good yet. */
+    private fun shutter(): android.graphics.drawable.Drawable {
+        fun face(alpha: Int) = android.graphics.drawable.LayerDrawable(
+            arrayOf(
+                GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setStroke(dp(4), Color.argb(alpha, 255, 255, 255))
+                },
+                GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.argb(alpha, 255, 255, 255))
+                },
+            ),
+        ).apply { setLayerInset(1, dp(9), dp(9), dp(9), dp(9)) }
+        val states = android.graphics.drawable.StateListDrawable().apply {
+            addState(intArrayOf(-android.R.attr.state_enabled), face(110))
+            addState(intArrayOf(android.R.attr.state_pressed), face(200))
+            addState(intArrayOf(), face(255))
+        }
+        return states
+    }
+
+    /** Colours the parsing drawing and progress in the app's light or dark look. */
+    private fun useParseLook() {
+        val look = ParsePalette.current()
+        photoCard.usePalette(look)
+        progress.usePalette(look)
     }
 
     /** Always one tap back to the whole map, and never an unexpected zoom. */
@@ -1106,8 +1296,14 @@ class PosterCaptureActivity : ComponentActivity() {
         const val PREF_FAST = "fast"
 
         /** Longest side handed to the parser, for captures and imported photos alike. */
+        /** Advice under the camera: light grey on black. */
+        val CAMERA_INK = Color.rgb(212, 218, 227)
+
+        /** The parse drawing's step forward as the map takes over. */
+        const val HANDOFF_SCALE = 1.06f
+        const val HANDOFF_MS = 220L
+
         const val MAX_PHOTO_SIDE = 3200
-        const val PHOTO_VIEW_SIDE = 1280
         const val TAG = "PosterCapture"
 
         /** Framing-hint frames: the size the detector was checked at (Nov 14, 16 photos). */

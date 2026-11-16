@@ -38,6 +38,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import edu.wisc.maplens.R
+import edu.wisc.maplens.Ui
 import java.util.concurrent.Executors
 import kotlin.math.atan
 import kotlin.math.max
@@ -305,19 +306,19 @@ class SignScanView(
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(20), dp(16), dp(20), dp(16))
         background = android.graphics.drawable.GradientDrawable().apply {
-            setColor(Color.WHITE)
+            setColor(Ui.SURFACE)
             cornerRadius = dp(20).toFloat()
         }
         elevation = dp(6).toFloat()
         accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
         statusTitle.apply {
             textSize = 16f
-            setTextColor(Color.rgb(15, 23, 42))
+            setTextColor(Ui.INK)
             typeface = MEDIUM
         }
         statusBody.apply {
             textSize = 14f
-            setTextColor(Color.rgb(71, 85, 105))
+            setTextColor(Ui.INK_SECONDARY)
         }
         addView(statusIcon, LinearLayout.LayoutParams(dp(24), dp(24)))
         addView(

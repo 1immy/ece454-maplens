@@ -56,6 +56,7 @@ class TemiDevActivity : Activity() {
     private val onState: (RobotLink.State) -> Unit = { render() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         RobotHub.load(this)
         graph = MapAssets.loadGraph(this)

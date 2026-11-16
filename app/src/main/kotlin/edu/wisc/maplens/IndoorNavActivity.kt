@@ -65,6 +65,7 @@ import edu.wisc.maplens.model.FloorGraph
 import edu.wisc.maplens.model.PixelPoint
 import edu.wisc.maplens.model.PoseEstimate
 import edu.wisc.maplens.model.RecoveryAction
+import edu.wisc.maplens.model.bearingDifference
 import edu.wisc.maplens.model.edgePoints
 import edu.wisc.maplens.model.wrapBearing
 import edu.wisc.maplens.nav.CompassView
@@ -295,6 +296,10 @@ class IndoorNavActivity : ComponentActivity() {
     /** The live map heading, for the sign scan's bearings (#19). */
     private var liveHeadingRad: Double? = null
 
+    /** "Turn around" is on the banner: a turn alone (no step) should clear it. */
+    private var facingBackShown = false
+    private var lastTurnCheckMs = 0L
+
     /** The "Find a room sign" camera, while it is open. */
     private var signScan: SignScanView? = null
 
@@ -321,6 +326,7 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppTheme.apply(this)
         super.onCreate(savedInstanceState)
         RobotHub.load(this)
         voice = VoiceAndHaptics(this).apply {
@@ -332,8 +338,8 @@ class IndoorNavActivity : ComponentActivity() {
         @Suppress("DEPRECATION")
         window.navigationBarColor = Color.TRANSPARENT
         WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = true
-            isAppearanceLightNavigationBars = true
+            isAppearanceLightStatusBars = !Ui.dark
+            isAppearanceLightNavigationBars = !Ui.dark
         }
         setContentView(buildLayout())
         if (!developer) {
@@ -353,6 +359,7 @@ class IndoorNavActivity : ComponentActivity() {
                     map.bitmap = image
                     map.setPuck(g.nodes.getValue(g.startNodeId).position)
                     renderBrowseSheet()
+                    restoreOrigin()
                     if (intent.getBooleanExtra(EXTRA_JUST_SAVED, false)) {
                         showSnack(getString(R.string.map_saved))
                     }
@@ -560,6 +567,8 @@ class IndoorNavActivity : ComponentActivity() {
         sheet.removeAllViews()
         sheet.addView(handle())
         for (v in views) sheet.addView(v)
+        // Each sheet brings its own rows; their cards' shadows must not be cut either.
+        letShadowsShow(sheet)
         sheet.alpha = 0f
         sheet.translationY = dpf(16f)
         sheet.animate().alpha(1f).translationY(0f).setDuration(220)
@@ -573,13 +582,22 @@ class IndoorNavActivity : ComponentActivity() {
             text = mapName ?: getString(R.string.in_building)
             markHeading()
         }
+        // Many people don't know a floor plan can be tapped: say so, as maps apps do.
+        val hint = text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
+            setText(R.string.in_browse_hint)
+            setStartIcon(R.drawable.ic_place, Ui.INK_SECONDARY)
+            compoundDrawablePadding = dp(6)
+        }
         if (here == null) {
             setSheet(
                 title,
                 text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
                     val line = if (mapName == null) R.string.in_floor_line else R.string.in_at_start
                     text = getString(line)
-                }.withMargins(top = 4, bottom = 8),
+                    setStartIcon(R.drawable.ic_my_location, IndoorMapView.PUCK_BLUE)
+                    compoundDrawablePadding = dp(6)
+                }.withMargins(top = 4),
+                hint.withMargins(top = 6, bottom = 8),
             )
             return
         }
@@ -595,11 +613,13 @@ class IndoorNavActivity : ComponentActivity() {
                 setStartIcon(R.drawable.ic_my_location, IndoorMapView.PUCK_BLUE)
                 compoundDrawablePadding = dp(6)
             }.withMargins(top = 4),
+            hint.withMargins(top = 6),
             reset.withMargins(top = 12, bottom = 4),
         )
     }
 
     private fun clearPlace(moveCamera: Boolean = true) {
+        pickingStart = false
         stopNavigation(toBrowse = false)
         place = null
         map.pin = null
@@ -630,8 +650,26 @@ class IndoorNavActivity : ComponentActivity() {
      * step all start from it until the user changes it again.
      */
     private fun setOrigin(p: Place?) {
-        val base = baseGraph ?: return
+        if (baseGraph == null) return
         stopNavigation(toBrowse = false)
+        applyOrigin(p)
+        clearPlace(moveCamera = true)
+        showSnack(
+            if (p == null) {
+                getString(R.string.in_origin_reset)
+            } else {
+                getString(R.string.in_origin_set, placeTitle(p))
+            },
+        )
+    }
+
+    /**
+     * Starts walks from [p] (null: the poster) without touching the screen: the graph, the
+     * distances, the From line, the shortcuts and the dot. Remembered for this map, so the
+     * next time it opens the walk starts where the last one ended or the user said they are.
+     */
+    private fun applyOrigin(p: Place?) {
+        val base = baseGraph ?: return
         origin = p
         val g = if (p == null) base else base.startingAt(originNode(p))
         graph = g
@@ -641,14 +679,120 @@ class IndoorNavActivity : ComponentActivity() {
         val kinds = search?.available().orEmpty()
         featureChips.forEach { (kind, view) -> view.visibility = shown(kind in kinds) }
         map.setPuck(g.nodes.getValue(g.startNodeId).position, durationMs = 500)
-        clearPlace(moveCamera = true)
-        showSnack(
-            if (p == null) {
-                getString(R.string.in_origin_reset)
-            } else {
-                getString(R.string.in_origin_set, placeTitle(p))
+        prefs.edit().apply {
+            if (p == null) remove(originKey()) else putString(originKey(), p.key)
+        }.apply()
+    }
+
+    /** Opening the map again: start where the user last was, if that place still exists. */
+    private fun restoreOrigin() {
+        val key = prefs.getString(originKey(), null) ?: return
+        val p = places.firstOrNull { it.key == key } ?: return
+        applyOrigin(p)
+        renderBrowseSheet()
+        map.focus(p.position)
+    }
+
+    private val prefs by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
+
+    /** Remembered start, per map: the bundled map and each saved one keep their own. */
+    private fun originKey() = PREF_ORIGIN + (intent.getStringExtra(EXTRA_MAP_ID) ?: "bundled")
+
+    /**
+     * The Start point shortcut: where walks start now, the poster, or a room picked on the
+     * map, like choosing "Your location" in a directions panel.
+     */
+    private fun openStartChooser() {
+        stopNavigation(toBrowse = false)
+        place = null
+        map.pin = null
+        map.route = emptyList()
+        show(Screen.PLACE)
+        fun row(iconId: Int, title: String, detail: String, chosen: Boolean, onTap: () -> Unit) =
+            LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(64)
+                background = pressable(rounded(Color.TRANSPARENT, radiusDp = 12))
+                isClickable = true
+                setOnClickListener { onTap() }
+                addView(
+                    iconBubble(iconId, Ui.ACCENT, Ui.ACCENT_SOFT),
+                    LinearLayout.LayoutParams(dp(40), dp(40)),
+                )
+                addView(
+                    LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(text(Ui.BODY, bold = chosen).apply { text = title })
+                        addView(text(Ui.CAPTION, Ui.INK_SECONDARY).apply { text = detail })
+                    },
+                    LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(16) },
+                )
+                if (chosen) {
+                    addView(
+                        ImageView(context).apply {
+                            setImageDrawable(icon(R.drawable.ic_check, Ui.ACCENT))
+                        },
+                        LinearLayout.LayoutParams(dp(24), dp(24)),
+                    )
+                }
+            }
+        val here = origin
+        val rows = buildList {
+            add(
+                row(
+                    R.drawable.ic_flag,
+                    getString(R.string.in_start_poster),
+                    getString(R.string.in_start_poster_detail),
+                    chosen = here == null,
+                ) { setOrigin(null) },
+            )
+            if (here != null) {
+                add(
+                    row(
+                        R.drawable.ic_my_location,
+                        placeTitle(here),
+                        getString(R.string.in_start_current_detail),
+                        chosen = true,
+                    ) { clearPlace(moveCamera = true) },
+                )
+            }
+            add(
+                row(
+                    R.drawable.ic_place,
+                    getString(R.string.in_start_pick),
+                    getString(R.string.in_start_pick_detail),
+                    chosen = false,
+                ) { pickStartOnMap() },
+            )
+        }
+        setSheet(
+            text(Ui.HEADING, bold = true).apply {
+                setText(R.string.in_start_title)
+                markHeading()
             },
+            *rows.map { it.withMargins(top = 8) }.toTypedArray(),
         )
+    }
+
+    /** The next room tapped on the map becomes the start. */
+    private fun pickStartOnMap() {
+        pickingStart = true
+        val cancel = styledButton(ButtonStyle.SECONDARY, getString(R.string.in_cancel)).apply {
+            setOnClickListener {
+                pickingStart = false
+                clearPlace(moveCamera = false)
+            }
+        }
+        setSheet(
+            text(Ui.HEADING, bold = true).apply {
+                setText(R.string.in_start_pick_title)
+                markHeading()
+            },
+            text(Ui.BODY, Ui.INK_SECONDARY).apply { setText(R.string.in_start_pick_body) }
+                .withMargins(top = 4),
+            cancel.withMargins(top = 16, bottom = 4),
+        )
+        map.showAll()
     }
 
     /** The door of [p] nearest where its number is printed: where someone there stands. */
@@ -737,7 +881,7 @@ class IndoorNavActivity : ComponentActivity() {
             isClickable = true
             contentDescription = "${placeTitle(p)}, $detail"
             setOnClickListener { openPlace(p) }
-            addView(iconBubble(kindIcon(p.kind), Ui.INK_SECONDARY, Color.rgb(241, 243, 244)))
+            addView(iconBubble(kindIcon(p.kind), Ui.INK_SECONDARY, Ui.SURFACE_RAISED))
             addView(
                 LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
@@ -836,7 +980,26 @@ class IndoorNavActivity : ComponentActivity() {
     }
 
     /** A tap on the map: select the room under it, or deselect when there is none. */
+    /** Choosing the start on the map: the next room or feature tapped becomes it. */
+    private var pickingStart = false
+
     private fun pickRoomAt(tap: PixelPoint) {
+        if (pickingStart) {
+            val finder = roomFinder
+            val hit = finder?.roomAt(tap, map.mapDistance(dpf(TAP_DOOR_DP)))
+            val reach = map.mapDistance(dpf(TAP_DOOR_DP)) * FEATURE_TAP_REACH
+            val target = hit?.let { h -> places.firstOrNull { it.label == h.label } }
+                ?: places.filter { it.kind != PlaceKind.ROOM }
+                    .minByOrNull { it.position.distanceTo(tap) }
+                    ?.takeIf { it.position.distanceTo(tap) <= reach }
+            if (target == null) {
+                showSnack(getString(R.string.in_start_pick_miss))
+                return
+            }
+            pickingStart = false
+            setOrigin(target)
+            return
+        }
         // While choosing an elevator, a tap near one of its pins picks it.
         val reach = map.mapDistance(dpf(TAP_DOOR_DP))
         val chosen = map.choicePins.withIndex()
@@ -1141,6 +1304,7 @@ class IndoorNavActivity : ComponentActivity() {
 
     private fun stopNavigation(toBrowse: Boolean = true) {
         orientTo = null
+        facingBackShown = false
         orientDial = null
         orientLine = null
         voice.stop()
@@ -1343,6 +1507,12 @@ class IndoorNavActivity : ComponentActivity() {
         if (now - orientSinceMs >= ORIENT_HOLD_MS) endOrient(spoken = true)
     }
 
+    /** [pose] where it is, facing the way the compass says now. */
+    private fun facingNow(pose: PoseEstimate) = pose.copy(
+        timestampNanos = SystemClock.elapsedRealtimeNanos(),
+        headingRad = liveHeadingRad ?: pose.headingRad,
+    )
+
     /** Turning done (or skipped, or the user just walked): on to the real directions. */
     private fun endOrient(spoken: Boolean) {
         if (orientTo == null) return
@@ -1360,13 +1530,26 @@ class IndoorNavActivity : ComponentActivity() {
         }
         bannerDistance.visibility = View.VISIBLE
         renderNavigateSheet()
-        // The first real instruction, spoken by the announcer as a fresh route's first cue.
-        lastPose?.let(::handlePose)
+        // The first real instruction, spoken by the announcer as a fresh route's first cue,
+        // from where they now face: the last pose still holds the heading before the turn,
+        // which would read as facing back and say "Turn around" again.
+        lastPose?.let { handlePose(facingNow(it)) }
     }
 
     private fun onLiveHeading(mapRad: Double) {
         liveHeadingRad = mapRad
         if (orientTo != null) updateOrient(mapRad)
+        // Told to turn around and now turned: re-check at once instead of on the next step,
+        // so the banner moves on as soon as they face the route, like the turn step does.
+        val pose = lastPose
+        val now = SystemClock.elapsedRealtime()
+        if (facingBackShown && following && orientTo == null && pose != null &&
+            now - lastTurnCheckMs >= TURN_CHECK_MS &&
+            bearingDifference(mapRad, pose.headingRad) >= TURN_CHECK_RAD
+        ) {
+            lastTurnCheckMs = now
+            handlePose(facingNow(pose))
+        }
         if (following) map.setHeading(mapRad, minimumChangeRad = Math.toRadians(0.5))
     }
 
@@ -1452,6 +1635,7 @@ class IndoorNavActivity : ComponentActivity() {
         } else {
             g.instruction(at, k)
         }
+        facingBackShown = status.facingBack
         renderBanner(g, at, k, instruction, turnAround = status.facingBack)
         renderEta(g, at, k)
         if (status.facingBack) {
@@ -2027,7 +2211,7 @@ class IndoorNavActivity : ComponentActivity() {
 
     private fun renderNavigateSheet() {
         val end =
-            roundIcon(R.drawable.ic_close, Ui.INK, Color.rgb(241, 243, 244), R.string.in_end) {
+            roundIcon(R.drawable.ic_close, Ui.INK, Ui.SURFACE_RAISED, R.string.in_end) {
                 stopNavigation()
             }
         val eta = text(Ui.HEADING, ETA_GREEN, bold = true).apply {
@@ -2114,6 +2298,8 @@ class IndoorNavActivity : ComponentActivity() {
         map.navigating = false
         map.setHeading(null)
         val p = place
+        // The user is here now: the next walk (and the next time this map opens) starts here.
+        if (p != null) applyOrigin(p)
         val steps = ((guide?.path?.lengthPx ?: 0.0) / pose.stepLengthPx).roundToInt()
         val seconds = ((SystemClock.elapsedRealtime() - startedAt) / 1000).toInt()
         val elapsed = String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60)
@@ -2329,7 +2515,9 @@ class IndoorNavActivity : ComponentActivity() {
         chips = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             clipToPadding = false
-            setPadding(0, dp(10), 0, dp(6))
+            // A scrolling row clips to itself: room on every side for the chips' shadows,
+            // reached over the top area's margin (see addView(chips)) so they stay in place.
+            setPadding(dp(12), dp(10), dp(12), dp(12))
             addView(
                 LinearLayout(context).apply {
                     listOf(
@@ -2346,6 +2534,12 @@ class IndoorNavActivity : ComponentActivity() {
                             LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(8) },
                         )
                     }
+                    addView(
+                        chip(R.drawable.ic_my_location, R.string.in_start_chip) {
+                            openStartChooser()
+                        },
+                        LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(8) },
+                    )
                 },
             )
         }
@@ -2584,7 +2778,14 @@ class IndoorNavActivity : ComponentActivity() {
             clipToPadding = false
             setPadding(dp(12), dp(8), dp(12), dp(8))
             addView(searchBar, LinearLayout.LayoutParams(MATCH, dp(56)))
-            addView(chips)
+            addView(
+                chips,
+                LinearLayout.LayoutParams(MATCH, WRAP).apply {
+                    marginStart = -dp(12)
+                    marginEnd = -dp(12)
+                    bottomMargin = -dp(6)
+                },
+            )
             addView(routeCard)
             addView(banner)
             addView(escortCard, wide().apply { topMargin = dp(8) })
@@ -2631,7 +2832,7 @@ class IndoorNavActivity : ComponentActivity() {
         }
         sheet = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = topRounded(Ui.SURFACE, 24)
+            background = topRounded(Ui.SURFACE, 28)
             elevation = dpf(12f)
             setPadding(dp(20), dp(8), dp(20), dp(16))
             padForSystemBars(top = false)
@@ -2658,7 +2859,10 @@ class IndoorNavActivity : ComponentActivity() {
         val scrim = View(this).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.argb(200, 255, 255, 255), Color.argb(0, 255, 255, 255)),
+                intArrayOf(
+                    Ui.BACKGROUND and 0x00FFFFFF or (200 shl 24),
+                    Ui.BACKGROUND and 0x00FFFFFF,
+                ),
             )
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             ViewCompat.setOnApplyWindowInsetsListener(this) { v, insets ->
@@ -2668,7 +2872,7 @@ class IndoorNavActivity : ComponentActivity() {
             }
         }
         root = FrameLayout(this).apply {
-            setBackgroundColor(IndoorMapView.BACKGROUND)
+            setBackgroundColor(IndoorMapView.GROUND)
             addView(map, FrameLayout.LayoutParams(MATCH, MATCH))
             addView(scrim, FrameLayout.LayoutParams(MATCH, 0, Gravity.TOP))
             addView(topArea, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.TOP))
@@ -2684,7 +2888,21 @@ class IndoorNavActivity : ComponentActivity() {
         }
         topArea.addOnLayoutChangeListener(relayout)
         bottomArea.addOnLayoutChangeListener(relayout)
+        letShadowsShow(root)
         return root
+    }
+
+    /**
+     * Cards and buttons float over the map with shadows, which a container would otherwise
+     * cut at its edges: none on this screen clips its children, so no shadow is cut off.
+     */
+    private fun letShadowsShow(view: View) {
+        if (view !is ViewGroup) return
+        // A scrolling list must still clip what is scrolled out of it; only its padding opens.
+        val scrolls = view is ScrollView || view is HorizontalScrollView
+        if (!scrolls) view.clipChildren = false
+        view.clipToPadding = false
+        for (i in 0 until view.childCount) letShadowsShow(view.getChildAt(i))
     }
 
     /** Bottom of the last visible card in the top area; the side buttons float over the map. */
@@ -3057,6 +3275,10 @@ class IndoorNavActivity : ComponentActivity() {
         /** ...held this long, so swinging past it doesn't count. */
         private const val ORIENT_HOLD_MS = 450L
 
+        /** While "Turn around" shows, re-check this often, once they turned this much. */
+        private const val TURN_CHECK_MS = 300L
+        private val TURN_CHECK_RAD = Math.toRadians(30.0)
+
         /** Walking this far along the route ends the turn step: they found the way. */
         private const val ORIENT_WALK_STEPS = 2.0
 
@@ -3081,9 +3303,12 @@ class IndoorNavActivity : ComponentActivity() {
         private const val PREFS = "indoor_nav"
         private const val PREF_VOICE = "voice_on"
 
-        private val ETA_GREEN = Color.rgb(24, 128, 56)
-        private val BANNER_GREEN = Color.rgb(13, 101, 45)
-        private val BANNER_DARK = Color.rgb(9, 74, 33)
+        /** Prefix of the remembered start for a map (see [originKey]). */
+        private const val PREF_ORIGIN = "origin:"
+
+        private val ETA_GREEN get() = Ui.GUIDE_INK
+        private val BANNER_GREEN get() = Ui.GUIDE
+        private val BANNER_DARK get() = Ui.GUIDE_DEEP
 
         /** "Rerouting…": neutral dark grey, so it reads as a pause, not an instruction. */
         private val BANNER_GREY = Color.rgb(60, 64, 67)
@@ -3096,9 +3321,33 @@ class IndoorNavActivity : ComponentActivity() {
 
         /** LOW confidence: amber dot, dark amber text on a soft amber chip. */
         private val CONF_LOW = Color.rgb(227, 116, 0)
-        private val CONF_LOW_INK = Color.rgb(122, 62, 0)
-        private val CONF_LOW_SOFT = Color.rgb(254, 243, 224)
-        private val CONF_LOW_EDGE = Color.rgb(249, 203, 140)
+        private val CONF_LOW_INK get() = if (Ui.dark) {
+            Color.rgb(
+                242,
+                177,
+                76
+            )
+        } else {
+            Color.rgb(122, 62, 0)
+        }
+        private val CONF_LOW_SOFT get() = if (Ui.dark) {
+            Color.rgb(
+                46,
+                37,
+                22
+            )
+        } else {
+            Color.rgb(254, 243, 224)
+        }
+        private val CONF_LOW_EDGE get() = if (Ui.dark) {
+            Color.rgb(
+                110,
+                76,
+                24
+            )
+        } else {
+            Color.rgb(249, 203, 140)
+        }
 
         /** HIGH steps in a row before the chip goes back from uncertain to on track. */
         private const val HIGH_HOLD_STEPS = 3

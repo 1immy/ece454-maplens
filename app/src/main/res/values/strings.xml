@@ -1,17 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="app_name">MapLens</string>
-  <string name="home_title">Find your way from the map on the wall</string>
-  <string name="home_intro">Photograph a building\'s evacuation poster. MapLens reads its corridors and room numbers on your phone.</string>
-  <string name="home_offline">Works offline, no GPS</string>
-  <string name="home_how">How it works</string>
+  <string name="home_title">Find any room from the map on the wall</string>
+  <string name="home_intro">No Wi-Fi, GPS or beacons. Everything stays on your phone.</string>
   <string name="home_step_number">Step %1$d</string>
-  <string name="home_step_photo">Photograph the poster</string>
-  <string name="home_step_photo_detail">Fit the whole blue frame in the photo and hold steady.</string>
-  <string name="home_step_check">Check the map</string>
-  <string name="home_step_check_detail">Fix what it misread, then save it to use it offline.</string>
-  <string name="home_step_walk">Walk with step guidance</string>
-  <string name="home_step_walk_detail">Turn arrows and a step countdown to your room.</string>
+  <string name="home_step_photo">Photograph the floor map</string>
+  <string name="home_step_photo_detail">Stand in front of it. We tell you when the shot is good.</string>
+  <string name="home_step_check">Pick a room</string>
+  <string name="home_step_check_detail">Tap it on the map or search for its number.</string>
+  <string name="home_step_walk">Walk with step-by-step guidance</string>
+  <string name="home_step_walk_detail">Turns are spoken and felt, so you can keep your eyes up.</string>
   <string name="home_developer">Developer</string>
   <string name="home_dev_map">EH3 demo map</string>
   <string name="home_dev_map_detail">Bundled Engineering Hall map: demo walk, live tracking, checkpoints</string>
@@ -19,8 +17,9 @@
   <string name="home_dev_temi">temi guide robot</string>
   <string name="home_dev_temi_detail">Connect temi or its simulator, align maps, mark doors</string>
   <string name="home_dev_recorder_detail">Record walking traces to CSV (debug builds)</string>
-  <string name="home_scan">Scan evacuation poster</string>
-  <string name="home_scan_hint">Usually posted by stairs and elevators</string>
+  <string name="home_scan">Scan evacuation map</string>
+  <string name="home_scan_hint">Photograph the floor map on the wall to add a floor.</string>
+  <string name="home_swipe_hint">Swipe right to pin, left to delete.</string>
   <string name="home_dev_nav">Indoor navigation</string>
   <string name="home_dev_nav_detail">EH3 with search, live heading and turn-by-turn guidance</string>
   <string name="nav_back">Back</string>
@@ -64,6 +63,17 @@
   <string name="in_origin_reset">Starting from the map poster</string>
   <string name="in_origin_line">You\'re at %1$s</string>
   <string name="in_origin_poster">Start from the map poster</string>
+  <string name="in_browse_hint">Tap a room on the map, or search, for directions</string>
+  <string name="in_start_chip">Start point</string>
+  <string name="in_start_title">Where are you starting?</string>
+  <string name="in_start_poster">The map poster</string>
+  <string name="in_start_poster_detail">START, where the poster hangs</string>
+  <string name="in_start_current_detail">Where you are now</string>
+  <string name="in_start_pick">Choose on the map</string>
+  <string name="in_start_pick_detail">Tap the room or exit you\'re at</string>
+  <string name="in_start_pick_title">Tap where you are</string>
+  <string name="in_start_pick_body">Tap the room, exit or elevator you\'re standing at. Walks start from there.</string>
+  <string name="in_start_pick_miss">Tap a room number or a sign on the map</string>
   <string name="in_facing_body_here">Stand at the door of %1$s and hold the phone in front of you. Tap the arrow for the way you face.</string>
   <string name="in_minutes">%1$d min</string>
   <string name="in_meters_paren">(%1$d m)</string>
@@ -283,7 +293,7 @@
   <string name="other_corridor">WRONG corridor</string>
   <string name="checkpoint_result">%1$s: %2$.1f m off, %3$s</string>
   <string name="log_saved">Session log saved: %1$s</string>
-  <string name="capture_poster">Capture evacuation poster</string>
+  <string name="capture_poster">Capture map</string>
   <string name="poster_fast">Fast</string>
   <string name="poster_fast_description">Fast mode: read the poster in about 5 seconds with on-device ML Kit. Turn off to use the original parser.</string>
   <string name="poster_fast_on">Fast mode: reads the poster in about 5 seconds</string>
@@ -336,6 +346,18 @@
     <string name="poster_map_description">Rectified poster with extracted corridors, room entrances and proposed START</string>
   <string name="poster_parsing_title">Reading the map</string>
   <string name="poster_photo_description">The photo being read</string>
+  <string name="poster_now_straighten">Straightening your photo</string>
+  <string name="poster_now_corridors">Tracing the hallways</string>
+  <string name="poster_now_find_text">Finding room numbers</string>
+  <string name="poster_now_read_rooms">Reading room numbers</string>
+  <string name="poster_now_recheck">Double-checking small labels</string>
+  <string name="poster_now_place_rooms">Placing doors, exits and START</string>
+  <string name="poster_now_count">%1$s · %2$d of %3$d</string>
+  <string name="poster_now_ready">Map ready. Opening directions</string>
+  <plurals name="poster_map_ready">
+    <item quantity="one">Map ready · %d room</item>
+    <item quantity="other">Map ready · %d rooms</item>
+  </plurals>
   <string name="poster_stage_straighten">Straighten the photo</string>
   <string name="poster_stage_corridors">Trace corridors</string>
   <string name="poster_stage_find_text">Find labels</string>
@@ -447,7 +469,6 @@
   <string name="mode_confirm_on">Turn on</string>
   <string name="mode_developer_on">Developer mode on</string>
   <string name="poster_user_blocked">This photo didn\'t give a complete map. Retake it straight on, with the whole blue border in view.</string>
-  <string name="poster_user_saving">Saving the map…</string>
   <string name="map_save_blocked">Can\'t save yet: use Edit map to fix it</string>
   <string name="map_save_title">Save this map?</string>
   <string name="map_save_message">Rooms marked to check: %1$d. They are saved as read. To correct them, cancel and choose Edit map.</string>
@@ -474,7 +495,6 @@
   <string name="home_map_unpin">Unpin</string>
   <string name="home_pinned">Pinned</string>
   <string name="home_other_maps">Other maps</string>
-  <string name="home_pick_map">Pick a map to find your way, or scan a new poster.</string>
   <string name="home_select">Select</string>
   <string name="home_select_all">Select all</string>
   <string name="home_deselect_all">Deselect all</string>

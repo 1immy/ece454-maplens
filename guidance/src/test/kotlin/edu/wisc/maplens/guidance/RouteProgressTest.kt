@@ -110,6 +110,17 @@ class RouteProgressTest {
     }
 
     @Test
+    fun `turning on the spot at the start clears turn around without a step`() {
+        // Standing at START facing away: the start pose and the same pose replayed after the
+        // turn step (heading not yet updated) read as two steps facing back.
+        val progress = RouteProgress(path)
+        progress.update(pose(0.0, 0.0, left))
+        assertTrue(progress.update(pose(0.0, 0.0, left)).facingBack)
+        // The same spot with the compass's new heading: facing the route, nothing to turn.
+        assertFalse(progress.update(pose(0.0, 0.0, right)).facingBack)
+    }
+
+    @Test
     fun `walking back along the route asks for a WRONG_WAY reroute`() {
         val progress = RouteProgress(path)
         progress.walk(*Array(15) { pose((it + 1) * k, 0.0, right) })
