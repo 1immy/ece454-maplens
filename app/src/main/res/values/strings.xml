@@ -490,6 +490,7 @@
   </plurals>
   <string name="home_map_actions">More options for %1$s</string>
   <string name="home_map_rename">Rename</string>
+  <string name="home_map_edit">Edit map</string>
   <string name="home_map_rename_save">Save</string>
   <string name="home_map_name_hint">Map name, e.g. EH 3rd floor</string>
   <string name="home_map_pin">Pin to top</string>

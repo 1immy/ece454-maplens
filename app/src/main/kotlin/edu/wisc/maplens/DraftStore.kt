@@ -14,11 +14,15 @@ internal class DraftStore(private val folder: File) {
     val image get() = File(folder, IMAGE)
     val exists get() = File(folder, GRAPH).exists()
 
-    /** Starts a new draft, replacing any unfinished one. */
-    fun start(map: MapDraft, writeImage: (File) -> Unit) {
+    /**
+     * Starts a new draft, replacing any unfinished one. [editing] is the saved map it was opened
+     * from, which the finished draft then replaces; null makes a new map.
+     */
+    fun start(map: MapDraft, editing: String? = null, writeImage: (File) -> Unit) {
         folder.deleteRecursively()
         check(folder.mkdirs()) { "could not create $folder" }
         writeImage(image)
+        editing?.let { File(folder, SOURCE).writeText(it) }
         update(map)
     }
 
@@ -45,8 +49,13 @@ internal class DraftStore(private val folder: File) {
                 it.bottom
             )
         }
-        return store.save(verified, name, labels = labels) { image.copyTo(it) }
-            .also { folder.deleteRecursively() }
+        val editing = File(folder, SOURCE).takeIf { it.exists() }?.readText()
+        val saved = if (editing != null && store.get(editing) != null) {
+            store.replace(editing, verified, labels)
+        } else {
+            store.save(verified, name, labels = labels) { image.copyTo(it) }
+        }
+        return saved.also { folder.deleteRecursively() }
     }
 
     private fun File.writeAtomically(text: String) {
@@ -59,11 +68,33 @@ internal class DraftStore(private val folder: File) {
         private const val GRAPH = "graph.json"
         private const val IMAGE = "map.jpg"
         private const val ROOMS = "rooms.tsv"
+        private const val SOURCE = "editing.txt"
 
         /** Beside the saved maps, not among them, so it never lists as one. */
         fun of(context: Context) = DraftStore(File(context.filesDir, "map-draft"))
     }
 }
+
+/**
+ * Saved map [graph] back as a draft to edit: each printed number in [labels] with the door its
+ * label names, already accepted, since the map was verified when it was saved.
+ */
+internal fun draftOf(graph: FloorGraph, labels: List<SavedLabel>): MapDraft = MapDraft(
+    graph.copy(verified = false),
+    labels.map { printed ->
+        val door = graph.landmarks.firstOrNull { it.label == printed.label }
+        RoomDraft(
+            printed.label,
+            printed.left,
+            printed.top,
+            printed.right,
+            printed.bottom,
+            door?.nodeId,
+            door?.ocrConfidence ?: 1f,
+            checked = door != null,
+        )
+    },
+)
 
 /** One room per line, tab separated. OCR labels and node ids hold no tabs or line breaks. */
 internal fun encodeRooms(rooms: List<RoomDraft>): String = rooms.joinToString("\n") { room ->

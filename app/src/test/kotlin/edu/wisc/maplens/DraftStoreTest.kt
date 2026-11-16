@@ -2,6 +2,7 @@ package edu.wisc.maplens
 
 import edu.wisc.maplens.model.Edge
 import edu.wisc.maplens.model.FloorGraph
+import edu.wisc.maplens.model.Landmark
 import edu.wisc.maplens.model.Node
 import edu.wisc.maplens.model.NodeType
 import edu.wisc.maplens.model.PixelPoint
@@ -46,7 +47,7 @@ class DraftStoreTest {
 
     @Test
     fun `a draft survives being read back with its rooms`() {
-        draft.start(MapDraft(graph, rooms), image("photo"))
+        draft.start(MapDraft(graph, rooms), writeImage = image("photo"))
         assertTrue(draft.exists)
         assertEquals(MapDraft(graph, rooms), DraftStore(File(root, "draft")).load())
         assertEquals("photo", draft.image.readText())
@@ -54,7 +55,7 @@ class DraftStoreTest {
 
     @Test
     fun `edits to a draft replace the earlier ones`() {
-        draft.start(MapDraft(graph, rooms), image("photo"))
+        draft.start(MapDraft(graph, rooms), writeImage = image("photo"))
         draft.update(MapDraft(graph.deleteNode("D"), emptyList()))
         val loaded = draft.load()
         assertFalse("D" in loaded.graph.nodes)
@@ -63,15 +64,15 @@ class DraftStoreTest {
 
     @Test
     fun `a new draft replaces an unfinished one`() {
-        draft.start(MapDraft(graph, rooms), image("old"))
-        draft.start(MapDraft(graph, emptyList()), image("new"))
+        draft.start(MapDraft(graph, rooms), writeImage = image("old"))
+        draft.start(MapDraft(graph, emptyList()), writeImage = image("new"))
         assertEquals("new", draft.image.readText())
         assertTrue(draft.load().rooms.isEmpty())
     }
 
     @Test
     fun `saving moves the map and its image to the saved maps`() {
-        draft.start(MapDraft(graph, rooms), image("photo"))
+        draft.start(MapDraft(graph, rooms), writeImage = image("photo"))
         val saved = draft.saveTo(maps, graph.copy(verified = true), "Scan")
         assertFalse(draft.exists)
         assertEquals("photo", saved.imageFile.readText())
@@ -80,8 +81,39 @@ class DraftStoreTest {
     }
 
     @Test
+    fun `editing a saved map replaces it instead of adding one`() {
+        val original = maps.save(
+            graph.copy(verified = true, landmarks = listOf(Landmark("3546", "D", 0.9f))),
+            "EH3",
+            labels = listOf(SavedLabel("3546", 1, 2, 3, 4)),
+        ) { it.writeText("poster") }
+        maps.setPinned(original.id, true)
+        val opened = draftOf(maps.loadGraph(original), maps.loadLabels(original))
+        assertFalse(opened.graph.verified)
+        assertEquals(listOf(RoomDraft("3546", 1, 2, 3, 4, "D", 0.9f, checked = true)), opened.rooms)
+
+        draft.start(opened, original.id) { original.imageFile.copyTo(it) }
+        val edited = opened.graph.copy(verified = true, landmarks = emptyList())
+        val saved = draft.saveTo(maps, edited, "ignored")
+        assertEquals(original.id, saved.id)
+        assertEquals("EH3", saved.name)
+        assertTrue(saved.pinned)
+        assertEquals("poster", saved.imageFile.readText())
+        assertEquals(edited, maps.loadGraph(saved))
+        assertEquals(listOf(saved.id), maps.list().map { it.id })
+        assertFalse(draft.exists)
+    }
+
+    @Test
+    fun `an edit whose map was deleted meanwhile saves as a new map`() {
+        draft.start(MapDraft(graph, rooms), "map-gone", image("photo"))
+        val saved = draft.saveTo(maps, graph.copy(verified = true), "Scan")
+        assertEquals(listOf(saved.id), maps.list().map { it.id })
+    }
+
+    @Test
     fun `a refused save keeps the draft and lists nothing`() {
-        draft.start(MapDraft(graph, rooms), image("photo"))
+        draft.start(MapDraft(graph, rooms), writeImage = image("photo"))
         assertFailsWith<IllegalArgumentException> { draft.saveTo(maps, graph, "Scan") }
         assertTrue(draft.exists)
         assertEquals("photo", draft.image.readText())
@@ -90,7 +122,7 @@ class DraftStoreTest {
 
     @Test
     fun `a failed image copy keeps the draft and lists nothing`() {
-        draft.start(MapDraft(graph, rooms), image("photo"))
+        draft.start(MapDraft(graph, rooms), writeImage = image("photo"))
         draft.image.delete()
         assertFailsWith<Exception> { draft.saveTo(maps, graph.copy(verified = true), "Scan") }
         assertTrue(draft.exists)
