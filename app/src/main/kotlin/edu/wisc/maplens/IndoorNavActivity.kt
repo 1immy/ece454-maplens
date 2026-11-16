@@ -208,6 +208,9 @@ class IndoorNavActivity : ComponentActivity() {
 
     /** Name of the saved map on screen, or null for the bundled EH3 map. */
     private var mapName: String? = null
+
+    /** False for a scan with no gold star: its START is a stand-in, so ask where the user is. */
+    private var posterStart = true
     private val ticker = Handler(Looper.getMainLooper())
     private val stride = TrackingConfig().nominalStrideMeters
     private val router = AStarRouter()
@@ -360,6 +363,7 @@ class IndoorNavActivity : ComponentActivity() {
                     map.setPuck(g.nodes.getValue(g.startNodeId).position)
                     renderBrowseSheet()
                     restoreOrigin()
+                    if (!posterStart && origin == null) pickStartOnMap()
                     if (intent.getBooleanExtra(EXTRA_JUST_SAVED, false)) {
                         showSnack(getString(R.string.map_saved))
                     }
@@ -377,7 +381,10 @@ class IndoorNavActivity : ComponentActivity() {
         } else {
             val store = MapAssets.savedMaps(this)
             val saved = store.get(savedId) ?: error("saved map $savedId is gone")
-            runOnUiThread { mapName = saved.name }
+            runOnUiThread {
+                mapName = saved.name
+                posterStart = saved.posterStart
+            }
             printed = store.loadLabels(saved).map {
                 LabelBox(
                     it.label,
@@ -592,7 +599,11 @@ class IndoorNavActivity : ComponentActivity() {
             setSheet(
                 title,
                 text(Ui.CAPTION, Ui.INK_SECONDARY).apply {
-                    val line = if (mapName == null) R.string.in_floor_line else R.string.in_at_start
+                    val line = when {
+                        mapName == null -> R.string.in_floor_line
+                        posterStart -> R.string.in_at_start
+                        else -> R.string.in_no_poster_start
+                    }
                     text = getString(line)
                     setStartIcon(R.drawable.ic_my_location, IndoorMapView.PUCK_BLUE)
                     compoundDrawablePadding = dp(6)
@@ -613,8 +624,10 @@ class IndoorNavActivity : ComponentActivity() {
                 setStartIcon(R.drawable.ic_my_location, IndoorMapView.PUCK_BLUE)
                 compoundDrawablePadding = dp(6)
             }.withMargins(top = 4),
-            hint.withMargins(top = 6),
-            reset.withMargins(top = 12, bottom = 4),
+            hint.withMargins(top = 6, bottom = if (posterStart) 0 else 8),
+            // A scan with no star has no poster START to go back to.
+            *listOfNotNull(reset.takeIf { posterStart }?.withMargins(top = 12, bottom = 4))
+                .toTypedArray(),
         )
     }
 
@@ -738,14 +751,16 @@ class IndoorNavActivity : ComponentActivity() {
             }
         val here = origin
         val rows = buildList {
-            add(
-                row(
-                    R.drawable.ic_flag,
-                    getString(R.string.in_start_poster),
-                    getString(R.string.in_start_poster_detail),
-                    chosen = here == null,
-                ) { setOrigin(null) },
-            )
+            if (posterStart) {
+                add(
+                    row(
+                        R.drawable.ic_flag,
+                        getString(R.string.in_start_poster),
+                        getString(R.string.in_start_poster_detail),
+                        chosen = here == null,
+                    ) { setOrigin(null) },
+                )
+            }
             if (here != null) {
                 add(
                     row(

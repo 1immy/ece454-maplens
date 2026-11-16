@@ -16,6 +16,11 @@ data class SavedMap(
     val imageFile: File,
     /** Kept at the top of Home's list. */
     val pinned: Boolean = false,
+    /**
+     * START is where the poster's star is. False when no star was found: START is only a
+     * placeholder, and the map asks where the user is when it opens.
+     */
+    val posterStart: Boolean = true,
 )
 
 /** Where a room number is printed on a map's image (its pixels), as the parser read it. */
@@ -49,6 +54,7 @@ class MapStore(private val root: File) {
         name: String,
         nowMillis: Long = System.currentTimeMillis(),
         labels: List<SavedLabel> = emptyList(),
+        posterStart: Boolean = true,
         writeImage: (File) -> Unit,
     ): SavedMap {
         require(graph.verified) { "only verified graphs can be saved" }
@@ -74,6 +80,7 @@ class MapStore(private val root: File) {
                 setProperty("name", name)
                 setProperty("savedAtMillis", nowMillis.toString())
                 setProperty("rooms", graph.roomDestinations().size.toString())
+                if (!posterStart) setProperty("posterStart", "false")
             }
             File(staging, META).outputStream().use { meta.store(it, "MapLens saved map") }
             check(staging.renameTo(File(root, id))) { "cannot move $staging into place" }
@@ -149,6 +156,7 @@ class MapStore(private val root: File) {
             graphFile = graph,
             imageFile = image,
             pinned = meta.getProperty("pinned") == "true",
+            posterStart = meta.getProperty("posterStart") != "false",
         )
     }
 

@@ -893,11 +893,18 @@ class PosterCaptureActivity : ComponentActivity() {
 
     /**
      * User mode: no checking screen. A map that navigation accepts is saved and opened at
-     * once; one it can't use (no START, crossing corridors) sends the user back to retake.
+     * once; one it can't use (crossing corridors, cut-off rooms) sends the user back to retake.
+     * A map whose gold star wasn't found is saved with a stand-in START and asks where the user
+     * is when it opens, since a retake rarely finds a star that glare hides or a map lacks.
      */
     private fun saveForUser(result: ParseResult) {
-        val verified = verifiedOrNull(result.graph)
+        val noStar = result.graph.let { it.nodes[it.startNodeId]?.type != NodeType.START }
+        val graph = result.graph.takeIf { noStar }?.withPlaceholderStart() ?: result.graph
+        val verified = verifiedOrNull(graph)
         if (verified == null) {
+            // The star alone never blocks now, so name what does: it is what a retake must fix.
+            val blocking = mapProblems(graph).filter { it.blocksSave }.map { it.message }
+            Log.w(TAG, "Scan blocked (star found: ${!noStar}): $blocking")
             result.rectified.recycle()
             busy = false
             startCamera()
@@ -914,7 +921,7 @@ class PosterCaptureActivity : ComponentActivity() {
             revealPending = false
             pendingOpen?.let(::openSaved)
         }
-        saveAndNavigate(verified, result.rectified, labelsOf(result))
+        saveAndNavigate(verified, result.rectified, labelsOf(result), posterStart = !noStar)
     }
 
     private fun showReview(result: ParseResult) {
@@ -1048,14 +1055,19 @@ class PosterCaptureActivity : ComponentActivity() {
         SavedLabel(it.label, it.bounds.left, it.bounds.top, it.bounds.right, it.bounds.bottom)
     }
 
-    private fun saveAndNavigate(graph: FloorGraph, image: Bitmap, labels: List<SavedLabel>) {
+    private fun saveAndNavigate(
+        graph: FloorGraph,
+        image: Bitmap,
+        labels: List<SavedLabel>,
+        posterStart: Boolean = true,
+    ) {
         save.isEnabled = false
         action.isEnabled = false
         val name = suggestedMapName(graph)
         val store = MapAssets.savedMaps(this)
         worker.execute {
             val saved = runCatching {
-                store.save(graph, name, labels = labels) { file ->
+                store.save(graph, name, labels = labels, posterStart = posterStart) { file ->
                     file.outputStream().use {
                         check(image.compress(Bitmap.CompressFormat.JPEG, 92, it)) { "JPEG failed" }
                     }

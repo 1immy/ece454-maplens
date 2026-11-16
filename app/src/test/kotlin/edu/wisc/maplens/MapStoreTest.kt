@@ -63,6 +63,14 @@ class MapStoreTest {
     }
 
     @Test
+    fun `a scan with no star is remembered as having a stand-in START`() {
+        val starless = store.save(graph, "no star", posterStart = false, writeImage = ::image)
+        assertEquals(false, MapStore(root).get(starless.id)?.posterStart)
+        val poster = store.save(graph, "star", nowMillis = 9L, writeImage = ::image)
+        assertEquals(true, MapStore(root).get(poster.id)?.posterStart)
+    }
+
+    @Test
     fun `a new store on the same folder sees earlier maps, newest first`() {
         store.save(graph, "first", nowMillis = 1_000L, writeImage = ::image)
         store.save(graph, "second", nowMillis = 2_000L, writeImage = ::image)
