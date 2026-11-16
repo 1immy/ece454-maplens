@@ -130,6 +130,9 @@ private fun FloorGraph.withFoundDoor(
     while (true) {
         val (shared, last) = graph.sharedLink(start, line) ?: break
         val hit = checkNotNull(graph.copy(edges = listOf(shared)).nearestEdge(line[last]))
+        // The whole way out runs along that link, so the door is on it. A fork here would be a
+        // zero-length link, which blocks Save.
+        if (last == line.lastIndex) return graph.withDoor(room, hit, previews, finding.kind)
         start = graph.endpointNear(shared, hit.point, 3.0)
             ?: Node(graph.nextNodeId("fj"), hit.point, NodeType.JUNCTION).also {
                 graph = graph.split(shared, hit, it)
@@ -160,7 +163,9 @@ private fun FloorGraph.withDoor(
     val othersDoor = { node: Node ->
         graph.landmarks.any { it.nodeId == node.id && it.label != room.text }
     }
-    var node = graph.endpointNear(edge, hit.point, 8.0)?.takeIf {
+    // Both ends are tried: rejecting a nearby neighbour's door must not skip the end the hit
+    // sits on, or the new door lands on top of it with a zero-length edge.
+    var node = graph.endpointNear(edge, hit.point, 8.0) {
         !othersDoor(it) || it.position.distanceTo(hit.point) < 1.5
     }
     if (node == null) {

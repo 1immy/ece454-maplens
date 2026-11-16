@@ -86,6 +86,26 @@ internal fun mapProblems(graph: FloorGraph): List<MapProblem> = buildList {
     }
 }
 
+/**
+ * This map with a stand-in START, for a scan whose gold star wasn't found: the corridor junction
+ * nearest the middle of the map, never a room's door. Null when there is no plain junction. The
+ * user then says where they are ("I'm here"), as on any map.
+ */
+internal fun FloorGraph.withPlaceholderStart(): FloorGraph? {
+    val named = landmarks.map { it.nodeId }.toSet()
+    val middle = PixelPoint(
+        nodes.values.map { it.position.x }.average(),
+        nodes.values.map { it.position.y }.average(),
+    )
+    val spot = nodes.values
+        .filter { it.type == NodeType.JUNCTION && it.id !in named }
+        .minByOrNull { it.position.distanceTo(middle) } ?: return null
+    return copy(
+        nodes = nodes + (spot.id to spot.copy(type = NodeType.START)),
+        startNodeId = spot.id,
+    )
+}
+
 internal fun reviewProblems(graph: FloorGraph): List<String> =
     mapProblems(graph).map { it.message }
 
